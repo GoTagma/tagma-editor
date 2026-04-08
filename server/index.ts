@@ -266,7 +266,20 @@ app.post('/api/open', (req, res) => {
       return res.status(404).json({ error: `File not found: ${absPath}` });
     }
     const content = readFileSync(absPath, 'utf-8');
-    config = parseYaml(content);
+    try {
+      config = parseYaml(content);
+    } catch {
+      // parseYaml is strict — fall back to lenient loading
+      const yaml = require('js-yaml');
+      const doc = yaml.load(content) as any;
+      const p = doc?.pipeline ?? doc ?? {};
+      config = {
+        name: p.name || basename(absPath, '.yaml').replace(/[-_]/g, ' '),
+        driver: p.driver,
+        timeout: p.timeout,
+        tracks: Array.isArray(p.tracks) ? p.tracks : [],
+      } as RawPipelineConfig;
+    }
     yamlPath = absPath;
     res.json(getState());
   } catch (e: any) {
