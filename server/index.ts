@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import { resolve, dirname, basename, sep } from 'path';
+import { execSync } from 'child_process';
+import yaml from 'js-yaml';
 import {
   createEmptyPipeline,
   upsertTrack,
@@ -242,7 +244,6 @@ app.post('/api/fs/reveal', (req, res) => {
   if (!existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
   try {
     const dir = statSync(absPath).isDirectory() ? absPath : dirname(absPath);
-    const { execSync } = require('child_process');
     if (process.platform === 'win32') {
       execSync(`explorer /select,"${absPath}"`);
     } else if (process.platform === 'darwin') {
@@ -270,7 +271,6 @@ app.post('/api/open', (req, res) => {
       config = parseYaml(content);
     } catch {
       // parseYaml is strict — fall back to lenient loading
-      const yaml = require('js-yaml');
       const doc = yaml.load(content) as any;
       const p = doc?.pipeline ?? doc ?? {};
       config = {
