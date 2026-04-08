@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import {
   Check, X, Pencil, Save, Download, Upload, Play,
-  LayoutGrid, AlertTriangle,
+  LayoutGrid, AlertTriangle, Settings,
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -12,11 +12,12 @@ interface ToolbarProps {
   onExportYaml: () => void;
   onImportYaml: () => void;
   onRun: () => void;
+  onOpenSettings: () => void;
 }
 
 export function Toolbar({
   pipelineName, isDirty, errorCount,
-  onUpdateName, onExportYaml, onImportYaml, onRun,
+  onUpdateName, onExportYaml, onImportYaml, onRun, onOpenSettings,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -82,6 +83,10 @@ export function Toolbar({
       <button onClick={onExportYaml} className="btn-ghost">
         <Download size={13} />
         <span className="hidden sm:inline">Export</span>
+      </button>
+
+      <button onClick={onOpenSettings} className="btn-ghost" title="Pipeline Settings">
+        <Settings size={13} />
       </button>
 
       <div className="w-px h-5 bg-tagma-border" />

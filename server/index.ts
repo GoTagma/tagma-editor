@@ -47,8 +47,12 @@ app.get('/api/state', (_req, res) => {
 
 // ── Pipeline name ──
 app.patch('/api/pipeline', (req, res) => {
-  const { name } = req.body;
-  if (name) config = { ...config, name };
+  const { name, driver, timeout } = req.body;
+  const patch: Partial<RawPipelineConfig> = {};
+  if (name !== undefined) patch.name = name;
+  if (driver !== undefined) patch.driver = driver || undefined;
+  if (timeout !== undefined) patch.timeout = timeout || undefined;
+  config = { ...config, ...patch };
   res.json(getState());
 });
 
@@ -201,5 +205,5 @@ app.post('/api/demo', (_req, res) => {
 
 const PORT = parseInt(process.env.PORT ?? '3001');
 app.listen(PORT, () => {
-  console.log(`Tagma Board server running on http://localhost:${PORT}`);
+  console.log(`Tagma Editor server running on http://localhost:${PORT}`);
 });

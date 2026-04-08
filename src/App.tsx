@@ -4,12 +4,13 @@ import { BoardCanvas } from './components/board/BoardCanvas';
 import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
+import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { AlertCircle, FileCode2, Loader2 } from 'lucide-react';
 
 export function App() {
   const {
     config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges, isDirty, loading,
-    setPipelineName, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
+    setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition,
@@ -18,6 +19,7 @@ export function App() {
 
   const [showYaml, setShowYaml] = useState(false);
   const [yamlText, setYamlText] = useState('');
+  const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { init(); }, []);
@@ -104,6 +106,7 @@ export function App() {
         pipelineName={config.name} isDirty={isDirty} errorCount={validationErrors.length}
         onUpdateName={setPipelineName} onExportYaml={handleExportYaml}
         onImportYaml={handleImportYaml} onRun={handleRun}
+        onOpenSettings={() => { setShowPipelineSettings(true); selectTask(null); selectTrack(null); }}
       />
 
       {validationErrors.length > 0 && (
@@ -121,7 +124,9 @@ export function App() {
           <BoardCanvas
             config={config} dagEdges={dagEdges} positions={positions}
             selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
-            onSelectTask={selectTask} onSelectTrack={selectTrack} onAddTask={addTask} onAddTrack={addTrack}
+            onSelectTask={(id) => { selectTask(id); setShowPipelineSettings(false); }}
+            onSelectTrack={(id) => { selectTrack(id); setShowPipelineSettings(false); }}
+            onAddTask={addTask} onAddTrack={addTrack}
             onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}
             onRenameTrack={renameTrack} onMoveTrackTo={moveTrackTo}
             onAddDependency={addDependency} onRemoveDependency={removeDependency}
@@ -139,13 +144,21 @@ export function App() {
           />
         )}
 
-        {selectedTrack && (
+        {selectedTrack && !showPipelineSettings && (
           <TrackConfigPanel
             key={selectedTrackId}
             track={selectedTrack}
             onUpdateTrack={updateTrackFields}
             onDeleteTrack={deleteTrack}
             onClose={() => selectTrack(null)}
+          />
+        )}
+
+        {showPipelineSettings && !selectedInfo && !selectedTrack && (
+          <PipelineConfigPanel
+            config={config}
+            onUpdate={updatePipelineFields}
+            onClose={() => setShowPipelineSettings(false)}
           />
         )}
       </div>

@@ -63,8 +63,8 @@ export interface DagEdge {
 export const api = {
   getState: () => request<ServerState>('/state'),
 
-  updatePipeline: (name: string) =>
-    request<ServerState>('/pipeline', { method: 'PATCH', body: JSON.stringify({ name }) }),
+  updatePipeline: (fields: Record<string, unknown>) =>
+    request<ServerState>('/pipeline', { method: 'PATCH', body: JSON.stringify(fields) }),
 
   addTrack: (id: string, name: string, color?: string) =>
     request<ServerState>('/tracks', { method: 'POST', body: JSON.stringify({ id, name, color }) }),

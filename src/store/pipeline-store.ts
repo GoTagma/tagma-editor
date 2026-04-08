@@ -17,6 +17,7 @@ interface PipelineState {
   applyState: (state: ServerState) => void;
   init: () => Promise<void>;
   setPipelineName: (name: string) => void;
+  updatePipelineFields: (fields: Record<string, unknown>) => void;
   addTrack: (name: string) => void;
   renameTrack: (trackId: string, name: string) => void;
   updateTrackFields: (trackId: string, fields: Record<string, unknown>) => void;
@@ -84,7 +85,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       }
     },
 
-    setPipelineName: (name) => fire(() => api.updatePipeline(name)),
+    setPipelineName: (name) => fire(() => api.updatePipeline({ name })),
+    updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields)),
     addTrack: (name) => fire(() => api.addTrack(generateId(), name)),
     renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name })),
     updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields)),
