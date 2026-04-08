@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
-import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen } from 'lucide-react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink } from 'lucide-react';
 import { MenuBar } from '../MenuBar';
+import { api } from '../../api/client';
 
 interface ToolbarProps {
   pipelineName: string;
@@ -69,10 +70,19 @@ export function Toolbar({
           </button>
         )}
 
-        {fileName && (
-          <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[120px] shrink" title={yamlPath!}>
-            {fileName}
-          </span>
+        {yamlPath && (
+          <div className="flex items-center gap-1 min-w-0 shrink group/file">
+            <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[200px]" title={yamlPath}>
+              {yamlPath}
+            </span>
+            <button
+              onClick={() => api.reveal(yamlPath).catch(() => {})}
+              className="text-tagma-muted hover:text-tagma-accent opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0"
+              title="Reveal in File Explorer"
+            >
+              <ExternalLink size={10} />
+            </button>
+          </div>
         )}
 
         {/* Status badges */}

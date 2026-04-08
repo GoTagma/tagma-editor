@@ -235,6 +235,27 @@ app.post('/api/fs/mkdir', (req, res) => {
   }
 });
 
+app.post('/api/fs/reveal', (req, res) => {
+  const { path: filePath } = req.body;
+  if (!filePath) return res.status(400).json({ error: 'path is required' });
+  const absPath = resolve(filePath);
+  if (!existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
+  try {
+    const dir = statSync(absPath).isDirectory() ? absPath : dirname(absPath);
+    const { execSync } = require('child_process');
+    if (process.platform === 'win32') {
+      execSync(`explorer /select,"${absPath}"`);
+    } else if (process.platform === 'darwin') {
+      execSync(`open -R "${absPath}"`);
+    } else {
+      execSync(`xdg-open "${dir}"`);
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to reveal' });
+  }
+});
+
 // ── File operations ──
 app.post('/api/open', (req, res) => {
   const { path: filePath } = req.body;

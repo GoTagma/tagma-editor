@@ -126,6 +126,9 @@ export const api = {
   mkdir: (path: string) =>
     request<{ path: string }>('/fs/mkdir', { method: 'POST', body: JSON.stringify({ path }) }),
 
+  reveal: (path: string) =>
+    request<{ ok: boolean }>('/fs/reveal', { method: 'POST', body: JSON.stringify({ path }) }),
+
   setWorkDir: (workDir: string) =>
     request<ServerState>('/workspace', { method: 'PATCH', body: JSON.stringify({ workDir }) }),
 
