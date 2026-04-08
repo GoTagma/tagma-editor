@@ -1,0 +1,105 @@
+const BASE = '/api';
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error ?? 'Request failed');
+  }
+  if (res.headers.get('content-type')?.includes('text/yaml')) {
+    return (await res.text()) as unknown as T;
+  }
+  return res.json();
+}
+
+export interface ServerState {
+  config: RawPipelineConfig;
+  validationErrors: ValidationError[];
+  dag: { nodes: Record<string, any>; edges: DagEdge[] };
+}
+
+export interface RawPipelineConfig {
+  name: string;
+  driver?: string;
+  timeout?: string;
+  tracks: RawTrackConfig[];
+}
+
+export interface RawTrackConfig {
+  id: string;
+  name: string;
+  color?: string;
+  driver?: string;
+  tasks: RawTaskConfig[];
+}
+
+export interface RawTaskConfig {
+  id: string;
+  name?: string;
+  prompt?: string;
+  command?: string;
+  depends_on?: string[];
+  driver?: string;
+  model_tier?: string;
+  timeout?: string;
+  output?: string;
+  permissions?: { read: boolean; write: boolean; execute: boolean };
+  continue_from?: string;
+}
+
+export interface ValidationError {
+  path: string;
+  message: string;
+}
+
+export interface DagEdge {
+  from: string;
+  to: string;
+}
+
+export const api = {
+  getState: () => request<ServerState>('/state'),
+
+  updatePipeline: (name: string) =>
+    request<ServerState>('/pipeline', { method: 'PATCH', body: JSON.stringify({ name }) }),
+
+  addTrack: (id: string, name: string, color?: string) =>
+    request<ServerState>('/tracks', { method: 'POST', body: JSON.stringify({ id, name, color }) }),
+
+  updateTrack: (trackId: string, fields: Record<string, unknown>) =>
+    request<ServerState>(`/tracks/${trackId}`, { method: 'PATCH', body: JSON.stringify(fields) }),
+
+  deleteTrack: (trackId: string) =>
+    request<ServerState>(`/tracks/${trackId}`, { method: 'DELETE' }),
+
+  reorderTrack: (trackId: string, toIndex: number) =>
+    request<ServerState>('/tracks/reorder', { method: 'POST', body: JSON.stringify({ trackId, toIndex }) }),
+
+  addTask: (trackId: string, task: RawTaskConfig) =>
+    request<ServerState>('/tasks', { method: 'POST', body: JSON.stringify({ trackId, task }) }),
+
+  updateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) =>
+    request<ServerState>(`/tasks/${trackId}/${taskId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deleteTask: (trackId: string, taskId: string) =>
+    request<ServerState>(`/tasks/${trackId}/${taskId}`, { method: 'DELETE' }),
+
+  transferTask: (fromTrackId: string, taskId: string, toTrackId: string) =>
+    request<ServerState>('/tasks/transfer', { method: 'POST', body: JSON.stringify({ fromTrackId, taskId, toTrackId }) }),
+
+  addDependency: (fromTrackId: string, fromTaskId: string, toTrackId: string, toTaskId: string) =>
+    request<ServerState>('/dependencies', { method: 'POST', body: JSON.stringify({ fromTrackId, fromTaskId, toTrackId, toTaskId }) }),
+
+  removeDependency: (trackId: string, taskId: string, depRef: string) =>
+    request<ServerState>('/dependencies', { method: 'DELETE', body: JSON.stringify({ trackId, taskId, depRef }) }),
+
+  exportYaml: () => request<string>('/export'),
+
+  importYaml: (yaml: string) =>
+    request<ServerState>('/import', { method: 'POST', body: JSON.stringify({ yaml }) }),
+
+  loadDemo: () => request<ServerState>('/demo', { method: 'POST' }),
+};
