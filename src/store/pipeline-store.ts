@@ -8,6 +8,7 @@ interface PipelineState {
   config: RawPipelineConfig;
   positions: Map<string, TaskPosition>;
   selectedTaskId: string | null;
+  selectedTrackId: string | null;
   validationErrors: ValidationError[];
   dagEdges: DagEdge[];
   isDirty: boolean;
@@ -18,6 +19,7 @@ interface PipelineState {
   setPipelineName: (name: string) => void;
   addTrack: (name: string) => void;
   renameTrack: (trackId: string, name: string) => void;
+  updateTrackFields: (trackId: string, fields: Record<string, unknown>) => void;
   deleteTrack: (trackId: string) => void;
   moveTrackTo: (trackId: string, toIndex: number) => void;
   addTask: (trackId: string, name: string, positionX?: number) => void;
@@ -27,6 +29,7 @@ interface PipelineState {
   addDependency: (fromTrackId: string, fromTaskId: string, toTrackId: string, toTaskId: string) => void;
   removeDependency: (trackId: string, taskId: string, depRef: string) => void;
   selectTask: (qualifiedId: string | null) => void;
+  selectTrack: (trackId: string | null) => void;
   setTaskPosition: (qualifiedId: string, x: number) => void;
   exportYaml: () => Promise<string>;
   importYaml: (yaml: string) => Promise<void>;
@@ -56,6 +59,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     config: { name: 'Loading...', tracks: [] },
     positions: new Map(),
     selectedTaskId: null,
+    selectedTrackId: null,
     validationErrors: [],
     dagEdges: [],
     isDirty: false,
@@ -83,6 +87,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     setPipelineName: (name) => fire(() => api.updatePipeline(name)),
     addTrack: (name) => fire(() => api.addTrack(generateId(), name)),
     renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name })),
+    updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields)),
 
     deleteTrack: (trackId) => {
       set((s) => {
@@ -139,7 +144,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     removeDependency: (trackId, taskId, depRef) =>
       fire(() => api.removeDependency(trackId, taskId, depRef)),
 
-    selectTask: (qualifiedId) => set({ selectedTaskId: qualifiedId }),
+    selectTask: (qualifiedId) => set({ selectedTaskId: qualifiedId, selectedTrackId: null }),
+    selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
 
     setTaskPosition: (qualifiedId, x) => {
       set((s) => {

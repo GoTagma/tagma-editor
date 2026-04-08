@@ -3,15 +3,16 @@ import { usePipelineStore } from './store/pipeline-store';
 import { BoardCanvas } from './components/board/BoardCanvas';
 import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
+import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { AlertCircle, FileCode2, Loader2 } from 'lucide-react';
 
 export function App() {
   const {
-    config, positions, selectedTaskId, validationErrors, dagEdges, isDirty, loading,
-    setPipelineName, addTrack, renameTrack, deleteTrack, moveTrackTo,
+    config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges, isDirty, loading,
+    setPipelineName, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
-    selectTask, setTaskPosition,
+    selectTask, selectTrack, setTaskPosition,
     exportYaml, importYaml, init,
   } = usePipelineStore();
 
@@ -43,6 +44,11 @@ export function App() {
     if (!track || !task) return null;
     return { track, task, trackId, taskId };
   }, [selectedTaskId, config]);
+
+  const selectedTrack = useMemo(() => {
+    if (!selectedTrackId) return null;
+    return config.tracks.find((t) => t.id === selectedTrackId) ?? null;
+  }, [selectedTrackId, config]);
 
   const handleExportYaml = useCallback(async () => {
     const yaml = await exportYaml();
@@ -115,7 +121,7 @@ export function App() {
           <BoardCanvas
             config={config} dagEdges={dagEdges} positions={positions}
             selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
-            onSelectTask={selectTask} onAddTask={addTask} onAddTrack={addTrack}
+            onSelectTask={selectTask} onSelectTrack={selectTrack} onAddTask={addTask} onAddTrack={addTrack}
             onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}
             onRenameTrack={renameTrack} onMoveTrackTo={moveTrackTo}
             onAddDependency={addDependency} onRemoveDependency={removeDependency}
@@ -130,6 +136,16 @@ export function App() {
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}
             onRemoveDependency={removeDependency} onClose={() => selectTask(null)}
+          />
+        )}
+
+        {selectedTrack && (
+          <TrackConfigPanel
+            key={selectedTrackId}
+            track={selectedTrack}
+            onUpdateTrack={updateTrackFields}
+            onDeleteTrack={deleteTrack}
+            onClose={() => selectTrack(null)}
           />
         )}
       </div>

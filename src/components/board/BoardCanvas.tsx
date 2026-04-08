@@ -27,6 +27,7 @@ interface BoardCanvasProps {
   selectedTaskId: string | null;
   invalidTaskIds: Set<string>;
   onSelectTask: (qualifiedId: string | null) => void;
+  onSelectTrack: (trackId: string | null) => void;
   onAddTask: (trackId: string, name: string, positionX?: number) => void;
   onAddTrack: (name: string) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
@@ -121,7 +122,7 @@ interface TrackDragState { trackId: string; startIndex: number; dropIndex: numbe
 
 export function BoardCanvas({
   config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds,
-  onSelectTask, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
+  onSelectTask, onSelectTrack, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
   onRenameTrack, onMoveTrackTo, onAddDependency, onRemoveDependency,
   onSetTaskPosition, onTransferTask,
 }: BoardCanvasProps) {
@@ -323,6 +324,8 @@ export function BoardCanvas({
         if (current && current.startIndex !== current.dropIndex) {
           onMoveTrackTo(trackId, current.dropIndex);
         }
+      } else {
+        onSelectTrack(trackId);
       }
       setTrackDrag(null);
     };
@@ -330,7 +333,7 @@ export function BoardCanvas({
     document.addEventListener('pointerup', onUp);
     document.body.style.cursor = 'grabbing';
     document.body.style.userSelect = 'none';
-  }, [tracks, onMoveTrackTo]);
+  }, [tracks, onMoveTrackTo, onSelectTrack]);
 
   const trackDragRef = useRef<TrackDragState | null>(null);
   useEffect(() => { trackDragRef.current = trackDrag; }, [trackDrag]);
