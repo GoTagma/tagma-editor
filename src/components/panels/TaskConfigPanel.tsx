@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react';
 import type { RawTaskConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { MiddlewareEditor } from './MiddlewareEditor';
 
 interface TaskConfigPanelProps {
   task: RawTaskConfig;
@@ -139,31 +140,60 @@ export function TaskConfigPanel({
           />
         </div>
 
-        {/* Driver */}
-        <div>
-          <label className="field-label">Driver</label>
-          <select className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)}>
-            <option value="">(inherited)</option>
-            {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-        </div>
+        {/* AI-specific fields (only for prompt mode) */}
+        {mode === 'prompt' && (
+          <>
+            {/* Driver */}
+            <div>
+              <label className="field-label">Driver</label>
+              <select className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)}>
+                <option value="">(inherited)</option>
+                {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
 
-        {/* Model Tier */}
-        <div>
-          <label className="field-label">Model Tier</label>
-          <select className="field-input" value={task.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
-            <option value="">inherited</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-          </select>
-        </div>
+            {/* Model Tier */}
+            <div>
+              <label className="field-label">Model Tier</label>
+              <select className="field-input" value={task.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
+                <option value="">inherited</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
 
-        {/* Agent Profile */}
-        <div>
-          <label className="field-label">Agent Profile</label>
-          <input type="text" className="field-input" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile} placeholder="e.g. senior" />
-        </div>
+            {/* Agent Profile */}
+            <div>
+              <label className="field-label">Agent Profile</label>
+              <textarea className="field-input min-h-[60px] resize-y font-mono text-[11px]" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile}
+                placeholder="Named profile or multi-line system prompt..." />
+            </div>
+
+            {/* Continue From */}
+            <div>
+              <label className="field-label">Continue From</label>
+              <input type="text" className="field-input font-mono text-[11px]" value={continueFrom} onChange={(e) => setContinueFrom(e.target.value)} onBlur={blurContinueFrom}
+                placeholder="taskId or trackId.taskId" />
+              <p className="text-[10px] text-tagma-muted mt-1">Session handoff from another task</p>
+            </div>
+
+            {/* Permissions */}
+            <div>
+              <label className="field-label">Permissions</label>
+              <div className="flex gap-3">
+                {(['read', 'write', 'execute'] as const).map((key) => (
+                  <label key={key} className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={!!task.permissions?.[key]}
+                      onChange={() => handlePermToggle(key)}
+                      className="accent-tagma-accent" />
+                    <span className="text-[11px] text-tagma-text capitalize">{key}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Timeout */}
         <div>
@@ -181,29 +211,6 @@ export function TaskConfigPanel({
         <div>
           <label className="field-label">Working Directory</label>
           <input type="text" className="field-input font-mono text-[11px]" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
-        </div>
-
-        {/* Continue From */}
-        <div>
-          <label className="field-label">Continue From</label>
-          <input type="text" className="field-input font-mono text-[11px]" value={continueFrom} onChange={(e) => setContinueFrom(e.target.value)} onBlur={blurContinueFrom}
-            placeholder="taskId or trackId.taskId" />
-          <p className="text-[10px] text-tagma-muted mt-1">Session handoff from another task</p>
-        </div>
-
-        {/* Permissions */}
-        <div>
-          <label className="field-label">Permissions</label>
-          <div className="flex gap-3">
-            {(['read', 'write', 'execute'] as const).map((key) => (
-              <label key={key} className="flex items-center gap-1.5 cursor-pointer">
-                <input type="checkbox" checked={!!task.permissions?.[key]}
-                  onChange={() => handlePermToggle(key)}
-                  className="accent-tagma-accent" />
-                <span className="text-[11px] text-tagma-text capitalize">{key}</span>
-              </label>
-            ))}
-          </div>
         </div>
 
         {/* Dependencies */}
@@ -247,7 +254,21 @@ export function TaskConfigPanel({
             {task.trigger?.type === 'manual' && (
               <div className="pl-3 border-l-2 border-tagma-border space-y-2">
                 <TriggerField label="Message" value={task.trigger.message} onChange={(v) => handleTriggerField('message', v)} placeholder="Approval message..." />
+                <div>
+                  <label className="text-[10px] text-tagma-muted">Options</label>
+                  <OptionsField value={task.trigger.options} onChange={(opts) => {
+                    const current = task.trigger ?? { type: 'manual' };
+                    commitField({ trigger: { ...current, options: opts && opts.length > 0 ? opts : undefined } });
+                  }} />
+                </div>
                 <TriggerField label="Timeout" value={task.trigger.timeout} onChange={(v) => handleTriggerField('timeout', v)} placeholder="e.g. 5m" />
+                <div>
+                  <label className="text-[10px] text-tagma-muted">Metadata</label>
+                  <KeyValueEditor value={task.trigger.metadata ?? {}} onChange={(meta) => {
+                    const current = task.trigger ?? { type: 'manual' };
+                    commitField({ trigger: { ...current, metadata: Object.keys(meta).length > 0 ? meta : undefined } });
+                  }} />
+                </div>
               </div>
             )}
 
@@ -321,19 +342,9 @@ export function TaskConfigPanel({
               <p className="text-[10px] text-tagma-muted mt-1">Mutually exclusive with prompt/command</p>
             </div>
 
-            {/* Middlewares (readonly display) */}
-            {task.middlewares && task.middlewares.length > 0 && (
-              <div>
-                <label className="field-label">Middlewares</label>
-                <div className="space-y-1">
-                  {task.middlewares.map((m, i) => (
-                    <div key={i} className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate">
-                      {m.type}{m.file ? ` → ${m.file}` : ''}{m.label ? ` (${m.label})` : ''}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Middlewares */}
+            <MiddlewareEditor middlewares={task.middlewares ?? []}
+              onChange={(mws) => commitField({ middlewares: mws })} />
           </>
         )}
 
