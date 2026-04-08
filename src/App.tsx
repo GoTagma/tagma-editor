@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { usePipelineStore } from './store/pipeline-store';
-import { MenuBar } from './components/MenuBar';
 import { BoardCanvas } from './components/board/BoardCanvas';
 import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
@@ -132,11 +131,9 @@ export function App() {
 
   return (
     <div className="h-full flex flex-col bg-tagma-bg">
-      <MenuBar menus={menus} />
-
       <Toolbar
         pipelineName={config.name} yamlPath={yamlPath} isDirty={isDirty} errorCount={validationErrors.length}
-        onUpdateName={setPipelineName} onRun={handleRun}
+        menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
       />
 
       {validationErrors.length > 0 && (

@@ -52,7 +52,7 @@ export function MenuBar({ menus }: MenuBarProps) {
   }, [openIdx, close]);
 
   return (
-    <div ref={barRef} className="h-7 bg-tagma-surface border-b border-tagma-border flex items-center px-1 shrink-0 relative z-[60]">
+    <div ref={barRef} className="flex items-center relative z-[60]">
       {menus.map((menu, mi) => (
         <div key={mi} className="relative">
           <button
