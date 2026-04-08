@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { X, Trash2, Terminal, MessageSquare } from 'lucide-react';
 import type { RawTaskConfig } from '../../api/client';
-import { useDebouncedField } from '../../hooks/use-debounced-field';
+import { useLocalField } from '../../hooks/use-local-field';
 
 interface TaskConfigPanelProps {
   task: RawTaskConfig;
@@ -24,12 +24,12 @@ export function TaskConfigPanel({
     onUpdateTask(trackId, task.id, patch);
   }, [trackId, task.id, onUpdateTask]);
 
-  const [name, setName] = useDebouncedField(task.name ?? '', (v) => commitField({ name: v }));
-  const [prompt, setPrompt] = useDebouncedField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
-  const [command, setCommand] = useDebouncedField(task.command ?? '', (v) => commitField({ command: v, prompt: undefined }));
-  const [driver, setDriver] = useDebouncedField(task.driver ?? '', (v) => commitField({ driver: v || undefined }));
-  const [timeout, setTimeout_] = useDebouncedField(task.timeout ?? '', (v) => commitField({ timeout: v || undefined }));
-  const [output, setOutput] = useDebouncedField(task.output ?? '', (v) => commitField({ output: v || undefined }));
+  const [name, setName, blurName] = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
+  const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
+  const [command, setCommand, blurCommand] = useLocalField(task.command ?? '', (v) => commitField({ command: v, prompt: undefined }));
+  const [driver, setDriver, blurDriver] = useLocalField(task.driver ?? '', (v) => commitField({ driver: v || undefined }));
+  const [timeout, setTimeout_, blurTimeout] = useLocalField(task.timeout ?? '', (v) => commitField({ timeout: v || undefined }));
+  const [output, setOutput, blurOutput] = useLocalField(task.output ?? '', (v) => commitField({ output: v || undefined }));
 
   const handleModelTierChange = useCallback((model_tier: string) => {
     onUpdateTask(trackId, task.id, { model_tier: model_tier || undefined });
@@ -63,7 +63,7 @@ export function TaskConfigPanel({
         {/* Name */}
         <div>
           <label className="field-label">Name</label>
-          <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Task name..." />
+          <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={blurName} placeholder="Task name..." />
         </div>
 
         {/* Mode toggle */}
@@ -88,6 +88,7 @@ export function TaskConfigPanel({
             className="field-input min-h-[120px] resize-y font-mono text-[11px]"
             value={mode === 'prompt' ? prompt : command}
             onChange={(e) => mode === 'prompt' ? setPrompt(e.target.value) : setCommand(e.target.value)}
+            onBlur={mode === 'prompt' ? blurPrompt : blurCommand}
             placeholder={mode === 'prompt' ? 'Enter the task prompt...' : 'Enter the shell command...'}
           />
         </div>
@@ -95,7 +96,7 @@ export function TaskConfigPanel({
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} placeholder="claude-code (default)" />
+          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (default)" />
         </div>
 
         {/* Model Tier */}
@@ -112,13 +113,13 @@ export function TaskConfigPanel({
         {/* Timeout */}
         <div>
           <label className="field-label">Timeout</label>
-          <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} placeholder="e.g. 5m, 30s" />
+          <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} onBlur={blurTimeout} placeholder="e.g. 5m, 30s" />
         </div>
 
         {/* Output path */}
         <div>
           <label className="field-label">Output Path</label>
-          <input type="text" className="field-input font-mono text-[11px]" value={output} onChange={(e) => setOutput(e.target.value)} placeholder="./tmp/output.md" />
+          <input type="text" className="field-input font-mono text-[11px]" value={output} onChange={(e) => setOutput(e.target.value)} onBlur={blurOutput} placeholder="./tmp/output.md" />
         </div>
 
         {/* Dependencies */}

@@ -142,12 +142,32 @@ export function App() {
       />
 
       {validationErrors.length > 0 && (
-        <div className="flex items-center gap-2 px-4 py-1.5 bg-tagma-error/5 border-b border-tagma-error/20">
-          <AlertCircle size={12} className="text-tagma-error shrink-0" />
-          <span className="text-[10px] text-tagma-error font-mono flex-1 truncate">
-            {validationErrors.length} validation {validationErrors.length === 1 ? 'error' : 'errors'}
-            {validationErrors.length <= 3 && ': ' + validationErrors.map((e) => e.message).join(' | ')}
-          </span>
+        <div className="relative group">
+          <div className="flex items-center gap-2 px-4 py-1.5 bg-tagma-error/5 border-b border-tagma-error/20 cursor-default">
+            <AlertCircle size={12} className="text-tagma-error shrink-0" />
+            <span className="text-[10px] text-tagma-error font-mono flex-1 truncate">
+              {validationErrors.length} validation {validationErrors.length === 1 ? 'error' : 'errors'}
+              {validationErrors.length <= 3 && ': ' + validationErrors.map((e) => e.message).join(' | ')}
+            </span>
+            {validationErrors.length > 3 && (
+              <span className="text-[9px] text-tagma-error/60 font-mono shrink-0">hover to expand</span>
+            )}
+          </div>
+          {validationErrors.length > 1 && (
+            <div className="absolute left-0 right-0 top-full z-[80] hidden group-hover:block">
+              <div className="mx-4 mt-0.5 bg-tagma-surface border border-tagma-error/20 shadow-panel max-h-[200px] overflow-y-auto">
+                {validationErrors.map((err, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-[10px] font-mono border-b border-tagma-border/30 last:border-b-0">
+                    <AlertCircle size={10} className="text-tagma-error shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="text-tagma-error">{err.message}</span>
+                      {err.path && <span className="text-tagma-muted ml-2">{err.path}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

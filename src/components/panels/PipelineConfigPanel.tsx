@@ -1,7 +1,6 @@
-import { useCallback } from 'react';
 import { X } from 'lucide-react';
 import type { RawPipelineConfig } from '../../api/client';
-import { useDebouncedField } from '../../hooks/use-debounced-field';
+import { useLocalField } from '../../hooks/use-local-field';
 
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
@@ -12,9 +11,9 @@ interface PipelineConfigPanelProps {
 }
 
 export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClose }: PipelineConfigPanelProps) {
-  const [name, setName] = useDebouncedField(config.name, (v) => onUpdate({ name: v }));
-  const [driver, setDriver] = useDebouncedField(config.driver ?? '', (v) => onUpdate({ driver: v || undefined }));
-  const [timeout, setTimeout_] = useDebouncedField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
+  const [name, setName, blurName] = useLocalField(config.name, (v) => onUpdate({ name: v }));
+  const [driver, setDriver, blurDriver] = useLocalField(config.driver ?? '', (v) => onUpdate({ driver: v || undefined }));
+  const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
@@ -48,18 +47,18 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClo
           {/* Name */}
           <div>
             <label className="field-label">Name</label>
-            <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Pipeline name..." />
+            <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={blurName} placeholder="Pipeline name..." />
           </div>
 
           {/* Driver & Timeout */}
           <div className="flex gap-4">
             <div className="flex-1">
               <label className="field-label">Default Driver</label>
-              <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} placeholder="claude-code (default)" />
+              <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (default)" />
             </div>
             <div className="flex-1">
               <label className="field-label">Default Timeout</label>
-              <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} placeholder="e.g. 10m, 60s" />
+              <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} onBlur={blurTimeout} placeholder="e.g. 10m, 60s" />
             </div>
           </div>
 
