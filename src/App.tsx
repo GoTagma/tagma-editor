@@ -6,8 +6,7 @@ import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
-import { Loader2 } from 'lucide-react';
-import { AlertCircle } from 'lucide-react';
+import { Loader2, AlertCircle, X as XIcon } from 'lucide-react';
 
 type ExplorerIntent = { mode: FileExplorerMode; purpose: 'open' | 'save' | 'workdir' };
 
@@ -25,6 +24,7 @@ export function App() {
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
+  const [errorDialog, setErrorDialog] = useState<{ title: string; errors: { path: string; message: string }[] } | null>(null);
 
   useEffect(() => { init(); }, []);
 
@@ -83,10 +83,10 @@ export function App() {
       return;
     }
     if (validationErrors.length > 0) {
-      alert(
-        `Cannot run: pipeline has ${validationErrors.length} error(s)\n\n` +
-        validationErrors.map((e) => `• [${e.path}] ${e.message}`).join('\n')
-      );
+      setErrorDialog({
+        title: `Cannot run: ${validationErrors.length} validation error(s)`,
+        errors: validationErrors,
+      });
       return;
     }
     if (isDirty) {
@@ -254,6 +254,38 @@ export function App() {
           onConfirm={handleExplorerConfirm}
           onCancel={() => { setExplorer(null); setPendingRun(false); }}
         />
+      )}
+
+      {/* Validation Error Dialog */}
+      {errorDialog && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setErrorDialog(null)}>
+          <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle size={14} className="text-tagma-error shrink-0" />
+                <h2 className="panel-title text-tagma-error truncate">{errorDialog.title}</h2>
+              </div>
+              <button onClick={() => setErrorDialog(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {errorDialog.errors.map((err, i) => (
+                <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
+                  <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-tagma-text">{err.message}</div>
+                    {err.path && <div className="text-[10px] font-mono text-tagma-muted mt-0.5">{err.path}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
+              <button onClick={() => setErrorDialog(null)} className="btn-primary">OK</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
