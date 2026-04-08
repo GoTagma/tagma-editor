@@ -23,10 +23,53 @@ export interface ServerState {
   workDir: string;
 }
 
+export interface HooksConfig {
+  pipeline_start?: string | string[];
+  task_start?: string | string[];
+  task_success?: string | string[];
+  task_failure?: string | string[];
+  pipeline_complete?: string | string[];
+  pipeline_error?: string | string[];
+}
+
+export interface Permissions {
+  read?: boolean;
+  write?: boolean;
+  execute?: boolean;
+}
+
+export interface MiddlewareConfig {
+  type: string;
+  file?: string;
+  label?: string;
+  [key: string]: unknown;
+}
+
+export interface TriggerConfig {
+  type: string;
+  message?: string;
+  options?: string[];
+  timeout?: string;
+  path?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CompletionConfig {
+  type: string;
+  expect?: number | number[];
+  path?: string;
+  kind?: 'file' | 'dir' | 'any';
+  min_size?: number;
+  check?: string;
+  timeout?: string;
+}
+
 export interface RawPipelineConfig {
   name: string;
   driver?: string;
   timeout?: string;
+  plugins?: string[];
+  hooks?: HooksConfig;
   tracks: RawTrackConfig[];
 }
 
@@ -35,6 +78,12 @@ export interface RawTrackConfig {
   name: string;
   color?: string;
   driver?: string;
+  model_tier?: string;
+  agent_profile?: string;
+  cwd?: string;
+  permissions?: Permissions;
+  on_failure?: 'skip_downstream' | 'stop_all' | 'ignore';
+  middlewares?: MiddlewareConfig[];
   tasks: RawTaskConfig[];
 }
 
@@ -44,12 +93,19 @@ export interface RawTaskConfig {
   prompt?: string;
   command?: string;
   depends_on?: string[];
+  continue_from?: string;
+  output?: string;
   driver?: string;
   model_tier?: string;
+  agent_profile?: string;
+  cwd?: string;
   timeout?: string;
-  output?: string;
-  permissions?: { read: boolean; write: boolean; execute: boolean };
-  continue_from?: string;
+  permissions?: Permissions;
+  middlewares?: MiddlewareConfig[];
+  trigger?: TriggerConfig;
+  completion?: CompletionConfig;
+  use?: string;
+  with?: Record<string, unknown>;
 }
 
 export interface ValidationError {

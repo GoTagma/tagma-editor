@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { X, Trash2, Terminal, MessageSquare } from 'lucide-react';
-import type { RawTaskConfig } from '../../api/client';
+import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react';
+import type { RawTaskConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 
 interface TaskConfigPanelProps {
@@ -19,6 +19,7 @@ export function TaskConfigPanel({
   onUpdateTask, onDeleteTask, onRemoveDependency, onClose,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const commitField = useCallback((patch: Partial<RawTaskConfig>) => {
     onUpdateTask(trackId, task.id, patch);
@@ -30,6 +31,10 @@ export function TaskConfigPanel({
   const [driver, setDriver, blurDriver] = useLocalField(task.driver ?? '', (v) => commitField({ driver: v || undefined }));
   const [timeout, setTimeout_, blurTimeout] = useLocalField(task.timeout ?? '', (v) => commitField({ timeout: v || undefined }));
   const [output, setOutput, blurOutput] = useLocalField(task.output ?? '', (v) => commitField({ output: v || undefined }));
+  const [agentProfile, setAgentProfile, blurAgentProfile] = useLocalField(task.agent_profile ?? '', (v) => commitField({ agent_profile: v || undefined }));
+  const [cwd, setCwd, blurCwd] = useLocalField(task.cwd ?? '', (v) => commitField({ cwd: v || undefined }));
+  const [continueFrom, setContinueFrom, blurContinueFrom] = useLocalField(task.continue_from ?? '', (v) => commitField({ continue_from: v || undefined }));
+  const [useTemplate, setUseTemplate, blurUseTemplate] = useLocalField(task.use ?? '', (v) => commitField({ use: v || undefined }));
 
   const handleModelTierChange = useCallback((model_tier: string) => {
     onUpdateTask(trackId, task.id, { model_tier: model_tier || undefined });
@@ -44,6 +49,44 @@ export function TaskConfigPanel({
     }
   }, [trackId, task, onUpdateTask]);
 
+  const handlePermToggle = useCallback((key: 'read' | 'write' | 'execute') => {
+    const current = task.permissions ?? {};
+    const next = { ...current, [key]: !current[key] };
+    if (!next.read && !next.write && !next.execute) {
+      commitField({ permissions: undefined });
+    } else {
+      commitField({ permissions: next });
+    }
+  }, [task.permissions, commitField]);
+
+  const handleTriggerTypeChange = useCallback((type: string) => {
+    if (!type) {
+      commitField({ trigger: undefined });
+    } else {
+      commitField({ trigger: { type } as TriggerConfig });
+    }
+  }, [commitField]);
+
+  const handleTriggerField = useCallback((field: string, value: string) => {
+    const current = task.trigger ?? { type: 'manual' };
+    const next = { ...current, [field]: value || undefined };
+    commitField({ trigger: next });
+  }, [task.trigger, commitField]);
+
+  const handleCompletionTypeChange = useCallback((type: string) => {
+    if (!type) {
+      commitField({ completion: undefined });
+    } else {
+      commitField({ completion: { type } as CompletionConfig });
+    }
+  }, [commitField]);
+
+  const handleCompletionField = useCallback((field: string, value: unknown) => {
+    const current = task.completion ?? { type: 'exit_code' };
+    const next = { ...current, [field]: value };
+    commitField({ completion: next });
+  }, [task.completion, commitField]);
+
   return (
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right">
       <div className="panel-header">
@@ -54,9 +97,9 @@ export function TaskConfigPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {/* ID (readonly) */}
+        {/* ID (readonly) * */}
         <div>
-          <label className="field-label">Task ID</label>
+          <label className="field-label">Task ID <span className="text-tagma-error">*</span></label>
           <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={qualifiedId}>{qualifiedId}</div>
         </div>
 
@@ -68,7 +111,7 @@ export function TaskConfigPanel({
 
         {/* Mode toggle */}
         <div>
-          <label className="field-label">Type</label>
+          <label className="field-label">Type <span className="text-[10px] text-tagma-muted font-normal">(prompt/command mutually exclusive)</span></label>
           <div className="flex gap-1">
             <button onClick={() => switchMode('prompt')}
               className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[11px] border transition-colors ${mode === 'prompt' ? 'border-tagma-accent bg-tagma-accent/10 text-tagma-accent' : 'border-tagma-border text-tagma-muted hover:text-tagma-text'}`}>
@@ -96,18 +139,24 @@ export function TaskConfigPanel({
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (default)" />
+          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (inherited)" />
         </div>
 
         {/* Model Tier */}
         <div>
           <label className="field-label">Model Tier</label>
           <select className="field-input" value={task.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
-            <option value="">medium (default)</option>
+            <option value="">inherited</option>
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
           </select>
+        </div>
+
+        {/* Agent Profile */}
+        <div>
+          <label className="field-label">Agent Profile</label>
+          <input type="text" className="field-input" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile} placeholder="e.g. senior" />
         </div>
 
         {/* Timeout */}
@@ -120,6 +169,35 @@ export function TaskConfigPanel({
         <div>
           <label className="field-label">Output Path</label>
           <input type="text" className="field-input font-mono text-[11px]" value={output} onChange={(e) => setOutput(e.target.value)} onBlur={blurOutput} placeholder="./tmp/output.md" />
+        </div>
+
+        {/* CWD */}
+        <div>
+          <label className="field-label">Working Directory</label>
+          <input type="text" className="field-input font-mono text-[11px]" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
+        </div>
+
+        {/* Continue From */}
+        <div>
+          <label className="field-label">Continue From</label>
+          <input type="text" className="field-input font-mono text-[11px]" value={continueFrom} onChange={(e) => setContinueFrom(e.target.value)} onBlur={blurContinueFrom}
+            placeholder="taskId or trackId.taskId" />
+          <p className="text-[10px] text-tagma-muted mt-1">Session handoff from another task</p>
+        </div>
+
+        {/* Permissions */}
+        <div>
+          <label className="field-label">Permissions</label>
+          <div className="flex gap-3">
+            {(['read', 'write', 'execute'] as const).map((key) => (
+              <label key={key} className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={!!task.permissions?.[key]}
+                  onChange={() => handlePermToggle(key)}
+                  className="accent-tagma-accent" />
+                <span className="text-[11px] text-tagma-text capitalize">{key}</span>
+              </label>
+            ))}
+          </div>
         </div>
 
         {/* Dependencies */}
@@ -139,14 +217,118 @@ export function TaskConfigPanel({
           </div>
         )}
 
-        {/* Permissions */}
-        {task.permissions && (
-          <div>
-            <label className="field-label">Permissions</label>
-            <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5">
-              R:{task.permissions.read ? '✓' : '✗'} W:{task.permissions.write ? '✓' : '✗'} X:{task.permissions.execute ? '✓' : '✗'}
+        {/* ── Advanced Section ── */}
+        <div className="border-t border-tagma-border pt-2">
+          <button onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-1 text-[11px] text-tagma-muted hover:text-tagma-text transition-colors w-full">
+            {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            Advanced
+          </button>
+        </div>
+
+        {showAdvanced && (
+          <>
+            {/* Trigger */}
+            <div>
+              <label className="field-label">Trigger</label>
+              <select className="field-input" value={task.trigger?.type ?? ''} onChange={(e) => handleTriggerTypeChange(e.target.value)}>
+                <option value="">none</option>
+                <option value="manual">manual (approval gate)</option>
+                <option value="file">file (file watcher)</option>
+              </select>
             </div>
-          </div>
+
+            {task.trigger?.type === 'manual' && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <TriggerField label="Message" value={task.trigger.message} onChange={(v) => handleTriggerField('message', v)} placeholder="Approval message..." />
+                <TriggerField label="Timeout" value={task.trigger.timeout} onChange={(v) => handleTriggerField('timeout', v)} placeholder="e.g. 5m" />
+              </div>
+            )}
+
+            {task.trigger?.type === 'file' && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <TriggerField label="Path *" value={task.trigger.path} onChange={(v) => handleTriggerField('path', v)} placeholder="./path/to/watch" />
+                <TriggerField label="Timeout" value={task.trigger.timeout} onChange={(v) => handleTriggerField('timeout', v)} placeholder="e.g. 5m" />
+              </div>
+            )}
+
+            {/* Completion */}
+            <div>
+              <label className="field-label">Completion Check</label>
+              <select className="field-input" value={task.completion?.type ?? ''} onChange={(e) => handleCompletionTypeChange(e.target.value)}>
+                <option value="">none</option>
+                <option value="exit_code">exit_code</option>
+                <option value="file_exists">file_exists</option>
+                <option value="output_check">output_check</option>
+              </select>
+            </div>
+
+            {task.completion?.type === 'exit_code' && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <div>
+                  <label className="text-[10px] text-tagma-muted">Expected Code</label>
+                  <input type="text" className="field-input font-mono text-[11px]"
+                    value={task.completion.expect !== undefined ? String(task.completion.expect) : ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      handleCompletionField('expect', v ? (v.includes(',') ? v.split(',').map(Number) : Number(v)) : undefined);
+                    }}
+                    placeholder="0 (default)" />
+                </div>
+              </div>
+            )}
+
+            {task.completion?.type === 'file_exists' && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <TriggerField label="Path *" value={task.completion.path} onChange={(v) => handleCompletionField('path', v)} placeholder="./path/to/check" />
+                <div>
+                  <label className="text-[10px] text-tagma-muted">Kind</label>
+                  <select className="field-input" value={task.completion.kind ?? ''} onChange={(e) => handleCompletionField('kind', e.target.value || undefined)}>
+                    <option value="">any (default)</option>
+                    <option value="file">file</option>
+                    <option value="dir">dir</option>
+                    <option value="any">any</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-tagma-muted">Min Size (bytes)</label>
+                  <input type="number" className="field-input font-mono text-[11px]"
+                    value={task.completion.min_size ?? ''}
+                    onChange={(e) => handleCompletionField('min_size', e.target.value ? Number(e.target.value) : undefined)}
+                    placeholder="optional" />
+                </div>
+              </div>
+            )}
+
+            {task.completion?.type === 'output_check' && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <TriggerField label="Check Command *" value={task.completion.check} onChange={(v) => handleCompletionField('check', v)} placeholder="shell command (exit 0 = pass)" />
+                <TriggerField label="Timeout" value={task.completion.timeout} onChange={(v) => handleCompletionField('timeout', v)} placeholder="30s (default)" />
+              </div>
+            )}
+
+            {/* Use Template */}
+            <div>
+              <label className="field-label">Template (use)</label>
+              <input type="text" className="field-input font-mono text-[11px]" value={useTemplate} onChange={(e) => setUseTemplate(e.target.value)} onBlur={blurUseTemplate}
+                placeholder='e.g. @tagma/template-lint' />
+              <p className="text-[10px] text-tagma-muted mt-1">Mutually exclusive with prompt/command</p>
+            </div>
+
+            {/* Middlewares (readonly display) */}
+            {task.middlewares && task.middlewares.length > 0 && (
+              <div>
+                <label className="field-label">Middlewares</label>
+                <div className="space-y-1">
+                  {task.middlewares.map((m, i) => (
+                    <div key={i} className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate">
+                      {m.type}{m.file ? ` → ${m.file}` : ''}{m.label ? ` (${m.label})` : ''}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* Delete */}
@@ -157,6 +339,22 @@ export function TaskConfigPanel({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Reusable small text field for trigger/completion sub-fields */
+function TriggerField({ label, value, onChange, placeholder }: {
+  label: string;
+  value: string | undefined;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [val, setVal, blurVal] = useLocalField(value ?? '', onChange);
+  return (
+    <div>
+      <label className="text-[10px] text-tagma-muted">{label}</label>
+      <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
     </div>
   );
 }

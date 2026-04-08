@@ -56,11 +56,13 @@ app.get('/api/state', (_req, res) => {
 
 // ── Pipeline name ──
 app.patch('/api/pipeline', (req, res) => {
-  const { name, driver, timeout } = req.body;
+  const { name, driver, timeout, plugins, hooks } = req.body;
   const patch: Partial<RawPipelineConfig> = {};
   if (name !== undefined) patch.name = name;
   if (driver !== undefined) patch.driver = driver || undefined;
   if (timeout !== undefined) patch.timeout = timeout || undefined;
+  if (plugins !== undefined) patch.plugins = Array.isArray(plugins) && plugins.length > 0 ? plugins : undefined;
+  if (hooks !== undefined) patch.hooks = hooks && Object.keys(hooks).length > 0 ? hooks : undefined;
   config = { ...config, ...patch };
   res.json(getState());
 });
