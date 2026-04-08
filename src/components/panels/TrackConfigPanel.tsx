@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
 import { X, Trash2 } from 'lucide-react';
-import type { RawTrackConfig } from '../../api/client';
+import type { RawTrackConfig, MiddlewareConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { MiddlewareEditor } from './MiddlewareEditor';
 
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
@@ -98,7 +99,8 @@ export function TrackConfigPanel({ track, drivers, onUpdateTrack, onDeleteTrack,
         {/* Agent Profile */}
         <div>
           <label className="field-label">Agent Profile</label>
-          <input type="text" className="field-input" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile} placeholder="e.g. senior" />
+          <textarea className="field-input min-h-[60px] resize-y font-mono text-[11px]" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile}
+            placeholder="Named profile or multi-line system prompt..." />
         </div>
 
         {/* CWD */}
@@ -143,19 +145,9 @@ export function TrackConfigPanel({ track, drivers, onUpdateTrack, onDeleteTrack,
           <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5">{track.tasks.length} task{track.tasks.length !== 1 ? 's' : ''}</div>
         </div>
 
-        {/* Middlewares (readonly display) */}
-        {track.middlewares && track.middlewares.length > 0 && (
-          <div>
-            <label className="field-label">Middlewares</label>
-            <div className="space-y-1">
-              {track.middlewares.map((m, i) => (
-                <div key={i} className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate">
-                  {m.type}{m.file ? ` → ${m.file}` : ''}{m.label ? ` (${m.label})` : ''}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Middlewares */}
+        <MiddlewareEditor middlewares={track.middlewares ?? []}
+          onChange={(mws) => commit({ middlewares: mws })} />
 
         {/* Delete */}
         <div className="pt-4 border-t border-tagma-border">

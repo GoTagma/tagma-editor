@@ -342,6 +342,16 @@ export function TaskConfigPanel({
               <p className="text-[10px] text-tagma-muted mt-1">Mutually exclusive with prompt/command</p>
             </div>
 
+            {/* Template with parameters */}
+            {task.use && (
+              <div>
+                <label className="field-label">Template Parameters (with)</label>
+                <KeyValueEditor value={(task.with ?? {}) as Record<string, unknown>} onChange={(params) => {
+                  commitField({ with: Object.keys(params).length > 0 ? params : undefined });
+                }} />
+              </div>
+            )}
+
             {/* Middlewares */}
             <MiddlewareEditor middlewares={task.middlewares ?? []}
               onChange={(mws) => commitField({ middlewares: mws })} />
@@ -372,6 +382,74 @@ function TriggerField({ label, value, onChange, placeholder }: {
     <div>
       <label className="text-[10px] text-tagma-muted">{label}</label>
       <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
+    </div>
+  );
+}
+
+/** Comma-separated string[] editor for trigger options */
+function OptionsField({ value, onChange }: {
+  value: string[] | undefined;
+  onChange: (opts: string[] | undefined) => void;
+}) {
+  const [val, setVal, blurVal] = useLocalField(
+    (value ?? []).join(', '),
+    (v) => onChange(v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined),
+  );
+  return (
+    <div>
+      <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal}
+        placeholder="approve, reject" />
+      <p className="text-[10px] text-tagma-muted mt-0.5">Comma-separated choices</p>
+    </div>
+  );
+}
+
+/** Key-value pair editor for metadata / template with params */
+function KeyValueEditor({ value, onChange }: {
+  value: Record<string, unknown>;
+  onChange: (kv: Record<string, unknown>) => void;
+}) {
+  const entries = Object.entries(value);
+
+  const handleAdd = () => {
+    const key = `key${entries.length + 1}`;
+    onChange({ ...value, [key]: '' });
+  };
+
+  const handleRemove = (key: string) => {
+    const { [key]: _, ...rest } = value;
+    onChange(rest);
+  };
+
+  const handleKeyChange = (oldKey: string, newKey: string) => {
+    if (newKey === oldKey) return;
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of entries) {
+      result[k === oldKey ? newKey : k] = v;
+    }
+    onChange(result);
+  };
+
+  const handleValueChange = (key: string, newValue: string) => {
+    onChange({ ...value, [key]: newValue });
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([k, v]) => (
+        <div key={k} className="flex items-center gap-1">
+          <input type="text" className="field-input font-mono text-[11px] w-[90px]" value={k}
+            onChange={(e) => handleKeyChange(k, e.target.value)} placeholder="key" />
+          <input type="text" className="field-input font-mono text-[11px] flex-1" value={String(v ?? '')}
+            onChange={(e) => handleValueChange(k, e.target.value)} placeholder="value" />
+          <button onClick={() => handleRemove(k)} className="text-tagma-muted hover:text-tagma-error transition-colors shrink-0">
+            <X size={10} />
+          </button>
+        </div>
+      ))}
+      <button onClick={handleAdd} className="text-[10px] text-tagma-accent hover:text-tagma-text transition-colors">
+        + Add entry
+      </button>
     </div>
   );
 }
