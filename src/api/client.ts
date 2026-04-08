@@ -74,6 +74,37 @@ export interface FsListResult {
   entries: FsEntry[];
 }
 
+// ── Run types ──
+
+export type TaskStatus = 'idle' | 'waiting' | 'running' | 'success' | 'failed' | 'timeout' | 'skipped' | 'blocked';
+
+export interface RunTaskState {
+  taskId: string;
+  trackId: string;
+  taskName: string;
+  status: TaskStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface RunState {
+  runId: string | null;
+  status: 'idle' | 'starting' | 'running' | 'done' | 'aborted' | 'error';
+  tasks: RunTaskState[];
+  error: string | null;
+}
+
+export type RunEvent =
+  | { type: 'run_start'; runId: string; tasks: RunTaskState[] }
+  | { type: 'task_update'; taskId: string; status: TaskStatus; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | { type: 'run_end'; success: boolean }
+  | { type: 'run_error'; error: string }
+  | { type: 'log'; line: string };
+
 export const api = {
   getState: () => request<ServerState>('/state'),
 
@@ -143,4 +174,24 @@ export const api = {
 
   newPipeline: (name?: string) =>
     request<ServerState>('/new', { method: 'POST', body: JSON.stringify({ name }) }),
+
+  startRun: () =>
+    request<{ ok: boolean }>('/run/start', { method: 'POST' }),
+
+  abortRun: () =>
+    request<{ ok: boolean }>('/run/abort', { method: 'POST' }),
+
+  subscribeRunEvents: (onEvent: (event: RunEvent) => void): (() => void) => {
+    const es = new EventSource(`${BASE}/run/events`);
+    es.addEventListener('run_event', (e) => {
+      try {
+        const event: RunEvent = JSON.parse(e.data);
+        onEvent(event);
+      } catch {}
+    });
+    es.onerror = () => {
+      // EventSource auto-reconnects
+    };
+    return () => es.close();
+  },
 };

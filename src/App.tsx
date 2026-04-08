@@ -7,6 +7,8 @@ import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
+import { RunView } from './components/run/RunView';
+import { useRunStore } from './store/run-store';
 
 type ExplorerIntent = { mode: FileExplorerMode; purpose: 'open' | 'save' | 'workdir' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
@@ -22,6 +24,8 @@ export function App() {
     setWorkDir, openFile, saveFile, saveFileAs,
     exportYaml, importYaml, init, clearError,
   } = usePipelineStore();
+
+  const { active: runActive, startRun, reset: resetRun } = useRunStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
@@ -102,17 +106,9 @@ export function App() {
     if (isDirty) {
       await saveFile();
     }
-    const yaml = await exportYaml();
-    console.log(yaml);
-    setDialog({
-      type: 'success',
-      title: 'Pipeline is ready to run',
-      details: [
-        `File: ${yamlPath}`,
-        'Run with: tagma run ' + yamlPath,
-      ],
-    });
-  }, [workDir, yamlPath, validationErrors, isDirty, saveFile, exportYaml]);
+    // Switch to run mode and start execution
+    startRun(config);
+  }, [workDir, yamlPath, validationErrors, isDirty, saveFile, config]);
 
   // After save completes and yamlPath is set, auto-trigger run
   useEffect(() => {
@@ -174,6 +170,52 @@ export function App() {
           <span className="text-xs font-mono">Loading...</span>
         </div>
       </div>
+    );
+  }
+
+  // Run mode
+  if (runActive) {
+    return (
+      <>
+        <RunView
+          config={config}
+          dagEdges={dagEdges}
+          positions={positions}
+          onBack={resetRun}
+        />
+        {/* Dialog overlay (shared) */}
+        {dialog && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDialog(null)}>
+            <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
+              onClick={(e) => e.stopPropagation()}>
+              <div className="panel-header">
+                <div className="flex items-center gap-2 min-w-0">
+                  {dialog.type === 'error'
+                    ? <AlertCircle size={14} className="text-tagma-error shrink-0" />
+                    : <CheckCircle2 size={14} className="text-tagma-success shrink-0" />}
+                  <h2 className={`panel-title truncate ${dialog.type === 'error' ? 'text-tagma-error' : 'text-tagma-success'}`}>{dialog.title}</h2>
+                </div>
+                <button onClick={() => setDialog(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+                  <XIcon size={14} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {dialog.details.map((detail, i) => (
+                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
+                    {dialog.type === 'error'
+                      ? <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
+                      : <CheckCircle2 size={11} className="text-tagma-success shrink-0 mt-0.5" />}
+                    <div className="text-[11px] text-tagma-text font-mono min-w-0 break-words">{detail}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
+                <button onClick={() => setDialog(null)} className="btn-primary">OK</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 

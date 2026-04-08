@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
-import { resolve, dirname, basename, sep } from 'path';
-import { execSync } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { resolve, dirname, basename, sep, join } from 'path';
+import { execSync, spawn, type ChildProcess } from 'child_process';
+import { tmpdir } from 'os';
 import yaml from 'js-yaml';
 import {
   createEmptyPipeline,
@@ -369,6 +370,154 @@ app.post('/api/demo', (_req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ═══ Pipeline Run ═══
+
+type RunEvent =
+  | { type: 'run_start'; runId: string; tasks: { taskId: string; trackId: string; taskName: string; status: string; startedAt: null; finishedAt: null; durationMs: null; exitCode: null; stdout: string; stderr: string }[] }
+  | { type: 'task_update'; taskId: string; status: string; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | { type: 'run_end'; success: boolean }
+  | { type: 'run_error'; error: string }
+  | { type: 'log'; line: string };
+
+let runProcess: ChildProcess | null = null;
+const sseClients = new Set<import('express').Response>();
+
+function broadcast(event: RunEvent) {
+  const data = JSON.stringify(event);
+  for (const client of sseClients) {
+    client.write(`event: run_event\ndata: ${data}\n\n`);
+  }
+}
+
+app.get('/api/run/events', (_req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write('\n');
+  sseClients.add(res);
+  _req.on('close', () => sseClients.delete(res));
+});
+
+app.post('/api/run/start', (_req, res) => {
+  if (runProcess) {
+    return res.status(409).json({ error: 'A run is already in progress' });
+  }
+
+  // Save current config to a temp YAML file
+  const content = serializePipeline(config);
+  const tmpDir = mkdtempSync(join(tmpdir(), 'tagma-run-'));
+  const tmpYaml = join(tmpDir, 'pipeline.yaml');
+  writeFileSync(tmpYaml, content, 'utf-8');
+
+  // Build initial task list from current config
+  const initialTasks = config.tracks.flatMap((track) =>
+    track.tasks.map((task) => ({
+      taskId: `${track.id}.${task.id}`,
+      trackId: track.id,
+      taskName: task.name || task.id,
+      status: 'waiting' as const,
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      exitCode: null,
+      stdout: '',
+      stderr: '',
+    }))
+  );
+
+  // Determine the CLI path
+  const cliPath = resolve(import.meta.dirname ?? '.', '../../tagma-cli/src/index.ts');
+  const cwd = workDir || process.cwd();
+
+  // Spawn bun with the CLI
+  const child = spawn('bun', ['run', cliPath, tmpYaml, '--cwd', cwd], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  runProcess = child;
+
+  // Generate a run ID
+  const runId = `run_${Date.now().toString(36)}`;
+
+  broadcast({ type: 'run_start', runId, tasks: initialTasks });
+
+  // Track task states from stdout parsing
+  const taskStdout = new Map<string, string>();
+  const taskStartTimes = new Map<string, string>();
+
+  child.stdout?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString();
+    for (const line of text.split('\n').filter(Boolean)) {
+      broadcast({ type: 'log', line });
+
+      // Parse engine output for task status changes
+      // Format: [task:<qualifiedId>] running: ...
+      const taskMatch = line.match(/\[task:([^\]]+)\]\s+(.*)/);
+      if (taskMatch) {
+        const [, taskId, msg] = taskMatch;
+        if (msg.startsWith('running')) {
+          const now = new Date().toISOString();
+          taskStartTimes.set(taskId, now);
+          broadcast({ type: 'task_update', taskId, status: 'running', startedAt: now });
+        } else if (msg.startsWith('success')) {
+          const durMatch = msg.match(/\((\d+\.?\d*)s\)/);
+          const durationMs = durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined;
+          broadcast({ type: 'task_update', taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
+        } else if (msg.match(/^(failed|timeout)/)) {
+          const exitMatch = msg.match(/exit=(-?\d+)/);
+          const durMatch = msg.match(/duration=(\d+\.?\d*)s/);
+          broadcast({
+            type: 'task_update', taskId,
+            status: msg.startsWith('timeout') ? 'timeout' : 'failed',
+            finishedAt: new Date().toISOString(),
+            exitCode: exitMatch ? parseInt(exitMatch[1]) : -1,
+            durationMs: durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined,
+          });
+        } else if (msg.startsWith('skipped')) {
+          broadcast({ type: 'task_update', taskId, status: 'skipped', finishedAt: new Date().toISOString() });
+        } else if (msg.startsWith('blocked')) {
+          broadcast({ type: 'task_update', taskId, status: 'blocked', finishedAt: new Date().toISOString() });
+        }
+      }
+    }
+  });
+
+  child.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString();
+    for (const line of text.split('\n').filter(Boolean)) {
+      broadcast({ type: 'log', line });
+    }
+  });
+
+  child.on('close', (code) => {
+    broadcast({ type: 'run_end', success: code === 0 });
+    runProcess = null;
+    // Clean up temp files
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
+
+  child.on('error', (err) => {
+    broadcast({ type: 'run_error', error: err.message });
+    runProcess = null;
+  });
+
+  res.json({ ok: true, runId });
+});
+
+app.post('/api/run/abort', (_req, res) => {
+  if (!runProcess) {
+    return res.status(404).json({ error: 'No run in progress' });
+  }
+  runProcess.kill('SIGTERM');
+  runProcess = null;
+  broadcast({ type: 'run_end', success: false });
+  res.json({ ok: true });
 });
 
 const PORT = parseInt(process.env.PORT ?? '3001');
