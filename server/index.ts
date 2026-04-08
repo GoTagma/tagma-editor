@@ -190,14 +190,18 @@ app.patch('/api/workspace', (req, res) => {
 
 // ── Filesystem browsing ──
 app.get('/api/fs/list', (req, res) => {
-  const dirPath = resolve((req.query.path as string) || workDir);
+  let dirPath = resolve((req.query.path as string) || workDir);
   try {
     if (!existsSync(dirPath)) {
-      return res.status(404).json({ error: `Directory not found: ${dirPath}` });
+      // If path doesn't exist, try its parent (e.g. when path is a new file)
+      dirPath = dirname(dirPath);
+      if (!existsSync(dirPath)) {
+        return res.status(404).json({ error: `Directory not found: ${dirPath}` });
+      }
     }
-    const stat = statSync(dirPath);
-    if (!stat.isDirectory()) {
-      return res.status(400).json({ error: 'Path is not a directory' });
+    if (!statSync(dirPath).isDirectory()) {
+      // If path is a file, list its parent directory
+      dirPath = dirname(dirPath);
     }
     const entries = readdirSync(dirPath, { withFileTypes: true })
       .filter((e) => !e.name.startsWith('.'))

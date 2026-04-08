@@ -94,22 +94,26 @@ export function App() {
     alert('Pipeline is valid! Run it with the Tagma CLI:\n\ntagma run ' + (yamlPath ?? 'pipeline.yaml'));
   }, [workDir, yamlPath, validationErrors, isDirty, saveFile, exportYaml]);
 
+  // After save completes and yamlPath is set, auto-trigger run
+  useEffect(() => {
+    if (pendingRun && yamlPath) {
+      setPendingRun(false);
+      handleRun();
+    }
+  }, [pendingRun, yamlPath, handleRun]);
+
   const handleExplorerConfirm = useCallback(async (path: string) => {
     if (!explorer) return;
     if (explorer.purpose === 'open') {
       openFile(path);
     } else if (explorer.purpose === 'save') {
       await saveFileAs(path);
-      if (pendingRun) {
-        setPendingRun(false);
-        // Re-trigger run after save completes (yamlPath is now set)
-        setTimeout(() => handleRun(), 0);
-      }
+      // pendingRun stays true; useEffect above will trigger handleRun once yamlPath updates
     } else if (explorer.purpose === 'workdir') {
       setWorkDir(path);
     }
     setExplorer(null);
-  }, [explorer, pendingRun, openFile, saveFileAs, setWorkDir, handleRun]);
+  }, [explorer, openFile, saveFileAs, setWorkDir]);
 
   const menus = useMemo(() => [
     {
