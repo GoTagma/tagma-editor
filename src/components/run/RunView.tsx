@@ -40,7 +40,7 @@ function countByStatus(tasks: Map<string, { status: TaskStatus }>) {
 }
 
 export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
-  const { status, tasks, logs, error, selectedTaskId, selectTask, abortRun } = useRunStore();
+  const { status, tasks, error, selectedTaskId, selectTask, abortRun } = useRunStore();
 
   const isTerminal = status === 'done' || status === 'aborted' || status === 'error';
 
@@ -234,14 +234,6 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
         )}
       </div>
 
-      {/* Log footer */}
-      {logs.length > 0 && (
-        <div className="h-24 bg-tagma-surface border-t border-tagma-border overflow-auto px-3 py-2">
-          {logs.slice(-50).map((line, i) => (
-            <div key={i} className="text-[10px] font-mono text-tagma-muted leading-relaxed">{line}</div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
