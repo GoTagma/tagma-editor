@@ -177,7 +177,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     saveFile: async () => {
       try {
-        const state = await api.saveFile();
+        const { yamlPath: currentPath } = _get();
+        const state = await api.saveFile(currentPath ?? undefined);
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {

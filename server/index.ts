@@ -287,11 +287,13 @@ app.post('/api/open', (req, res) => {
   }
 });
 
-app.post('/api/save', (_req, res) => {
-  if (!yamlPath) return res.status(400).json({ error: 'No file path set. Use save-as.' });
+app.post('/api/save', (req, res) => {
+  const savePath = req.body?.path || yamlPath;
+  if (!savePath) return res.status(400).json({ error: 'No file path set. Use save-as.' });
   try {
-    const yaml = serializePipeline(config);
-    writeFileSync(yamlPath, yaml, 'utf-8');
+    const content = serializePipeline(config);
+    writeFileSync(savePath, content, 'utf-8');
+    yamlPath = savePath;
     res.json(getState());
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to save file' });

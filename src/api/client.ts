@@ -135,8 +135,8 @@ export const api = {
   openFile: (path: string) =>
     request<ServerState>('/open', { method: 'POST', body: JSON.stringify({ path }) }),
 
-  saveFile: () =>
-    request<ServerState>('/save', { method: 'POST' }),
+  saveFile: (path?: string) =>
+    request<ServerState>('/save', { method: 'POST', body: JSON.stringify({ path }) }),
 
   saveFileAs: (path: string) =>
     request<ServerState>('/save-as', { method: 'POST', body: JSON.stringify({ path }) }),
