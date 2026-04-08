@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
 import {
   createEmptyPipeline,
   upsertTrack,
@@ -24,6 +26,8 @@ app.use(express.json({ limit: '5mb' }));
 
 // ── In-memory state ──
 let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
+let yamlPath: string | null = null;
+let workDir: string = process.cwd();
 
 function getState() {
   let validationErrors: ValidationError[] = [];
@@ -37,6 +41,8 @@ function getState() {
     config,
     validationErrors,
     dag: { nodes: dagNodes, edges: dag.edges },
+    yamlPath,
+    workDir,
   };
 }
 
@@ -161,6 +167,67 @@ app.post('/api/import', (req, res) => {
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Invalid YAML' });
   }
+});
+
+// ── Workspace ──
+app.get('/api/workspace', (_req, res) => {
+  res.json({ yamlPath, workDir });
+});
+
+app.patch('/api/workspace', (req, res) => {
+  const { workDir: wd } = req.body;
+  if (wd !== undefined) workDir = resolve(wd);
+  res.json(getState());
+});
+
+// ── File operations ──
+app.post('/api/open', (req, res) => {
+  const { path: filePath } = req.body;
+  if (!filePath) return res.status(400).json({ error: 'path is required' });
+  const absPath = resolve(filePath);
+  try {
+    if (!existsSync(absPath)) {
+      return res.status(404).json({ error: `File not found: ${absPath}` });
+    }
+    const content = readFileSync(absPath, 'utf-8');
+    config = parseYaml(content);
+    yamlPath = absPath;
+    res.json(getState());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message ?? 'Failed to open file' });
+  }
+});
+
+app.post('/api/save', (_req, res) => {
+  if (!yamlPath) return res.status(400).json({ error: 'No file path set. Use save-as.' });
+  try {
+    const yaml = serializePipeline(config);
+    writeFileSync(yamlPath, yaml, 'utf-8');
+    res.json(getState());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to save file' });
+  }
+});
+
+app.post('/api/save-as', (req, res) => {
+  const { path: filePath } = req.body;
+  if (!filePath) return res.status(400).json({ error: 'path is required' });
+  const absPath = resolve(filePath);
+  try {
+    const yaml = serializePipeline(config);
+    writeFileSync(absPath, yaml, 'utf-8');
+    yamlPath = absPath;
+    res.json(getState());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to save file' });
+  }
+});
+
+app.post('/api/new', (req, res) => {
+  const { name } = req.body;
+  config = createEmptyPipeline(name || 'Untitled Pipeline');
+  yamlPath = null;
+  res.json(getState());
 });
 
 // ── Load demo ──

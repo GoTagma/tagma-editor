@@ -19,6 +19,8 @@ export interface ServerState {
   config: RawPipelineConfig;
   validationErrors: ValidationError[];
   dag: { nodes: Record<string, any>; edges: DagEdge[] };
+  yamlPath: string | null;
+  workDir: string;
 }
 
 export interface RawPipelineConfig {
@@ -102,4 +104,19 @@ export const api = {
     request<ServerState>('/import', { method: 'POST', body: JSON.stringify({ yaml }) }),
 
   loadDemo: () => request<ServerState>('/demo', { method: 'POST' }),
+
+  setWorkDir: (workDir: string) =>
+    request<ServerState>('/workspace', { method: 'PATCH', body: JSON.stringify({ workDir }) }),
+
+  openFile: (path: string) =>
+    request<ServerState>('/open', { method: 'POST', body: JSON.stringify({ path }) }),
+
+  saveFile: () =>
+    request<ServerState>('/save', { method: 'POST' }),
+
+  saveFileAs: (path: string) =>
+    request<ServerState>('/save-as', { method: 'POST', body: JSON.stringify({ path }) }),
+
+  newPipeline: (name?: string) =>
+    request<ServerState>('/new', { method: 'POST', body: JSON.stringify({ name }) }),
 };

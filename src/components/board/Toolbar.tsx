@@ -6,18 +6,20 @@ import {
 
 interface ToolbarProps {
   pipelineName: string;
+  yamlPath: string | null;
   isDirty: boolean;
   errorCount: number;
   onUpdateName: (name: string) => void;
   onExportYaml: () => void;
   onImportYaml: () => void;
+  onSave: () => void;
   onRun: () => void;
   onOpenSettings: () => void;
 }
 
 export function Toolbar({
-  pipelineName, isDirty, errorCount,
-  onUpdateName, onExportYaml, onImportYaml, onRun, onOpenSettings,
+  pipelineName, yamlPath, isDirty, errorCount,
+  onUpdateName, onExportYaml, onImportYaml, onSave, onRun, onOpenSettings,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -74,6 +76,13 @@ export function Toolbar({
       </div>
 
       <div className="flex-1" />
+
+      {yamlPath && (
+        <button onClick={onSave} className="btn-ghost" title={`Save to ${yamlPath}`}>
+          <Save size={13} />
+          <span className="hidden sm:inline">Save</span>
+        </button>
+      )}
 
       <button onClick={onImportYaml} className="btn-ghost">
         <Upload size={13} />

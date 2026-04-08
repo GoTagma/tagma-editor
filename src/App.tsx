@@ -9,11 +9,13 @@ import { AlertCircle, FileCode2, Loader2 } from 'lucide-react';
 
 export function App() {
   const {
-    config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges, isDirty, loading,
+    config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges,
+    yamlPath, workDir, isDirty, loading,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition,
+    setWorkDir, openFile, saveFile, saveFileAs,
     exportYaml, importYaml, init,
   } = usePipelineStore();
 
@@ -103,9 +105,9 @@ export function App() {
   return (
     <div className="h-full flex flex-col bg-tagma-bg">
       <Toolbar
-        pipelineName={config.name} isDirty={isDirty} errorCount={validationErrors.length}
+        pipelineName={config.name} yamlPath={yamlPath} isDirty={isDirty} errorCount={validationErrors.length}
         onUpdateName={setPipelineName} onExportYaml={handleExportYaml}
-        onImportYaml={handleImportYaml} onRun={handleRun}
+        onImportYaml={handleImportYaml} onSave={saveFile} onRun={handleRun}
         onOpenSettings={() => { setShowPipelineSettings(true); selectTask(null); selectTrack(null); }}
       />
 
@@ -157,7 +159,13 @@ export function App() {
         {showPipelineSettings && !selectedInfo && !selectedTrack && (
           <PipelineConfigPanel
             config={config}
+            yamlPath={yamlPath}
+            workDir={workDir}
             onUpdate={updatePipelineFields}
+            onSetWorkDir={setWorkDir}
+            onOpenFile={openFile}
+            onSaveFile={saveFile}
+            onSaveFileAs={saveFileAs}
             onClose={() => setShowPipelineSettings(false)}
           />
         )}

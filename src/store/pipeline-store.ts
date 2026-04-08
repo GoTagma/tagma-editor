@@ -11,6 +11,8 @@ interface PipelineState {
   selectedTrackId: string | null;
   validationErrors: ValidationError[];
   dagEdges: DagEdge[];
+  yamlPath: string | null;
+  workDir: string;
   isDirty: boolean;
   loading: boolean;
 
@@ -32,6 +34,11 @@ interface PipelineState {
   selectTask: (qualifiedId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
   setTaskPosition: (qualifiedId: string, x: number) => void;
+  setWorkDir: (workDir: string) => void;
+  openFile: (path: string) => Promise<void>;
+  saveFile: () => Promise<void>;
+  saveFileAs: (path: string) => Promise<void>;
+  newPipeline: (name?: string) => void;
   exportYaml: () => Promise<string>;
   importYaml: (yaml: string) => Promise<void>;
   loadDemo: () => Promise<void>;
@@ -47,6 +54,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       config: state.config,
       validationErrors: state.validationErrors,
       dagEdges: state.dag.edges,
+      yamlPath: state.yamlPath,
+      workDir: state.workDir,
       isDirty: true,
       loading: false,
     });
@@ -63,6 +72,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     selectedTrackId: null,
     validationErrors: [],
     dagEdges: [],
+    yamlPath: null,
+    workDir: '',
     isDirty: false,
     loading: true,
 
@@ -70,18 +81,12 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     init: async () => {
       try {
-        const state = await api.loadDemo();
+        const state = await api.getState();
         applyState(state);
         set({ isDirty: false });
-      } catch {
-        try {
-          const state = await api.getState();
-          applyState(state);
-          set({ isDirty: false });
-        } catch (e) {
-          console.error('Failed to init:', e);
-          set({ loading: false });
-        }
+      } catch (e) {
+        console.error('Failed to init:', e);
+        set({ loading: false });
       }
     },
 
@@ -155,6 +160,44 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         positions.set(qualifiedId, { x });
         return { positions };
       });
+    },
+
+    setWorkDir: (wd) => fire(() => api.setWorkDir(wd)),
+
+    openFile: async (path) => {
+      try {
+        const state = await api.openFile(path);
+        set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
+        applyState(state);
+        set({ isDirty: false });
+      } catch (e: any) {
+        alert('Failed to open: ' + (e.message ?? e));
+      }
+    },
+
+    saveFile: async () => {
+      try {
+        const state = await api.saveFile();
+        applyState(state);
+        set({ isDirty: false });
+      } catch (e: any) {
+        alert('Failed to save: ' + (e.message ?? e));
+      }
+    },
+
+    saveFileAs: async (path) => {
+      try {
+        const state = await api.saveFileAs(path);
+        applyState(state);
+        set({ isDirty: false });
+      } catch (e: any) {
+        alert('Failed to save: ' + (e.message ?? e));
+      }
+    },
+
+    newPipeline: (name) => {
+      set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
+      fire(() => api.newPipeline(name));
     },
 
     exportYaml: () => api.exportYaml(),
