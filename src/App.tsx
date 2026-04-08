@@ -83,8 +83,10 @@ export function App() {
       return;
     }
     if (validationErrors.length > 0) {
-      alert(`Pipeline has ${validationErrors.length} validation error(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}`);
-      return;
+      const proceed = confirm(
+        `Pipeline has ${validationErrors.length} validation warning(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}\n\nContinue anyway?`
+      );
+      if (!proceed) return;
     }
     if (isDirty) {
       await saveFile();
