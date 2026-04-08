@@ -70,6 +70,11 @@ export function App() {
   }, [selectedTrackId, config]);
 
   const handleRun = useCallback(async () => {
+    if (!workDir) {
+      const ok = confirm('Workspace directory is not set. Please configure it before running.\n\nOpen workspace selector now?');
+      if (ok) setExplorer({ mode: 'directory', purpose: 'workdir' });
+      return;
+    }
     if (validationErrors.length > 0) {
       alert(`Pipeline has ${validationErrors.length} validation error(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}`);
       return;
@@ -77,7 +82,7 @@ export function App() {
     const yaml = await exportYaml();
     console.log(yaml);
     alert('Pipeline is valid! Export the YAML and run it with the Tagma CLI:\n\ntagma run pipeline.yaml');
-  }, [validationErrors, exportYaml]);
+  }, [workDir, validationErrors, exportYaml]);
 
   const handleExplorerConfirm = useCallback((path: string) => {
     if (!explorer) return;
