@@ -5,6 +5,7 @@ import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
+import { FileExplorer } from './components/FileExplorer';
 import { AlertCircle, FileCode2, Loader2 } from 'lucide-react';
 
 export function App() {
@@ -22,9 +23,26 @@ export function App() {
   const [showYaml, setShowYaml] = useState(false);
   const [yamlText, setYamlText] = useState('');
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showSaveExplorer, setShowSaveExplorer] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { init(); }, []);
+
+  // Ctrl+S handler
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        if (yamlPath) {
+          saveFile();
+        } else {
+          setShowSaveExplorer(true);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [yamlPath, saveFile]);
 
   const invalidTaskIds = useMemo(() => {
     const set = new Set<string>();
@@ -107,7 +125,9 @@ export function App() {
       <Toolbar
         pipelineName={config.name} yamlPath={yamlPath} isDirty={isDirty} errorCount={validationErrors.length}
         onUpdateName={setPipelineName} onExportYaml={handleExportYaml}
-        onImportYaml={handleImportYaml} onSave={saveFile} onRun={handleRun}
+        onImportYaml={handleImportYaml}
+        onSave={() => yamlPath ? saveFile() : setShowSaveExplorer(true)}
+        onRun={handleRun}
         onOpenSettings={() => { setShowPipelineSettings(true); selectTask(null); selectTrack(null); }}
       />
 
@@ -172,6 +192,17 @@ export function App() {
       </div>
 
       <input ref={fileInputRef} type="file" accept=".yaml,.yml" className="hidden" onChange={handleFileChange} />
+
+      {showSaveExplorer && (
+        <FileExplorer
+          mode="save"
+          title="Save Pipeline As"
+          initialPath={yamlPath ?? (workDir || undefined)}
+          fileFilter={['.yaml', '.yml']}
+          onConfirm={(path) => { saveFileAs(path); setShowSaveExplorer(false); }}
+          onCancel={() => setShowSaveExplorer(false)}
+        />
+      )}
 
       {showYaml && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowYaml(false)}>

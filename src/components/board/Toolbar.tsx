@@ -77,12 +77,10 @@ export function Toolbar({
 
       <div className="flex-1" />
 
-      {yamlPath && (
-        <button onClick={onSave} className="btn-ghost" title={`Save to ${yamlPath}`}>
-          <Save size={13} />
-          <span className="hidden sm:inline">Save</span>
-        </button>
-      )}
+      <button onClick={onSave} className="btn-ghost" title={yamlPath ? `Save to ${yamlPath}` : 'Save As...'}>
+        <Save size={13} />
+        <span className="hidden sm:inline">Save</span>
+      </button>
 
       <button onClick={onImportYaml} className="btn-ghost">
         <Upload size={13} />

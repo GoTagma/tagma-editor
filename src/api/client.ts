@@ -62,6 +62,18 @@ export interface DagEdge {
   to: string;
 }
 
+export interface FsEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+}
+
+export interface FsListResult {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+
 export const api = {
   getState: () => request<ServerState>('/state'),
 
@@ -104,6 +116,12 @@ export const api = {
     request<ServerState>('/import', { method: 'POST', body: JSON.stringify({ yaml }) }),
 
   loadDemo: () => request<ServerState>('/demo', { method: 'POST' }),
+
+  listDir: (path?: string) =>
+    request<FsListResult>(`/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
+  listRoots: () =>
+    request<{ roots: string[] }>('/fs/roots'),
 
   setWorkDir: (workDir: string) =>
     request<ServerState>('/workspace', { method: 'PATCH', body: JSON.stringify({ workDir }) }),

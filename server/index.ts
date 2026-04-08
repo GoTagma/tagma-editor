@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { resolve, dirname, basename, sep } from 'path';
 import {
   createEmptyPipeline,
   upsertTrack,
@@ -178,6 +178,49 @@ app.patch('/api/workspace', (req, res) => {
   const { workDir: wd } = req.body;
   if (wd !== undefined) workDir = resolve(wd);
   res.json(getState());
+});
+
+// ── Filesystem browsing ──
+app.get('/api/fs/list', (req, res) => {
+  const dirPath = resolve((req.query.path as string) || workDir);
+  try {
+    if (!existsSync(dirPath)) {
+      return res.status(404).json({ error: `Directory not found: ${dirPath}` });
+    }
+    const stat = statSync(dirPath);
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ error: 'Path is not a directory' });
+    }
+    const entries = readdirSync(dirPath, { withFileTypes: true })
+      .filter((e) => !e.name.startsWith('.'))
+      .map((e) => ({
+        name: e.name,
+        path: resolve(dirPath, e.name),
+        type: e.isDirectory() ? 'directory' as const : 'file' as const,
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    const parent = dirname(dirPath);
+    res.json({ path: dirPath, parent: parent !== dirPath ? parent : null, entries });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to list directory' });
+  }
+});
+
+app.get('/api/fs/roots', (_req, res) => {
+  // On Windows, list drive letters; on Unix, just "/"
+  if (process.platform === 'win32') {
+    const drives: string[] = [];
+    for (let c = 65; c <= 90; c++) {
+      const drive = String.fromCharCode(c) + ':\\';
+      try { if (existsSync(drive)) drives.push(drive); } catch {}
+    }
+    res.json({ roots: drives });
+  } else {
+    res.json({ roots: ['/'] });
+  }
 });
 
 // ── File operations ──
