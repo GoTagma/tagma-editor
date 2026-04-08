@@ -1,8 +1,5 @@
 import { useState, useCallback } from 'react';
-import {
-  Check, X, Pencil, Save, Download, Upload, Play,
-  LayoutGrid, AlertTriangle, Settings,
-} from 'lucide-react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle } from 'lucide-react';
 
 interface ToolbarProps {
   pipelineName: string;
@@ -10,16 +7,12 @@ interface ToolbarProps {
   isDirty: boolean;
   errorCount: number;
   onUpdateName: (name: string) => void;
-  onExportYaml: () => void;
-  onImportYaml: () => void;
-  onSave: () => void;
   onRun: () => void;
-  onOpenSettings: () => void;
 }
 
 export function Toolbar({
   pipelineName, yamlPath, isDirty, errorCount,
-  onUpdateName, onExportYaml, onImportYaml, onSave, onRun, onOpenSettings,
+  onUpdateName, onRun,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -34,6 +27,8 @@ export function Toolbar({
     setEditName(pipelineName);
     setIsEditing(false);
   }, [pipelineName]);
+
+  const fileName = yamlPath ? yamlPath.replace(/^.*[\\/]/, '') : null;
 
   return (
     <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-3 gap-2 shrink-0">
@@ -65,6 +60,12 @@ export function Toolbar({
         </button>
       )}
 
+      {fileName && (
+        <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[160px]" title={yamlPath!}>
+          {fileName}
+        </span>
+      )}
+
       <div className="flex items-center gap-1.5 text-[10px] font-mono text-tagma-muted ml-1 shrink-0">
         {isDirty && <span className="text-tagma-warning">modified</span>}
         {errorCount > 0 && (
@@ -76,27 +77,6 @@ export function Toolbar({
       </div>
 
       <div className="flex-1" />
-
-      <button onClick={onSave} className="btn-ghost" title={yamlPath ? `Save to ${yamlPath}` : 'Save As...'}>
-        <Save size={13} />
-        <span className="hidden sm:inline">Save</span>
-      </button>
-
-      <button onClick={onImportYaml} className="btn-ghost">
-        <Upload size={13} />
-        <span className="hidden sm:inline">Import</span>
-      </button>
-
-      <button onClick={onExportYaml} className="btn-ghost">
-        <Download size={13} />
-        <span className="hidden sm:inline">Export</span>
-      </button>
-
-      <button onClick={onOpenSettings} className="btn-ghost" title="Pipeline Settings">
-        <Settings size={13} />
-      </button>
-
-      <div className="w-px h-5 bg-tagma-border" />
 
       <button onClick={onRun} className="btn-primary group">
         <Play size={12} className="group-hover:scale-110 transition-transform" />

@@ -1,12 +1,16 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { usePipelineStore } from './store/pipeline-store';
+import { MenuBar } from './components/MenuBar';
 import { BoardCanvas } from './components/board/BoardCanvas';
 import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
-import { FileExplorer } from './components/FileExplorer';
-import { AlertCircle, FileCode2, Loader2 } from 'lucide-react';
+import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
+import { Loader2 } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+
+type ExplorerIntent = { mode: FileExplorerMode; purpose: 'open' | 'save' | 'workdir' };
 
 export function App() {
   const {
@@ -20,24 +24,18 @@ export function App() {
     exportYaml, importYaml, init,
   } = usePipelineStore();
 
-  const [showYaml, setShowYaml] = useState(false);
-  const [yamlText, setYamlText] = useState('');
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
-  const [showSaveExplorer, setShowSaveExplorer] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
 
   useEffect(() => { init(); }, []);
 
-  // Ctrl+S handler
+  // Ctrl+S
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        if (yamlPath) {
-          saveFile();
-        } else {
-          setShowSaveExplorer(true);
-        }
+        if (yamlPath) saveFile();
+        else setExplorer({ mode: 'save', purpose: 'save' });
       }
     };
     window.addEventListener('keydown', handler);
@@ -72,33 +70,6 @@ export function App() {
     return config.tracks.find((t) => t.id === selectedTrackId) ?? null;
   }, [selectedTrackId, config]);
 
-  const handleExportYaml = useCallback(async () => {
-    const yaml = await exportYaml();
-    setYamlText(yaml);
-    setShowYaml(true);
-  }, [exportYaml]);
-
-  const handleImportYaml = useCallback(() => { fileInputRef.current?.click(); }, []);
-
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => { importYaml(ev.target?.result as string); };
-    reader.readAsText(file);
-    e.target.value = '';
-  }, [importYaml]);
-
-  const handleDownloadYaml = useCallback(() => {
-    const blob = new Blob([yamlText], { type: 'text/yaml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${config.name.replace(/\s+/g, '-').toLowerCase()}.yaml`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [yamlText, config.name]);
-
   const handleRun = useCallback(async () => {
     if (validationErrors.length > 0) {
       alert(`Pipeline has ${validationErrors.length} validation error(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}`);
@@ -108,6 +79,45 @@ export function App() {
     console.log(yaml);
     alert('Pipeline is valid! Export the YAML and run it with the Tagma CLI:\n\ntagma run pipeline.yaml');
   }, [validationErrors, exportYaml]);
+
+  const handleExplorerConfirm = useCallback((path: string) => {
+    if (!explorer) return;
+    if (explorer.purpose === 'open') openFile(path);
+    else if (explorer.purpose === 'save') saveFileAs(path);
+    else if (explorer.purpose === 'workdir') setWorkDir(path);
+    setExplorer(null);
+  }, [explorer, openFile, saveFileAs, setWorkDir]);
+
+  const menus = useMemo(() => [
+    {
+      label: 'File',
+      items: [
+        { label: 'Open YAML...', shortcut: 'Ctrl+O', onAction: () => setExplorer({ mode: 'open', purpose: 'open' }) },
+        { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
+        { separator: true as const },
+        { label: 'Save', shortcut: 'Ctrl+S', onAction: () => yamlPath ? saveFile() : setExplorer({ mode: 'save', purpose: 'save' }) },
+        { label: 'Save As...', onAction: () => setExplorer({ mode: 'save', purpose: 'save' }) },
+      ],
+    },
+    {
+      label: 'Settings',
+      items: [
+        { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
+      ],
+    },
+  ], [yamlPath, saveFile]);
+
+  // Ctrl+O
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        e.preventDefault();
+        setExplorer({ mode: 'open', purpose: 'open' });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   if (loading) {
     return (
@@ -122,13 +132,11 @@ export function App() {
 
   return (
     <div className="h-full flex flex-col bg-tagma-bg">
+      <MenuBar menus={menus} />
+
       <Toolbar
         pipelineName={config.name} yamlPath={yamlPath} isDirty={isDirty} errorCount={validationErrors.length}
-        onUpdateName={setPipelineName} onExportYaml={handleExportYaml}
-        onImportYaml={handleImportYaml}
-        onSave={() => yamlPath ? saveFile() : setShowSaveExplorer(true)}
-        onRun={handleRun}
-        onOpenSettings={() => { setShowPipelineSettings(true); selectTask(null); selectTrack(null); }}
+        onUpdateName={setPipelineName} onRun={handleRun}
       />
 
       {validationErrors.length > 0 && (
@@ -146,8 +154,8 @@ export function App() {
           <BoardCanvas
             config={config} dagEdges={dagEdges} positions={positions}
             selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
-            onSelectTask={(id) => { selectTask(id); setShowPipelineSettings(false); }}
-            onSelectTrack={(id) => { selectTrack(id); setShowPipelineSettings(false); }}
+            onSelectTask={selectTask}
+            onSelectTrack={selectTrack}
             onAddTask={addTask} onAddTrack={addTrack}
             onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}
             onRenameTrack={renameTrack} onMoveTrackTo={moveTrackTo}
@@ -166,7 +174,7 @@ export function App() {
           />
         )}
 
-        {selectedTrack && !showPipelineSettings && (
+        {selectedTrack && (
           <TrackConfigPanel
             key={selectedTrackId}
             track={selectedTrack}
@@ -175,54 +183,29 @@ export function App() {
             onClose={() => selectTrack(null)}
           />
         )}
-
-        {showPipelineSettings && !selectedInfo && !selectedTrack && (
-          <PipelineConfigPanel
-            config={config}
-            yamlPath={yamlPath}
-            workDir={workDir}
-            onUpdate={updatePipelineFields}
-            onSetWorkDir={setWorkDir}
-            onOpenFile={openFile}
-            onSaveFile={saveFile}
-            onSaveFileAs={saveFileAs}
-            onClose={() => setShowPipelineSettings(false)}
-          />
-        )}
       </div>
 
-      <input ref={fileInputRef} type="file" accept=".yaml,.yml" className="hidden" onChange={handleFileChange} />
-
-      {showSaveExplorer && (
-        <FileExplorer
-          mode="save"
-          title="Save Pipeline As"
-          initialPath={yamlPath ?? (workDir || undefined)}
-          fileFilter={['.yaml', '.yml']}
-          onConfirm={(path) => { saveFileAs(path); setShowSaveExplorer(false); }}
-          onCancel={() => setShowSaveExplorer(false)}
+      {/* Pipeline Settings modal */}
+      {showPipelineSettings && (
+        <PipelineConfigPanel
+          config={config}
+          yamlPath={yamlPath}
+          workDir={workDir}
+          onUpdate={updatePipelineFields}
+          onClose={() => setShowPipelineSettings(false)}
         />
       )}
 
-      {showYaml && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowYaml(false)}>
-          <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[600px] max-h-[80vh] flex flex-col animate-fade-in" onClick={(e) => e.stopPropagation()}>
-            <div className="panel-header">
-              <div className="flex items-center gap-2">
-                <FileCode2 size={14} className="text-tagma-accent" />
-                <h2 className="panel-title">Pipeline YAML</h2>
-              </div>
-              <button onClick={() => setShowYaml(false)} className="p-1 text-tagma-muted hover:text-tagma-text"><span className="text-xs">✕</span></button>
-            </div>
-            <div className="flex-1 overflow-auto p-4">
-              <pre className="text-[11px] font-mono text-tagma-text whitespace-pre-wrap">{yamlText}</pre>
-            </div>
-            <div className="flex items-center gap-2 px-4 py-3 border-t border-tagma-border">
-              <button onClick={() => { navigator.clipboard.writeText(yamlText); }} className="btn-ghost">Copy</button>
-              <button onClick={handleDownloadYaml} className="btn-primary">Download .yaml</button>
-            </div>
-          </div>
-        </div>
+      {/* File Explorer modal */}
+      {explorer && (
+        <FileExplorer
+          mode={explorer.mode}
+          title={explorer.purpose === 'open' ? 'Open Pipeline YAML' : explorer.purpose === 'save' ? 'Save Pipeline As' : 'Select Workspace Directory'}
+          initialPath={explorer.purpose === 'workdir' ? workDir : (yamlPath ?? (workDir || undefined))}
+          fileFilter={explorer.purpose !== 'workdir' ? ['.yaml', '.yml'] : undefined}
+          onConfirm={handleExplorerConfirm}
+          onCancel={() => setExplorer(null)}
+        />
       )}
     </div>
   );
