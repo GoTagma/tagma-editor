@@ -35,7 +35,7 @@ export function TrackConfigPanel({ track, onUpdateTrack, onDeleteTrack, onClose 
         {/* ID (readonly) */}
         <div>
           <label className="field-label">Track ID</label>
-          <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5">{track.id}</div>
+          <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={track.id}>{track.id}</div>
         </div>
 
         {/* Name */}

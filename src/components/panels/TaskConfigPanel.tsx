@@ -69,7 +69,7 @@ export function TaskConfigPanel({
         {/* ID (readonly) */}
         <div>
           <label className="field-label">Task ID</label>
-          <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5">{qualifiedId}</div>
+          <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={qualifiedId}>{qualifiedId}</div>
         </div>
 
         {/* Name */}

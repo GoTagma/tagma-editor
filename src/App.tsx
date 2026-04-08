@@ -137,7 +137,7 @@ export function App() {
   return (
     <div className="h-full flex flex-col bg-tagma-bg">
       <Toolbar
-        pipelineName={config.name} yamlPath={yamlPath} isDirty={isDirty} errorCount={validationErrors.length}
+        pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
         menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
       />
 

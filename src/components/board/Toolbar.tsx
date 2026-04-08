@@ -1,10 +1,11 @@
-import { useState, useCallback, useMemo } from 'react';
-import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen } from 'lucide-react';
 import { MenuBar } from '../MenuBar';
 
 interface ToolbarProps {
   pipelineName: string;
   yamlPath: string | null;
+  workDir: string;
   isDirty: boolean;
   errorCount: number;
   menus: { label: string; items: any[] }[];
@@ -13,7 +14,7 @@ interface ToolbarProps {
 }
 
 export function Toolbar({
-  pipelineName, yamlPath, isDirty, errorCount, menus,
+  pipelineName, yamlPath, workDir, isDirty, errorCount, menus,
   onUpdateName, onRun,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -33,21 +34,21 @@ export function Toolbar({
   const fileName = yamlPath ? yamlPath.replace(/^.*[\\/]/, '') : null;
 
   return (
-    <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-1 gap-1 shrink-0">
+    <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-1 gap-1 shrink-0 overflow-hidden">
       {/* Left: Logo + Menus */}
-      <div className="flex items-center gap-0.5 mr-1">
+      <div className="flex items-center gap-0.5 shrink-0">
         <div className="px-2 flex items-center">
           <LayoutGrid size={13} className="text-tagma-accent" />
         </div>
         <MenuBar menus={menus} />
       </div>
 
-      <div className="w-px h-5 bg-tagma-border" />
+      <div className="w-px h-5 bg-tagma-border shrink-0" />
 
-      {/* Center: Pipeline name */}
-      <div className="flex items-center gap-1.5 min-w-0 px-2">
+      {/* Pipeline name */}
+      <div className="flex items-center gap-1.5 min-w-0 px-2 shrink">
         {isEditing ? (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <input
               type="text" value={editName}
               onChange={(e) => setEditName(e.target.value)}
@@ -63,21 +64,22 @@ export function Toolbar({
             onClick={() => { setEditName(pipelineName); setIsEditing(true); }}
             className="flex items-center gap-1.5 text-sm font-medium text-tagma-text hover:text-white transition-colors group min-w-0"
           >
-            <span className="truncate">{pipelineName}</span>
-            <Pencil size={10} className="text-tagma-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+            <span className="truncate max-w-[160px]">{pipelineName}</span>
+            <Pencil size={10} className="text-tagma-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
           </button>
         )}
 
         {fileName && (
-          <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[160px]" title={yamlPath!}>
+          <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[120px] shrink" title={yamlPath!}>
             {fileName}
           </span>
         )}
 
+        {/* Status badges */}
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-tagma-muted shrink-0">
           {isDirty && <span className="text-tagma-warning">modified</span>}
           {errorCount > 0 && (
-            <span className="flex items-center gap-1 text-tagma-error">
+            <span className="flex items-center gap-1 text-tagma-error whitespace-nowrap">
               <AlertTriangle size={10} />
               {errorCount} {errorCount === 1 ? 'error' : 'errors'}
             </span>
@@ -85,10 +87,21 @@ export function Toolbar({
         </div>
       </div>
 
-      <div className="flex-1" />
+      <div className="flex-1 min-w-0" />
 
-      {/* Right: Run */}
-      <button onClick={onRun} className="btn-primary group mr-1">
+      {/* Workspace path */}
+      {workDir && (
+        <>
+          <div className="flex items-center gap-1 min-w-0 shrink" title={workDir}>
+            <FolderOpen size={11} className="text-tagma-muted shrink-0" />
+            <span className="text-[10px] font-mono text-tagma-muted truncate max-w-[200px]">{workDir}</span>
+          </div>
+          <div className="w-px h-5 bg-tagma-border shrink-0" />
+        </>
+      )}
+
+      {/* Run */}
+      <button onClick={onRun} className="btn-primary group mr-1 shrink-0">
         <Play size={12} className="group-hover:scale-110 transition-transform" />
         <span>Run</span>
       </button>
