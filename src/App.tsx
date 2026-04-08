@@ -83,10 +83,11 @@ export function App() {
       return;
     }
     if (validationErrors.length > 0) {
-      const proceed = confirm(
-        `Pipeline has ${validationErrors.length} validation warning(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}\n\nContinue anyway?`
+      alert(
+        `Cannot run: pipeline has ${validationErrors.length} error(s)\n\n` +
+        validationErrors.map((e) => `• [${e.path}] ${e.message}`).join('\n')
       );
-      if (!proceed) return;
+      return;
     }
     if (isDirty) {
       await saveFile();
