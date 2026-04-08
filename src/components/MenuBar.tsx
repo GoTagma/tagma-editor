@@ -35,20 +35,51 @@ export function MenuBar({ menus }: MenuBarProps) {
 
   useEffect(() => {
     if (openIdx === null) return;
-    const handler = (e: MouseEvent) => {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) close();
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [openIdx, close]);
 
-  useEffect(() => {
-    if (openIdx === null) return;
-    const handler = (e: KeyboardEvent) => {
+    const isInside = (target: Node) =>
+      barRef.current !== null && barRef.current.contains(target);
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (!isInside(e.target as Node)) close();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (!isInside(e.target as Node)) close();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && isInside(e.target)) return;
+      close();
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.target instanceof Node && isInside(e.target)) return;
+      close();
+    };
+    const onDrag = (e: DragEvent) => {
+      if (e.target instanceof Node && isInside(e.target)) return;
+      close();
+    };
+
+    document.addEventListener('mousedown', onMouseDown, true);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('scroll', onScroll, true);
+    document.addEventListener('wheel', onWheel, true);
+    document.addEventListener('dragstart', onDrag, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('blur', close);
+
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown, true);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('scroll', onScroll, true);
+      document.removeEventListener('wheel', onWheel, true);
+      document.removeEventListener('dragstart', onDrag, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('blur', close);
+    };
   }, [openIdx, close]);
 
   return (
