@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { X } from 'lucide-react';
 import type { RawPipelineConfig } from '../../api/client';
+import { useDebouncedField } from '../../hooks/use-debounced-field';
 
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
@@ -11,17 +12,9 @@ interface PipelineConfigPanelProps {
 }
 
 export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClose }: PipelineConfigPanelProps) {
-  const handleNameChange = useCallback((name: string) => {
-    onUpdate({ name });
-  }, [onUpdate]);
-
-  const handleDriverChange = useCallback((driver: string) => {
-    onUpdate({ driver: driver || undefined });
-  }, [onUpdate]);
-
-  const handleTimeoutChange = useCallback((timeout: string) => {
-    onUpdate({ timeout: timeout || undefined });
-  }, [onUpdate]);
+  const [name, setName] = useDebouncedField(config.name, (v) => onUpdate({ name: v }));
+  const [driver, setDriver] = useDebouncedField(config.driver ?? '', (v) => onUpdate({ driver: v || undefined }));
+  const [timeout, setTimeout_] = useDebouncedField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
@@ -55,18 +48,18 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClo
           {/* Name */}
           <div>
             <label className="field-label">Name</label>
-            <input type="text" className="field-input" value={config.name} onChange={(e) => handleNameChange(e.target.value)} placeholder="Pipeline name..." />
+            <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Pipeline name..." />
           </div>
 
           {/* Driver & Timeout */}
           <div className="flex gap-4">
             <div className="flex-1">
               <label className="field-label">Default Driver</label>
-              <input type="text" className="field-input" value={config.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)} placeholder="claude-code (default)" />
+              <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} placeholder="claude-code (default)" />
             </div>
             <div className="flex-1">
               <label className="field-label">Default Timeout</label>
-              <input type="text" className="field-input" value={config.timeout ?? ''} onChange={(e) => handleTimeoutChange(e.target.value)} placeholder="e.g. 10m, 60s" />
+              <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} placeholder="e.g. 10m, 60s" />
             </div>
           </div>
 

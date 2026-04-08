@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { X, Trash2 } from 'lucide-react';
 import type { RawTrackConfig } from '../../api/client';
+import { useDebouncedField } from '../../hooks/use-debounced-field';
 
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
@@ -10,17 +11,13 @@ interface TrackConfigPanelProps {
 }
 
 export function TrackConfigPanel({ track, onUpdateTrack, onDeleteTrack, onClose }: TrackConfigPanelProps) {
-  const handleNameChange = useCallback((name: string) => {
-    onUpdateTrack(track.id, { name });
+  const commit = useCallback((fields: Record<string, unknown>) => {
+    onUpdateTrack(track.id, fields);
   }, [track.id, onUpdateTrack]);
 
-  const handleDriverChange = useCallback((driver: string) => {
-    onUpdateTrack(track.id, { driver: driver || undefined });
-  }, [track.id, onUpdateTrack]);
-
-  const handleColorChange = useCallback((color: string) => {
-    onUpdateTrack(track.id, { color: color || undefined });
-  }, [track.id, onUpdateTrack]);
+  const [name, setName] = useDebouncedField(track.name ?? '', (v) => commit({ name: v }));
+  const [driver, setDriver] = useDebouncedField(track.driver ?? '', (v) => commit({ driver: v || undefined }));
+  const [color, setColor] = useDebouncedField(track.color ?? '', (v) => commit({ color: v || undefined }));
 
   return (
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right">
@@ -41,23 +38,23 @@ export function TrackConfigPanel({ track, onUpdateTrack, onDeleteTrack, onClose 
         {/* Name */}
         <div>
           <label className="field-label">Name</label>
-          <input type="text" className="field-input" value={track.name ?? ''} onChange={(e) => handleNameChange(e.target.value)} placeholder="Track name..." />
+          <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Track name..." />
         </div>
 
         {/* Color */}
         <div>
           <label className="field-label">Color</label>
           <div className="flex items-center gap-2">
-            <input type="color" value={track.color || '#d4845a'} onChange={(e) => handleColorChange(e.target.value)}
+            <input type="color" value={color || '#d4845a'} onChange={(e) => setColor(e.target.value)}
               className="w-8 h-8 border border-tagma-border bg-tagma-bg cursor-pointer p-0.5" />
-            <input type="text" className="field-input flex-1" value={track.color ?? ''} onChange={(e) => handleColorChange(e.target.value)} placeholder="#hex or empty" />
+            <input type="text" className="field-input flex-1" value={color} onChange={(e) => setColor(e.target.value)} placeholder="#hex or empty" />
           </div>
         </div>
 
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={track.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)} placeholder="claude-code (default)" />
+          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} placeholder="claude-code (default)" />
         </div>
 
         {/* Task count (readonly) */}

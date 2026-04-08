@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { X, Trash2, Terminal, MessageSquare } from 'lucide-react';
 import type { RawTaskConfig } from '../../api/client';
+import { useDebouncedField } from '../../hooks/use-debounced-field';
 
 interface TaskConfigPanelProps {
   task: RawTaskConfig;
@@ -19,32 +20,19 @@ export function TaskConfigPanel({
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
 
-  const handleNameChange = useCallback((name: string) => {
-    onUpdateTask(trackId, task.id, { name });
+  const commitField = useCallback((patch: Partial<RawTaskConfig>) => {
+    onUpdateTask(trackId, task.id, patch);
   }, [trackId, task.id, onUpdateTask]);
 
-  const handlePromptChange = useCallback((prompt: string) => {
-    onUpdateTask(trackId, task.id, { prompt, command: undefined });
-  }, [trackId, task.id, onUpdateTask]);
-
-  const handleCommandChange = useCallback((command: string) => {
-    onUpdateTask(trackId, task.id, { command, prompt: undefined });
-  }, [trackId, task.id, onUpdateTask]);
-
-  const handleDriverChange = useCallback((driver: string) => {
-    onUpdateTask(trackId, task.id, { driver: driver || undefined });
-  }, [trackId, task.id, onUpdateTask]);
+  const [name, setName] = useDebouncedField(task.name ?? '', (v) => commitField({ name: v }));
+  const [prompt, setPrompt] = useDebouncedField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
+  const [command, setCommand] = useDebouncedField(task.command ?? '', (v) => commitField({ command: v, prompt: undefined }));
+  const [driver, setDriver] = useDebouncedField(task.driver ?? '', (v) => commitField({ driver: v || undefined }));
+  const [timeout, setTimeout_] = useDebouncedField(task.timeout ?? '', (v) => commitField({ timeout: v || undefined }));
+  const [output, setOutput] = useDebouncedField(task.output ?? '', (v) => commitField({ output: v || undefined }));
 
   const handleModelTierChange = useCallback((model_tier: string) => {
     onUpdateTask(trackId, task.id, { model_tier: model_tier || undefined });
-  }, [trackId, task.id, onUpdateTask]);
-
-  const handleTimeoutChange = useCallback((timeout: string) => {
-    onUpdateTask(trackId, task.id, { timeout: timeout || undefined });
-  }, [trackId, task.id, onUpdateTask]);
-
-  const handleOutputChange = useCallback((output: string) => {
-    onUpdateTask(trackId, task.id, { output: output || undefined });
   }, [trackId, task.id, onUpdateTask]);
 
   const switchMode = useCallback((newMode: 'prompt' | 'command') => {
@@ -75,7 +63,7 @@ export function TaskConfigPanel({
         {/* Name */}
         <div>
           <label className="field-label">Name</label>
-          <input type="text" className="field-input" value={task.name ?? ''} onChange={(e) => handleNameChange(e.target.value)} placeholder="Task name..." />
+          <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Task name..." />
         </div>
 
         {/* Mode toggle */}
@@ -98,8 +86,8 @@ export function TaskConfigPanel({
           <label className="field-label">{mode === 'prompt' ? 'Prompt' : 'Command'}</label>
           <textarea
             className="field-input min-h-[120px] resize-y font-mono text-[11px]"
-            value={mode === 'prompt' ? (task.prompt ?? '') : (task.command ?? '')}
-            onChange={(e) => mode === 'prompt' ? handlePromptChange(e.target.value) : handleCommandChange(e.target.value)}
+            value={mode === 'prompt' ? prompt : command}
+            onChange={(e) => mode === 'prompt' ? setPrompt(e.target.value) : setCommand(e.target.value)}
             placeholder={mode === 'prompt' ? 'Enter the task prompt...' : 'Enter the shell command...'}
           />
         </div>
@@ -107,7 +95,7 @@ export function TaskConfigPanel({
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)} placeholder="claude-code (default)" />
+          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} placeholder="claude-code (default)" />
         </div>
 
         {/* Model Tier */}
@@ -124,13 +112,13 @@ export function TaskConfigPanel({
         {/* Timeout */}
         <div>
           <label className="field-label">Timeout</label>
-          <input type="text" className="field-input" value={task.timeout ?? ''} onChange={(e) => handleTimeoutChange(e.target.value)} placeholder="e.g. 5m, 30s" />
+          <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} placeholder="e.g. 5m, 30s" />
         </div>
 
         {/* Output path */}
         <div>
           <label className="field-label">Output Path</label>
-          <input type="text" className="field-input font-mono text-[11px]" value={task.output ?? ''} onChange={(e) => handleOutputChange(e.target.value)} placeholder="./tmp/output.md" />
+          <input type="text" className="field-input font-mono text-[11px]" value={output} onChange={(e) => setOutput(e.target.value)} placeholder="./tmp/output.md" />
         </div>
 
         {/* Dependencies */}
