@@ -9,10 +9,10 @@ import type { TaskPosition } from '../../store/pipeline-store';
 // Reuse same layout constants as BoardCanvas
 const HEADER_W = 200;
 const TASK_W = 160;
-const TASK_H = 36;
+const TASK_H = 46;
 const TASK_GAP = 24;
 const PAD_LEFT = 20;
-const TRACK_H = 56;
+const TRACK_H = 64;
 const CANVAS_PAD_RIGHT = 300;
 
 interface RunViewProps {
@@ -236,6 +236,7 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
                     key={ft.qid}
                     task={ft.task}
                     status={taskStatus}
+                    durationMs={taskState?.durationMs ?? null}
                     x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
                     isSelected={selectedTaskId === ft.qid}
                     onClick={(taskId) => { selectTask(`${ft.trackId}.${taskId}`); }}

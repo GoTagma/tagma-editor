@@ -447,51 +447,47 @@ app.post('/api/run/start', (_req, res) => {
 
   broadcast({ type: 'run_start', runId, tasks: initialTasks });
 
-  // Track task states from stdout parsing
-  const taskStdout = new Map<string, string>();
-  const taskStartTimes = new Map<string, string>();
+  function parseLine(line: string) {
+    // Engine log format: "HH:MM:SS.mmm [task:<qid>] <message>"
+    // info goes to stdout, error goes to stderr (with "ERROR: " prefix in msg)
+    const taskMatch = line.match(/\[task:([^\]]+)\]\s+(.*)/);
+    if (!taskMatch) return;
+    const [, taskId, rawMsg] = taskMatch;
+    // Strip "ERROR: " prefix from stderr lines
+    const msg = rawMsg.replace(/^ERROR:\s*/, '');
+
+    if (msg.startsWith('running')) {
+      broadcast({ type: 'task_update', taskId, status: 'running', startedAt: new Date().toISOString() });
+    } else if (msg.startsWith('success')) {
+      const durMatch = msg.match(/\((\d+\.?\d*)s\)/);
+      const durationMs = durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined;
+      broadcast({ type: 'task_update', taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
+    } else if (msg.match(/^(failed|timeout)/)) {
+      const exitMatch = msg.match(/exit=(-?\d+)/);
+      const durMatch = msg.match(/duration=(\d+\.?\d*)s/);
+      broadcast({
+        type: 'task_update', taskId,
+        status: msg.startsWith('timeout') ? 'timeout' : 'failed',
+        finishedAt: new Date().toISOString(),
+        exitCode: exitMatch ? parseInt(exitMatch[1]) : -1,
+        durationMs: durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined,
+      });
+    } else if (msg.startsWith('skipped')) {
+      broadcast({ type: 'task_update', taskId, status: 'skipped', finishedAt: new Date().toISOString() });
+    } else if (msg.startsWith('blocked')) {
+      broadcast({ type: 'task_update', taskId, status: 'blocked', finishedAt: new Date().toISOString() });
+    }
+  }
 
   child.stdout?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
-    for (const line of text.split('\n').filter(Boolean)) {
-      broadcast({ type: 'log', line });
-
-      // Parse engine output for task status changes
-      // Format: [task:<qualifiedId>] running: ...
-      const taskMatch = line.match(/\[task:([^\]]+)\]\s+(.*)/);
-      if (taskMatch) {
-        const [, taskId, msg] = taskMatch;
-        if (msg.startsWith('running')) {
-          const now = new Date().toISOString();
-          taskStartTimes.set(taskId, now);
-          broadcast({ type: 'task_update', taskId, status: 'running', startedAt: now });
-        } else if (msg.startsWith('success')) {
-          const durMatch = msg.match(/\((\d+\.?\d*)s\)/);
-          const durationMs = durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined;
-          broadcast({ type: 'task_update', taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
-        } else if (msg.match(/^(failed|timeout)/)) {
-          const exitMatch = msg.match(/exit=(-?\d+)/);
-          const durMatch = msg.match(/duration=(\d+\.?\d*)s/);
-          broadcast({
-            type: 'task_update', taskId,
-            status: msg.startsWith('timeout') ? 'timeout' : 'failed',
-            finishedAt: new Date().toISOString(),
-            exitCode: exitMatch ? parseInt(exitMatch[1]) : -1,
-            durationMs: durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined,
-          });
-        } else if (msg.startsWith('skipped')) {
-          broadcast({ type: 'task_update', taskId, status: 'skipped', finishedAt: new Date().toISOString() });
-        } else if (msg.startsWith('blocked')) {
-          broadcast({ type: 'task_update', taskId, status: 'blocked', finishedAt: new Date().toISOString() });
-        }
-      }
+    for (const line of chunk.toString().split('\n').filter(Boolean)) {
+      parseLine(line);
     }
   });
 
   child.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
-    for (const line of text.split('\n').filter(Boolean)) {
-      broadcast({ type: 'log', line });
+    for (const line of chunk.toString().split('\n').filter(Boolean)) {
+      parseLine(line);
     }
   });
 
