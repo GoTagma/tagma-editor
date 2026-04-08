@@ -52,7 +52,7 @@ export function MenuBar({ menus }: MenuBarProps) {
   }, [openIdx, close]);
 
   return (
-    <div ref={barRef} className="flex items-center relative z-[60]">
+    <div ref={barRef} className="flex items-center relative z-[100]">
       {menus.map((menu, mi) => (
         <div key={mi} className="relative">
           <button
@@ -65,7 +65,7 @@ export function MenuBar({ menus }: MenuBarProps) {
           </button>
 
           {openIdx === mi && (
-            <div className="absolute left-0 top-full mt-px bg-tagma-surface border border-tagma-border shadow-panel py-1 min-w-[200px] animate-fade-in z-[61]">
+            <div className="absolute left-0 top-full mt-px bg-tagma-surface border border-tagma-border shadow-panel py-1 min-w-[200px] animate-fade-in z-[101]">
               {menu.items.map((item, ii) => {
                 if (isSep(item)) {
                   return <div key={`sep-${ii}`} className="my-1 border-t border-tagma-border/40" />;

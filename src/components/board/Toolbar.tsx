@@ -34,7 +34,7 @@ export function Toolbar({
   const fileName = yamlPath ? yamlPath.replace(/^.*[\\/]/, '') : null;
 
   return (
-    <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-1 gap-1 shrink-0 overflow-hidden">
+    <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-1 gap-1 shrink-0 overflow-visible relative z-[50]">
       {/* Left: Logo + Menus */}
       <div className="flex items-center gap-0.5 shrink-0">
         <div className="px-2 flex items-center">
