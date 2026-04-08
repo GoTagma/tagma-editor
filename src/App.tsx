@@ -13,18 +13,26 @@ type ExplorerIntent = { mode: FileExplorerMode; purpose: 'open' | 'save' | 'work
 export function App() {
   const {
     config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges,
-    yamlPath, workDir, isDirty, loading,
+    yamlPath, workDir, isDirty, loading, errorMessage,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition,
     setWorkDir, openFile, saveFile, saveFileAs,
-    exportYaml, importYaml, init,
+    exportYaml, importYaml, init, clearError,
   } = usePipelineStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
-  const [errorDialog, setErrorDialog] = useState<{ title: string; errors: { path: string; message: string }[] } | null>(null);
+  const [errorDialog, setErrorDialog] = useState<{ title: string; details: string[] } | null>(null);
+
+  // Show store errors in the dialog
+  useEffect(() => {
+    if (errorMessage) {
+      setErrorDialog({ title: 'Error', details: [errorMessage] });
+      clearError();
+    }
+  }, [errorMessage, clearError]);
 
   useEffect(() => { init(); }, []);
 
@@ -85,7 +93,7 @@ export function App() {
     if (validationErrors.length > 0) {
       setErrorDialog({
         title: `Cannot run: ${validationErrors.length} validation error(s)`,
-        errors: validationErrors,
+        details: validationErrors.map((e) => `[${e.path}] ${e.message}`),
       });
       return;
     }
@@ -94,7 +102,6 @@ export function App() {
     }
     const yaml = await exportYaml();
     console.log(yaml);
-    alert('Pipeline is valid! Run it with the Tagma CLI:\n\ntagma run ' + (yamlPath ?? 'pipeline.yaml'));
   }, [workDir, yamlPath, validationErrors, isDirty, saveFile, exportYaml]);
 
   // After save completes and yamlPath is set, auto-trigger run
@@ -256,7 +263,7 @@ export function App() {
         />
       )}
 
-      {/* Validation Error Dialog */}
+      {/* Error Dialog */}
       {errorDialog && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setErrorDialog(null)}>
           <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
@@ -271,13 +278,10 @@ export function App() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto">
-              {errorDialog.errors.map((err, i) => (
+              {errorDialog.details.map((detail, i) => (
                 <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
                   <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <div className="text-[11px] text-tagma-text">{err.message}</div>
-                    {err.path && <div className="text-[10px] font-mono text-tagma-muted mt-0.5">{err.path}</div>}
-                  </div>
+                  <div className="text-[11px] text-tagma-text font-mono min-w-0 break-words">{detail}</div>
                 </div>
               ))}
             </div>

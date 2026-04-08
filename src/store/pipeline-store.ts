@@ -15,8 +15,10 @@ interface PipelineState {
   workDir: string;
   isDirty: boolean;
   loading: boolean;
+  errorMessage: string | null;
 
   applyState: (state: ServerState) => void;
+  clearError: () => void;
   init: () => Promise<void>;
   setPipelineName: (name: string) => void;
   updatePipelineFields: (fields: Record<string, unknown>) => void;
@@ -76,8 +78,10 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     workDir: '',
     isDirty: false,
     loading: true,
+    errorMessage: null,
 
     applyState,
+    clearError: () => set({ errorMessage: null }),
 
     init: async () => {
       try {
@@ -171,7 +175,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {
-        alert('Failed to open: ' + (e.message ?? e));
+        set({ errorMessage: 'Failed to open file: ' + (e.message ?? e) });
       }
     },
 
@@ -182,7 +186,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {
-        alert('Failed to save: ' + (e.message ?? e));
+        set({ errorMessage: 'Failed to save: ' + (e.message ?? e) });
       }
     },
 
@@ -192,7 +196,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {
-        alert('Failed to save: ' + (e.message ?? e));
+        set({ errorMessage: 'Failed to save: ' + (e.message ?? e) });
       }
     },
 
@@ -210,7 +214,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {
-        alert('Invalid YAML: ' + (e.message ?? e));
+        set({ errorMessage: 'Invalid YAML: ' + (e.message ?? e) });
       }
     },
 
