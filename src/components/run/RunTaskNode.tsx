@@ -36,7 +36,7 @@ export function RunTaskNode({ task, status, x, y, w, h, isSelected, onClick }: R
         ${isSelected ? 'bg-tagma-accent/6' : cfg.bg}
       `}
       style={{ left: x, top: y, width: w, height: h }}
-      onClick={() => onClick(task.id)}
+      onClick={(e) => { e.stopPropagation(); onClick(task.id); }}
     >
       {/* Status bar (left) */}
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${isSelected ? 'bg-tagma-accent' : cfg.bar}`} />

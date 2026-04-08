@@ -97,11 +97,29 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
     }).filter(Boolean) as { key: string; d: string }[];
   }, [dagEdges, taskPositions]);
 
-  // Get selected task state
-  const selectedTask = useMemo(() => {
+  // Get selected task state (fallback to config if run hasn't populated tasks yet)
+  const selectedTask = useMemo((): import('../../api/client').RunTaskState | null => {
     if (!selectedTaskId) return null;
-    return tasks.get(selectedTaskId) ?? null;
-  }, [selectedTaskId, tasks]);
+    const fromRun = tasks.get(selectedTaskId);
+    if (fromRun) return fromRun;
+    // Build from config
+    const [trackId, taskId] = selectedTaskId.split('.');
+    const track = config.tracks.find((t) => t.id === trackId);
+    const task = track?.tasks.find((t) => t.id === taskId);
+    if (!task) return null;
+    return {
+      taskId: selectedTaskId,
+      trackId,
+      taskName: task.name || task.id,
+      status: 'idle',
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      exitCode: null,
+      stdout: '',
+      stderr: '',
+    };
+  }, [selectedTaskId, tasks, config]);
 
   const counts = countByStatus(tasks);
 
