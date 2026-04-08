@@ -123,6 +123,9 @@ export const api = {
   listRoots: () =>
     request<{ roots: string[] }>('/fs/roots'),
 
+  mkdir: (path: string) =>
+    request<{ path: string }>('/fs/mkdir', { method: 'POST', body: JSON.stringify({ path }) }),
+
   setWorkDir: (workDir: string) =>
     request<ServerState>('/workspace', { method: 'PATCH', body: JSON.stringify({ workDir }) }),
 

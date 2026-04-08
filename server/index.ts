@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import { resolve, dirname, basename, sep } from 'path';
 import {
   createEmptyPipeline,
@@ -220,6 +220,18 @@ app.get('/api/fs/roots', (_req, res) => {
     res.json({ roots: drives });
   } else {
     res.json({ roots: ['/'] });
+  }
+});
+
+app.post('/api/fs/mkdir', (req, res) => {
+  const { path: dirPath } = req.body;
+  if (!dirPath) return res.status(400).json({ error: 'path is required' });
+  const absPath = resolve(dirPath);
+  try {
+    mkdirSync(absPath, { recursive: true });
+    res.json({ path: absPath });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to create directory' });
   }
 });
 

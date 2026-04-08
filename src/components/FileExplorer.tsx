@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Folder, FileText, ChevronUp, HardDrive, X } from 'lucide-react';
+import { Folder, FileText, ChevronUp, HardDrive, X, FolderPlus } from 'lucide-react';
 import { api } from '../api/client';
 import type { FsEntry } from '../api/client';
 
@@ -23,7 +23,9 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
   const [pathInput, setPathInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState<string | null>(null);
   const fileNameRef = useRef<HTMLInputElement>(null);
+  const newFolderRef = useRef<HTMLInputElement>(null);
 
   const defaultTitle = mode === 'open' ? 'Open File' : mode === 'save' ? 'Save As' : 'Select Directory';
 
@@ -85,6 +87,19 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
     if (pathInput.trim()) loadDir(pathInput.trim());
   }, [pathInput, loadDir]);
 
+  const handleCreateFolder = useCallback(async () => {
+    if (!newFolderName?.trim()) { setNewFolderName(null); return; }
+    const sep = currentPath.includes('/') ? '/' : '\\';
+    const fullPath = currentPath + sep + newFolderName.trim();
+    try {
+      await api.mkdir(fullPath);
+      setNewFolderName(null);
+      loadDir(currentPath);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to create folder');
+    }
+  }, [newFolderName, currentPath, loadDir]);
+
   const handleEntryDblClick = useCallback((entry: FsEntry) => {
     if (entry.type === 'directory') {
       if (mode === 'directory') {
@@ -123,6 +138,10 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
             onKeyDown={(e) => { if (e.key === 'Enter') handlePathSubmit(); }}
             className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border px-2 py-1 text-tagma-text"
           />
+          <button onClick={() => { setNewFolderName(''); setTimeout(() => newFolderRef.current?.focus(), 0); }}
+            className="p-1 text-tagma-muted hover:text-tagma-text shrink-0" title="New Folder">
+            <FolderPlus size={14} />
+          </button>
         </div>
 
         {/* Drive roots */}
@@ -139,6 +158,17 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
 
         {/* File list */}
         <div className="flex-1 overflow-y-auto min-h-[200px]">
+          {newFolderName !== null && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-tagma-elevated/50">
+              <Folder size={13} className="text-tagma-accent shrink-0" />
+              <input ref={newFolderRef} type="text" value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setNewFolderName(null); }}
+                onBlur={handleCreateFolder}
+                className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-accent/40 px-2 py-0.5 text-tagma-text"
+                placeholder="New folder name..." autoFocus />
+            </div>
+          )}
           {loading && (
             <div className="flex items-center justify-center py-8 text-tagma-muted text-xs">Loading...</div>
           )}
