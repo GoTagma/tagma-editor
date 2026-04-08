@@ -69,28 +69,47 @@ export function App() {
     return config.tracks.find((t) => t.id === selectedTrackId) ?? null;
   }, [selectedTrackId, config]);
 
+  const [pendingRun, setPendingRun] = useState(false);
+
   const handleRun = useCallback(async () => {
     if (!workDir) {
       const ok = confirm('Workspace directory is not set. Please configure it before running.\n\nOpen workspace selector now?');
       if (ok) setExplorer({ mode: 'directory', purpose: 'workdir' });
       return;
     }
+    if (!yamlPath) {
+      setPendingRun(true);
+      setExplorer({ mode: 'save', purpose: 'save' });
+      return;
+    }
     if (validationErrors.length > 0) {
       alert(`Pipeline has ${validationErrors.length} validation error(s):\n\n${validationErrors.map((e) => `• ${e.message}`).join('\n')}`);
       return;
     }
+    if (isDirty) {
+      await saveFile();
+    }
     const yaml = await exportYaml();
     console.log(yaml);
-    alert('Pipeline is valid! Export the YAML and run it with the Tagma CLI:\n\ntagma run pipeline.yaml');
-  }, [workDir, validationErrors, exportYaml]);
+    alert('Pipeline is valid! Run it with the Tagma CLI:\n\ntagma run ' + (yamlPath ?? 'pipeline.yaml'));
+  }, [workDir, yamlPath, validationErrors, isDirty, saveFile, exportYaml]);
 
-  const handleExplorerConfirm = useCallback((path: string) => {
+  const handleExplorerConfirm = useCallback(async (path: string) => {
     if (!explorer) return;
-    if (explorer.purpose === 'open') openFile(path);
-    else if (explorer.purpose === 'save') saveFileAs(path);
-    else if (explorer.purpose === 'workdir') setWorkDir(path);
+    if (explorer.purpose === 'open') {
+      openFile(path);
+    } else if (explorer.purpose === 'save') {
+      await saveFileAs(path);
+      if (pendingRun) {
+        setPendingRun(false);
+        // Re-trigger run after save completes (yamlPath is now set)
+        setTimeout(() => handleRun(), 0);
+      }
+    } else if (explorer.purpose === 'workdir') {
+      setWorkDir(path);
+    }
     setExplorer(null);
-  }, [explorer, openFile, saveFileAs, setWorkDir]);
+  }, [explorer, pendingRun, openFile, saveFileAs, setWorkDir, handleRun]);
 
   const menus = useMemo(() => [
     {
@@ -226,7 +245,7 @@ export function App() {
           initialPath={explorer.purpose === 'workdir' ? workDir : (yamlPath ?? (workDir || undefined))}
           fileFilter={explorer.purpose !== 'workdir' ? ['.yaml', '.yml'] : undefined}
           onConfirm={handleExplorerConfirm}
-          onCancel={() => setExplorer(null)}
+          onCancel={() => { setExplorer(null); setPendingRun(false); }}
         />
       )}
     </div>

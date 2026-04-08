@@ -104,7 +104,13 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   if (!track) return res.status(404).json({ error: 'Track not found' });
   const existing = track.tasks.find((t) => t.id === taskId);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
-  const updated = { ...existing, ...patch } as RawTaskConfig;
+  let updated = { ...existing, ...patch } as RawTaskConfig;
+  // prompt and command are mutually exclusive
+  if (patch.prompt !== undefined) {
+    delete updated.command;
+  } else if (patch.command !== undefined) {
+    delete updated.prompt;
+  }
   config = upsertTask(config, trackId, updated);
   res.json(getState());
 });
