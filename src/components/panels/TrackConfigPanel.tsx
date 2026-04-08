@@ -5,18 +5,19 @@ import { useLocalField } from '../../hooks/use-local-field';
 
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
+  drivers: string[];
   onUpdateTrack: (trackId: string, fields: Record<string, unknown>) => void;
   onDeleteTrack: (trackId: string) => void;
   onClose: () => void;
 }
 
-export function TrackConfigPanel({ track, onUpdateTrack, onDeleteTrack, onClose }: TrackConfigPanelProps) {
+export function TrackConfigPanel({ track, drivers, onUpdateTrack, onDeleteTrack, onClose }: TrackConfigPanelProps) {
   const commit = useCallback((fields: Record<string, unknown>) => {
     onUpdateTrack(track.id, fields);
   }, [track.id, onUpdateTrack]);
 
   const [name, setName, blurName] = useLocalField(track.name ?? '', (v) => commit({ name: v }));
-  const [driver, setDriver, blurDriver] = useLocalField(track.driver ?? '', (v) => commit({ driver: v || undefined }));
+  // driver uses direct commit (no local field needed for select)
   const [color, setColor, blurColor] = useLocalField(track.color ?? '', (v) => commit({ color: v || undefined }));
   const [agentProfile, setAgentProfile, blurAgentProfile] = useLocalField(track.agent_profile ?? '', (v) => commit({ agent_profile: v || undefined }));
   const [cwd, setCwd, blurCwd] = useLocalField(track.cwd ?? '', (v) => commit({ cwd: v || undefined }));
@@ -77,7 +78,10 @@ export function TrackConfigPanel({ track, onUpdateTrack, onDeleteTrack, onClose 
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (inherited)" />
+          <select className="field-input" value={track.driver ?? ''} onChange={(e) => commit({ driver: e.target.value || undefined })}>
+            <option value="">(inherited)</option>
+            {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
         </div>
 
         {/* Model Tier */}

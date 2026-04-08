@@ -19,9 +19,14 @@ import {
   buildRawDag,
   parseYaml,
   serializePipeline,
+  bootstrapBuiltins,
+  listRegistered,
 } from '@tagma/sdk';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '@tagma/sdk';
 import type { ValidationError, RawDag } from '@tagma/sdk';
+
+// Register built-in plugins so we can list available drivers etc.
+bootstrapBuiltins();
 
 const app = express();
 app.use(cors());
@@ -52,6 +57,16 @@ function getState() {
 // ── GET state ──
 app.get('/api/state', (_req, res) => {
   res.json(getState());
+});
+
+// ── Plugin registry ──
+app.get('/api/registry', (_req, res) => {
+  res.json({
+    drivers: listRegistered('drivers'),
+    triggers: listRegistered('triggers'),
+    completions: listRegistered('completions'),
+    middlewares: listRegistered('middlewares'),
+  });
 });
 
 // ── Pipeline name ──

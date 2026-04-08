@@ -16,7 +16,7 @@ type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] 
 export function App() {
   const {
     config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges,
-    yamlPath, workDir, isDirty, loading, errorMessage,
+    yamlPath, workDir, isDirty, loading, errorMessage, registry,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
@@ -276,6 +276,7 @@ export function App() {
             key={selectedTaskId}
             task={selectedInfo.task} trackId={selectedInfo.trackId} qualifiedId={selectedTaskId!}
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
+            drivers={registry.drivers}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}
             onRemoveDependency={removeDependency} onClose={() => selectTask(null)}
           />
@@ -285,6 +286,7 @@ export function App() {
           <TrackConfigPanel
             key={selectedTrackId}
             track={selectedTrack}
+            drivers={registry.drivers}
             onUpdateTrack={updateTrackFields}
             onDeleteTrack={deleteTrack}
             onClose={() => selectTrack(null)}
@@ -298,6 +300,7 @@ export function App() {
           config={config}
           yamlPath={yamlPath}
           workDir={workDir}
+          drivers={registry.drivers}
           onUpdate={updatePipelineFields}
           onClose={() => setShowPipelineSettings(false)}
         />

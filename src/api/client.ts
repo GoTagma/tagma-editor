@@ -118,6 +118,13 @@ export interface DagEdge {
   to: string;
 }
 
+export interface PluginRegistry {
+  drivers: string[];
+  triggers: string[];
+  completions: string[];
+  middlewares: string[];
+}
+
 export interface FsEntry {
   name: string;
   path: string;
@@ -163,6 +170,8 @@ export type RunEvent =
 
 export const api = {
   getState: () => request<ServerState>('/state'),
+
+  getRegistry: () => request<PluginRegistry>('/registry'),
 
   updatePipeline: (fields: Record<string, unknown>) =>
     request<ServerState>('/pipeline', { method: 'PATCH', body: JSON.stringify(fields) }),

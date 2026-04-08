@@ -8,6 +8,7 @@ interface TaskConfigPanelProps {
   trackId: string;
   qualifiedId: string;
   dependencies: string[];
+  drivers: string[];
   onUpdateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
   onRemoveDependency: (trackId: string, taskId: string, depRef: string) => void;
@@ -15,7 +16,7 @@ interface TaskConfigPanelProps {
 }
 
 export function TaskConfigPanel({
-  task, trackId, qualifiedId, dependencies,
+  task, trackId, qualifiedId, dependencies, drivers,
   onUpdateTask, onDeleteTask, onRemoveDependency, onClose,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
@@ -28,7 +29,9 @@ export function TaskConfigPanel({
   const [name, setName, blurName] = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
   const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
   const [command, setCommand, blurCommand] = useLocalField(task.command ?? '', (v) => commitField({ command: v, prompt: undefined }));
-  const [driver, setDriver, blurDriver] = useLocalField(task.driver ?? '', (v) => commitField({ driver: v || undefined }));
+  const handleDriverChange = useCallback((value: string) => {
+    onUpdateTask(trackId, task.id, { driver: value || undefined });
+  }, [trackId, task.id, onUpdateTask]);
   const [timeout, setTimeout_, blurTimeout] = useLocalField(task.timeout ?? '', (v) => commitField({ timeout: v || undefined }));
   const [output, setOutput, blurOutput] = useLocalField(task.output ?? '', (v) => commitField({ output: v || undefined }));
   const [agentProfile, setAgentProfile, blurAgentProfile] = useLocalField(task.agent_profile ?? '', (v) => commitField({ agent_profile: v || undefined }));
@@ -139,7 +142,10 @@ export function TaskConfigPanel({
         {/* Driver */}
         <div>
           <label className="field-label">Driver</label>
-          <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (inherited)" />
+          <select className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)}>
+            <option value="">(inherited)</option>
+            {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
         </div>
 
         {/* Model Tier */}

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
-import type { ServerState, RawPipelineConfig, RawTaskConfig, ValidationError, DagEdge } from '../api/client';
+import type { ServerState, RawPipelineConfig, RawTaskConfig, ValidationError, DagEdge, PluginRegistry } from '../api/client';
 
 export interface TaskPosition { x: number; }
 
@@ -16,6 +16,7 @@ interface PipelineState {
   isDirty: boolean;
   loading: boolean;
   errorMessage: string | null;
+  registry: PluginRegistry;
 
   applyState: (state: ServerState) => void;
   clearError: () => void;
@@ -79,15 +80,19 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     isDirty: false,
     loading: true,
     errorMessage: null,
+    registry: { drivers: [], triggers: [], completions: [], middlewares: [] },
 
     applyState,
     clearError: () => set({ errorMessage: null }),
 
     init: async () => {
       try {
-        const state = await api.getState();
+        const [state, registry] = await Promise.all([
+          api.getState(),
+          api.getRegistry().catch(() => ({ drivers: [], triggers: [], completions: [], middlewares: [] })),
+        ]);
         applyState(state);
-        set({ isDirty: false });
+        set({ isDirty: false, registry });
       } catch (e) {
         console.error('Failed to init:', e);
         set({ loading: false });

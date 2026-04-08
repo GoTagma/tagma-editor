@@ -7,6 +7,7 @@ interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
   yamlPath: string | null;
   workDir: string;
+  drivers: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
   onClose: () => void;
 }
@@ -16,9 +17,8 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
   'task_failure', 'pipeline_complete', 'pipeline_error',
 ];
 
-export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClose }: PipelineConfigPanelProps) {
+export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
   const [name, setName, blurName] = useLocalField(config.name, (v) => onUpdate({ name: v }));
-  const [driver, setDriver, blurDriver] = useLocalField(config.driver ?? '', (v) => onUpdate({ driver: v || undefined }));
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
   const [plugins, setPlugins, blurPlugins] = useLocalField(
     (config.plugins ?? []).join(', '),
@@ -76,7 +76,10 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, onUpdate, onClo
           <div className="flex gap-4">
             <div className="flex-1">
               <label className="field-label">Default Driver</label>
-              <input type="text" className="field-input" value={driver} onChange={(e) => setDriver(e.target.value)} onBlur={blurDriver} placeholder="claude-code (default)" />
+              <select className="field-input" value={config.driver ?? ''} onChange={(e) => onUpdate({ driver: e.target.value || undefined })}>
+                <option value="">claude-code (default)</option>
+                {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
             </div>
             <div className="flex-1">
               <label className="field-label">Default Timeout</label>
