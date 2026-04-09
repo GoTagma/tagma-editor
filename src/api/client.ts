@@ -24,12 +24,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface EditorLayout {
+  positions: Record<string, { x: number }>;
+}
+
 export interface ServerState {
   config: RawPipelineConfig;
   validationErrors: ValidationError[];
   dag: { nodes: Record<string, any>; edges: DagEdge[] };
   yamlPath: string | null;
   workDir: string;
+  layout: EditorLayout;
 }
 
 export type HookCommand = string | string[];
@@ -272,6 +277,9 @@ export const api = {
 
   exportFile: (destDir: string) =>
     request<{ ok: boolean; path: string }>('/export-file', { method: 'POST', body: jsonBody({ destDir }) }),
+
+  saveLayout: (positions: Record<string, { x: number }>) =>
+    request<{ ok: boolean }>('/layout', { method: 'PATCH', body: jsonBody({ positions }) }),
 
   startRun: () =>
     request<{ ok: boolean }>('/run/start', { method: 'POST' }),

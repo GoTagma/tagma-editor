@@ -40,6 +40,36 @@ let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
 let workDir: string = process.cwd();
 
+/** Editor layout data stored alongside the YAML file as .layout.json */
+interface EditorLayout {
+  positions: Record<string, { x: number }>;
+}
+
+let layout: EditorLayout = { positions: {} };
+
+function layoutPath(): string | null {
+  if (!yamlPath) return null;
+  return yamlPath.replace(/\.ya?ml$/i, '.layout.json');
+}
+
+function loadLayout(): void {
+  const lp = layoutPath();
+  if (!lp || !existsSync(lp)) { layout = { positions: {} }; return; }
+  try {
+    layout = JSON.parse(readFileSync(lp, 'utf-8'));
+  } catch {
+    layout = { positions: {} };
+  }
+}
+
+function saveLayout(): void {
+  const lp = layoutPath();
+  if (!lp) return;
+  try {
+    writeFileSync(lp, JSON.stringify(layout, null, 2), 'utf-8');
+  } catch { /* best-effort */ }
+}
+
 /** Auto-reconcile continue_from: if a prompt task depends on another prompt task, set continue_from. */
 function reconcileContinueFrom(cfg: RawPipelineConfig): RawPipelineConfig {
   const taskMap = new Map<string, RawTaskConfig>();
@@ -131,6 +161,7 @@ function getState() {
     dag: { nodes: dagNodes, edges: dag.edges },
     yamlPath,
     workDir,
+    layout,
   };
 }
 
@@ -839,6 +870,7 @@ app.post('/api/open', (req, res) => {
       } as RawPipelineConfig;
     }
     yamlPath = absPath;
+    loadLayout();
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to open file' });
@@ -858,6 +890,7 @@ app.post('/api/save', (_req, res) => {
     const content = serializePipeline(config);
     writeFileSync(savePath, content, 'utf-8');
     yamlPath = savePath;
+    saveLayout();
     res.json(getState());
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to save file' });
@@ -872,6 +905,7 @@ app.post('/api/save-as', (req, res) => {
     const yaml = serializePipeline(config);
     writeFileSync(absPath, yaml, 'utf-8');
     yamlPath = absPath;
+    saveLayout();
     res.json(getState());
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to save file' });
@@ -892,9 +926,18 @@ app.post('/api/new', (req, res) => {
   const taskId = Math.random().toString(36).slice(2, 10);
   config = upsertTask(config, trackId, { id: taskId, name: 'Task 1', prompt: 'Hello world!' });
   yamlPath = join(tagmaDir, fileName);
+  layout = { positions: {} };
   const content = serializePipeline(config);
   writeFileSync(yamlPath, content, 'utf-8');
   res.json(getState());
+});
+
+// ── Layout (editor positions) ──
+app.patch('/api/layout', (req, res) => {
+  const { positions } = req.body;
+  if (positions) layout.positions = positions;
+  saveLayout();
+  res.json({ ok: true });
 });
 
 // Import: copy external YAML into .tagma/ and open the copy
@@ -923,6 +966,7 @@ app.post('/api/import-file', (req, res) => {
       } as RawPipelineConfig;
     }
     yamlPath = destPath;
+    layout = { positions: {} };
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to import file' });
