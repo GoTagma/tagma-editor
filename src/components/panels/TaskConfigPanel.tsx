@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react';
-import type { RawTaskConfig, TriggerConfig, CompletionConfig } from '../../api/client';
+import type { RawTaskConfig, RawPipelineConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { MiddlewareEditor } from './MiddlewareEditor';
 
@@ -8,6 +8,7 @@ interface TaskConfigPanelProps {
   task: RawTaskConfig;
   trackId: string;
   qualifiedId: string;
+  pipelineConfig: RawPipelineConfig;
   dependencies: string[];
   drivers: string[];
   onUpdateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
@@ -16,8 +17,22 @@ interface TaskConfigPanelProps {
   onClose: () => void;
 }
 
+/** Resolve inherited value: track → pipeline */
+function inheritedDriver(trackId: string, config: RawPipelineConfig): string | undefined {
+  const track = config.tracks.find((t) => t.id === trackId);
+  return track?.driver ?? config.driver;
+}
+function inheritedModelTier(trackId: string, config: RawPipelineConfig): string | undefined {
+  const track = config.tracks.find((t) => t.id === trackId);
+  return track?.model_tier;
+}
+function inheritedPermissions(trackId: string, config: RawPipelineConfig) {
+  const track = config.tracks.find((t) => t.id === trackId);
+  return track?.permissions;
+}
+
 export function TaskConfigPanel({
-  task, trackId, qualifiedId, dependencies, drivers,
+  task, trackId, qualifiedId, pipelineConfig, dependencies, drivers,
   onUpdateTask, onDeleteTask, onRemoveDependency, onClose,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
@@ -37,7 +52,6 @@ export function TaskConfigPanel({
   const [output, setOutput, blurOutput] = useLocalField(task.output ?? '', (v) => commitField({ output: v || undefined }));
   const [agentProfile, setAgentProfile, blurAgentProfile] = useLocalField(task.agent_profile ?? '', (v) => commitField({ agent_profile: v || undefined }));
   const [cwd, setCwd, blurCwd] = useLocalField(task.cwd ?? '', (v) => commitField({ cwd: v || undefined }));
-  const [continueFrom, setContinueFrom, blurContinueFrom] = useLocalField(task.continue_from ?? '', (v) => commitField({ continue_from: v || undefined }));
   const [useTemplate, setUseTemplate, blurUseTemplate] = useLocalField(task.use ?? '', (v) => commitField({ use: v || undefined }));
 
   const handleModelTierChange = useCallback((model_tier: string) => {
@@ -147,7 +161,7 @@ export function TaskConfigPanel({
             <div>
               <label className="field-label">Driver</label>
               <select className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)}>
-                <option value="">(inherited)</option>
+                <option value="">inherited{inheritedDriver(trackId, pipelineConfig) ? ` (${inheritedDriver(trackId, pipelineConfig)})` : ''}</option>
                 {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
             </div>
@@ -156,7 +170,7 @@ export function TaskConfigPanel({
             <div>
               <label className="field-label">Model Tier</label>
               <select className="field-input" value={task.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
-                <option value="">inherited</option>
+                <option value="">inherited{inheritedModelTier(trackId, pipelineConfig) ? ` (${inheritedModelTier(trackId, pipelineConfig)})` : ''}</option>
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>
@@ -168,14 +182,6 @@ export function TaskConfigPanel({
               <label className="field-label">Agent Profile</label>
               <textarea className="field-input min-h-[60px] resize-y font-mono text-[11px]" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile}
                 placeholder="Named profile or multi-line system prompt..." />
-            </div>
-
-            {/* Continue From */}
-            <div>
-              <label className="field-label">Continue From</label>
-              <input type="text" className="field-input font-mono text-[11px]" value={continueFrom} onChange={(e) => setContinueFrom(e.target.value)} onBlur={blurContinueFrom}
-                placeholder="taskId or trackId.taskId" />
-              <p className="text-[10px] text-tagma-muted mt-1">Session handoff from another task</p>
             </div>
 
             {/* Permissions */}
@@ -191,6 +197,14 @@ export function TaskConfigPanel({
                   </label>
                 ))}
               </div>
+              {!task.permissions && (() => {
+                const ip = inheritedPermissions(trackId, pipelineConfig);
+                if (!ip) return null;
+                const parts = [ip.read && 'read', ip.write && 'write', ip.execute && 'execute'].filter(Boolean);
+                return parts.length > 0
+                  ? <p className="text-[10px] text-tagma-muted mt-1">Inherited: {parts.join(', ')}</p>
+                  : null;
+              })()}
             </div>
           </>
         )}

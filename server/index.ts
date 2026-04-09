@@ -37,7 +37,61 @@ let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
 let workDir: string = process.cwd();
 
+/** Auto-reconcile continue_from: if a prompt task depends on another prompt task, set continue_from. */
+function reconcileContinueFrom(cfg: RawPipelineConfig): RawPipelineConfig {
+  const taskMap = new Map<string, RawTaskConfig>();
+  for (const track of cfg.tracks) {
+    for (const task of track.tasks) {
+      taskMap.set(`${track.id}.${task.id}`, task);
+    }
+  }
+
+  let changed = false;
+  const newTracks = cfg.tracks.map((track) => {
+    const newTasks = track.tasks.map((task) => {
+      const isPromptTask = !!task.prompt && !task.command && !task.use;
+      const deps = task.depends_on ?? [];
+
+      if (!isPromptTask || deps.length === 0) {
+        // Not a prompt task or no deps — clear continue_from if set
+        if (task.continue_from) {
+          changed = true;
+          const { continue_from: _, ...rest } = task;
+          return rest as RawTaskConfig;
+        }
+        return task;
+      }
+
+      // Find last dep that is also a prompt task — that's the continue_from source
+      let continueRef: string | undefined;
+      for (const dep of deps) {
+        const qid = dep.includes('.') ? dep : `${track.id}.${dep}`;
+        const depTask = taskMap.get(qid);
+        if (depTask && !!depTask.prompt && !depTask.command && !depTask.use) {
+          continueRef = dep; // use the raw ref as written in depends_on
+        }
+      }
+
+      if (continueRef && task.continue_from !== continueRef) {
+        changed = true;
+        return { ...task, continue_from: continueRef };
+      }
+      if (!continueRef && task.continue_from) {
+        changed = true;
+        const { continue_from: _, ...rest } = task;
+        return rest as RawTaskConfig;
+      }
+      return task;
+    });
+    return newTasks !== track.tasks ? { ...track, tasks: newTasks } : track;
+  });
+
+  return changed ? { ...cfg, tracks: newTracks } : cfg;
+}
+
 function getState() {
+  // Auto-reconcile continue_from before returning state
+  config = reconcileContinueFrom(config);
   let validationErrors: ValidationError[] = [];
   let dag: RawDag = { nodes: new Map(), edges: [] };
   try { validationErrors = validateRaw(config); } catch {}

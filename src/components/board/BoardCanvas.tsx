@@ -7,14 +7,15 @@ import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '../../api
 
 import type { TaskPosition } from '../../store/pipeline-store';
 import type { DagEdge } from '../../api/client';
+import { getZoom } from '../../utils/zoom';
 
 // ── Layout constants ──
 const HEADER_W = 200;
-const TASK_W = 160;
-const TASK_H = 36;
+const TASK_W = 170;
+const TASK_H = 50;
 const TASK_GAP = 24;
 const PAD_LEFT = 20;
-const TRACK_H = 56;
+const TRACK_H = 68;
 const DRAG_THRESHOLD = 4;
 const CANVAS_PAD_RIGHT = 300;
 
@@ -102,7 +103,10 @@ function stepPath(s: Pos, t: Pos) {
 
 function toContent(e: { clientX: number; clientY: number }, el: HTMLDivElement) {
   const r = el.getBoundingClientRect();
-  return { x: e.clientX - r.left + el.scrollLeft, y: e.clientY - r.top + el.scrollTop };
+  const z = getZoom();
+  // clientX/rect.left are in screen pixels; scrollLeft is in logical pixels.
+  // Convert screen offset to logical before combining with scroll.
+  return { x: (e.clientX - r.left) / z + el.scrollLeft, y: (e.clientY - r.top) / z + el.scrollTop };
 }
 
 function findNearestTarget(mx: number, my: number, positions: Map<string, Pos>, exclude: string): string | null {
@@ -145,6 +149,13 @@ export function BoardCanvas({
 
   const tracks = config.tracks;
   const allTasks = useMemo(() => flattenTasks(config), [config]);
+
+  // Build a lookup: qid → task for quick access
+  const taskByQid = useMemo(() => {
+    const m = new Map<string, RawTaskConfig>();
+    for (const ft of allTasks) m.set(ft.qid, ft.task);
+    return m;
+  }, [allTasks]);
 
   // Visual sort during track drag
   const visualTracks = useMemo(() => {
@@ -196,8 +207,9 @@ export function BoardCanvas({
     const onMove = (ev: MouseEvent) => {
       const dx = ev.clientX - startX, dy = ev.clientY - startY;
       if (!started) { if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return; started = true; panDidDragRef.current = true; }
-      el.scrollLeft = startSL - dx;
-      el.scrollTop = startST - dy;
+      const z = getZoom();
+      el.scrollLeft = startSL - dx / z;
+      el.scrollTop = startST - dy / z;
     };
     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
     document.addEventListener('mousemove', onMove);
@@ -310,7 +322,7 @@ export function BoardCanvas({
 
     const onMove = (ev: PointerEvent) => {
       if (!started) { if (Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return; started = true; }
-      const relY = ev.clientY - headerRect.top + headerEl.scrollTop;
+      const relY = (ev.clientY - headerRect.top) / getZoom() + headerEl.scrollTop;
       const dropIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(relY / TRACK_H)));
       setTrackDrag({ trackId, startIndex, dropIndex: dropIdx });
     };
@@ -345,7 +357,7 @@ export function BoardCanvas({
     const headerEl = headerRef.current;
     if (!headerEl) return;
     const rect = headerEl.getBoundingClientRect();
-    const relY = e.clientY - rect.top + headerEl.scrollTop;
+    const relY = (e.clientY - rect.top) / getZoom() + headerEl.scrollTop;
     const trackId = trackAtY(visualTracks, relY);
 
     if (!trackId) {
@@ -475,6 +487,8 @@ export function BoardCanvas({
               <TaskCard
                 key={ft.qid}
                 task={ft.task}
+                trackId={ft.trackId}
+                pipelineConfig={config}
                 x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
                 isSelected={selectedTaskId === ft.qid}
                 isInvalid={invalidTaskIds.has(ft.qid)}
@@ -497,6 +511,12 @@ export function BoardCanvas({
               <marker id="ah-hi" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
                 <polygon points="0 0, 7 2.5, 0 5" fill="#d4845a" />
               </marker>
+              <marker id="ah-cont" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <polygon points="0 0, 7 2.5, 0 5" fill="#a78bfa" fillOpacity="0.8" />
+              </marker>
+              <marker id="ah-cont-hi" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <polygon points="0 0, 7 2.5, 0 5" fill="#c4b5fd" />
+              </marker>
             </defs>
 
             {dagEdges.map((edge) => {
@@ -511,6 +531,9 @@ export function BoardCanvas({
               const sx = sp.x + TASK_W, sy = sp.y + TASK_H / 2;
               const tx = tp.x, ty = tp.y + TASK_H / 2;
               const midX = (sx + tx) / 2, midY = (sy + ty) / 2;
+              const fromTask = taskByQid.get(edge.from);
+              const toTask = taskByQid.get(edge.to);
+              const isContinue = !!fromTask?.prompt && !fromTask?.command && !!toTask?.prompt && !toTask?.command;
 
               return (
                 <g key={ek}>
@@ -520,9 +543,14 @@ export function BoardCanvas({
                     onMouseLeave={() => { if (!selEdge) setHovEdge(null); }}
                     onClick={(e) => { e.stopPropagation(); setSelEdge(selected ? null : ek); setHovEdge(null); }} />
                   <path d={d} fill="none"
-                    stroke={highlighted ? '#d4845a' : 'rgba(100, 100, 100, 0.4)'}
+                    stroke={highlighted
+                      ? (isContinue ? '#c4b5fd' : '#d4845a')
+                      : (isContinue ? 'rgba(167, 139, 250, 0.5)' : 'rgba(100, 100, 100, 0.4)')}
                     strokeWidth={highlighted ? 2 : 1}
-                    markerEnd={highlighted ? 'url(#ah-hi)' : 'url(#ah)'}
+                    strokeDasharray={isContinue ? '6 3' : undefined}
+                    markerEnd={highlighted
+                      ? (isContinue ? 'url(#ah-cont-hi)' : 'url(#ah-hi)')
+                      : (isContinue ? 'url(#ah-cont)' : 'url(#ah)')}
                     className="transition-[stroke,stroke-width] duration-75" />
                   {selected && (
                     <g className="pointer-events-auto cursor-pointer"

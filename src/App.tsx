@@ -7,6 +7,7 @@ import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
+import { PipelineSummaryBar } from './components/board/PipelineSummaryBar';
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
 
@@ -226,6 +227,8 @@ export function App() {
         menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
       />
 
+      <PipelineSummaryBar config={config} />
+
       {validationErrors.length > 0 && (
         <div className="relative group">
           <div className="flex items-center gap-2 px-4 py-1.5 bg-tagma-error/5 border-b border-tagma-error/20 cursor-default">
@@ -275,6 +278,7 @@ export function App() {
           <TaskConfigPanel
             key={selectedTaskId}
             task={selectedInfo.task} trackId={selectedInfo.trackId} qualifiedId={selectedTaskId!}
+            pipelineConfig={config}
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
             drivers={registry.drivers}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}

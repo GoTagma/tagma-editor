@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  zoom: 1.5;
+}
 html, body, #root {
   margin: 0;
   overflow: hidden;

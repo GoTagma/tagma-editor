@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ChevronRight, Search } from 'lucide-react';
+import { getZoom, viewportW, viewportH } from '../../utils/zoom';
 
 export interface MenuItem {
   label: string;
@@ -61,15 +62,25 @@ function SubmenuPanel({ config, onClose, parentRect }: {
     if (!ref.current) return;
     const el = ref.current;
     const rect = el.getBoundingClientRect();
+    const z = getZoom();
+    const vw = viewportW();
+    const vh = viewportH();
+    // parentRect is in screen coords; convert to logical for fixed positioning
+    const pRight = parentRect.right / z;
+    const pLeft = parentRect.left / z;
+    const pTop = parentRect.top / z;
+    const rW = rect.width / z;
+    const rH = rect.height / z;
     // Horizontal: prefer right, fall back to left
-    if (parentRect.right + rect.width > window.innerWidth) {
-      el.style.left = `${parentRect.left - rect.width}px`;
+    if (pRight + rW > vw) {
+      el.style.left = `${pLeft - rW}px`;
     } else {
-      el.style.left = `${parentRect.right}px`;
+      el.style.left = `${pRight}px`;
     }
+    el.style.top = `${pTop}px`;
     // Vertical: clamp bottom
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
+    if (pTop + rH > vh) {
+      el.style.top = `${Math.max(4, vh - rH - 4)}px`;
     }
   }, [parentRect]);
 
@@ -86,7 +97,7 @@ function SubmenuPanel({ config, onClose, parentRect }: {
     <div
       ref={ref}
       className="fixed z-[101] bg-tagma-surface border border-tagma-border shadow-panel py-1 min-w-[180px] animate-fade-in"
-      style={{ left: parentRect.right, top: parentRect.top }}
+      style={{ left: parentRect.right / getZoom(), top: parentRect.top / getZoom() }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {config.searchable && (
@@ -253,18 +264,25 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     };
   }, [onClose]);
 
-  // Clamp to viewport
+  // Clamp to viewport (x,y are screen coords from clientX/clientY)
+  const logicalX = x / getZoom();
+  const logicalY = y / getZoom();
   useEffect(() => {
     if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
     const el = ref.current;
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${x - rect.width}px`;
+    const rect = el.getBoundingClientRect();
+    const z = getZoom();
+    const vw = viewportW();
+    const vh = viewportH();
+    const rW = rect.width / z;
+    const rH = rect.height / z;
+    if (logicalX + rW > vw) {
+      el.style.left = `${logicalX - rW}px`;
     }
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${y - rect.height}px`;
+    if (logicalY + rH > vh) {
+      el.style.top = `${logicalY - rH}px`;
     }
-  }, [x, y]);
+  }, [logicalX, logicalY]);
 
   const handleSubmenuEnter = useCallback((index: number) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -288,7 +306,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     <div
       ref={ref}
       className="fixed z-[100] bg-tagma-surface border border-tagma-border shadow-panel py-1 min-w-[160px] animate-fade-in"
-      style={{ left: x, top: y }}
+      style={{ left: logicalX, top: logicalY }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {items.map((entry, i) => {
