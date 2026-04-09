@@ -89,6 +89,29 @@ function reconcileContinueFrom(cfg: RawPipelineConfig): RawPipelineConfig {
   return changed ? { ...cfg, tracks: newTracks } : cfg;
 }
 
+// Keys that must not be stripped even when empty
+const TASK_REQUIRED_KEYS = new Set(['id']);
+const TRACK_REQUIRED_KEYS = new Set(['id', 'name', 'tasks']);
+
+/**
+ * Delete keys whose value is '', undefined, or null — except required keys.
+ * Arrays/objects with content are kept; empty arrays/objects are removed.
+ * Mutates the object in place.
+ */
+function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>) {
+  for (const key of Object.keys(obj)) {
+    if (required.has(key)) continue;
+    const v = obj[key];
+    if (v === '' || v === undefined || v === null) {
+      delete obj[key];
+    } else if (Array.isArray(v) && v.length === 0) {
+      delete obj[key];
+    } else if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) {
+      delete obj[key];
+    }
+  }
+}
+
 function getState() {
   // Auto-reconcile continue_from before returning state
   config = reconcileContinueFrom(config);
@@ -146,7 +169,9 @@ app.post('/api/tracks', (req, res) => {
 
 app.patch('/api/tracks/:trackId', (req, res) => {
   const { trackId } = req.params;
-  const fields = req.body;
+  const fields = { ...req.body };
+  // Strip empty optional fields
+  stripEmptyFields(fields, TRACK_REQUIRED_KEYS);
   config = updateTrack(config, trackId, fields);
   res.json(getState());
 });
@@ -183,6 +208,8 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   } else if (patch.command !== undefined) {
     delete updated.prompt;
   }
+  // Strip empty optional fields so they don't appear as '' in YAML
+  stripEmptyFields(updated, TASK_REQUIRED_KEYS);
   config = upsertTask(config, trackId, updated);
   res.json(getState());
 });
