@@ -160,7 +160,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
       <div className="px-3 py-1.5">
         {rows.map(([label, value]) => (
           <div key={label} className="flex py-[1.5px] text-[9px] font-mono gap-2 min-w-0">
-            <span className="text-tagma-muted/70 w-[72px] shrink-0 text-right truncate">{label}</span>
+            <span className="text-tagma-muted/70 w-[72px] shrink-0 truncate">{label}</span>
             <span className="text-tagma-text/80 truncate min-w-0 flex-1">{value}</span>
           </div>
         ))}
