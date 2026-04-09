@@ -27,6 +27,8 @@ interface BoardCanvasProps {
   positions: Map<string, TaskPosition>;
   selectedTaskId: string | null;
   invalidTaskIds: Set<string>;
+  errorsByTask: Map<string, string[]>;
+  errorsByTrack: Map<string, string[]>;
   onSelectTask: (qualifiedId: string | null) => void;
   onSelectTrack: (trackId: string | null) => void;
   onAddTask: (trackId: string, name: string, positionX?: number) => void;
@@ -125,7 +127,7 @@ interface EdgeDragState { srcQid: string; mx: number; my: number; target: string
 interface TrackDragState { trackId: string; startIndex: number; dropIndex: number }
 
 export function BoardCanvas({
-  config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds,
+  config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds, errorsByTask, errorsByTrack,
   onSelectTask, onSelectTrack, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
   onRenameTrack, onMoveTrackTo, onAddDependency, onRemoveDependency,
   onSetTaskPosition, onTransferTask,
@@ -450,11 +452,11 @@ export function BoardCanvas({
               className={`relative border-b border-tagma-border/60 transition-opacity duration-100 ${isDraggedTrack ? 'opacity-50 bg-tagma-accent/5' : ''}`}
               style={{ height: TRACK_H }}
             >
-              {/* Color bar on left edge */}
+              {/* Color bar on left edge — red if track has errors */}
               <div className="absolute left-0 top-0"
-                style={{ width: 3, height: TRACK_H - 1, backgroundColor: track.color || 'transparent' }} />
+                style={{ width: 3, height: TRACK_H - 1, backgroundColor: errorsByTrack.has(track.id) ? '#ef4444' : (track.color || 'transparent') }} />
               <div className="h-full flex items-center cursor-grab active:cursor-grabbing" onPointerDown={(e) => handleTrackDragStart(track.id, e)}>
-                <TrackLane track={track} taskCount={taskCount} hasParallelWarning={hasParallel} />
+                <TrackLane track={track} taskCount={taskCount} hasParallelWarning={hasParallel} errorMessages={errorsByTrack.get(track.id)} />
               </div>
             </div>
           );
@@ -495,6 +497,7 @@ export function BoardCanvas({
                 x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
                 isSelected={selectedTaskId === ft.qid}
                 isInvalid={invalidTaskIds.has(ft.qid)}
+                errorMessages={errorsByTask.get(ft.qid)}
                 isDragging={taskDrag?.qid === ft.qid}
                 isEdgeTarget={edgeDrag !== null && edgeDrag.srcQid !== ft.qid && edgeDrag.target === ft.qid}
                 onPointerDown={handleTaskPointerDown}

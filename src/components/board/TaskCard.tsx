@@ -17,6 +17,7 @@ interface TaskCardProps {
   h: number;
   isSelected: boolean;
   isInvalid: boolean;
+  errorMessages?: string[];
   isDragging: boolean;
   isEdgeTarget: boolean;
   onPointerDown: (taskId: string, e: React.PointerEvent) => void;
@@ -44,7 +45,54 @@ function Chip({ children, className = '' }: { children: React.ReactNode; classNa
   );
 }
 
-/* ── Tooltip ── */
+/* ── Error Tooltip ── */
+function ErrorTooltip({ messages, anchorRect }: { messages: string[]; anchorRect: DOMRect }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const z = getZoom();
+    const gap = 6, margin = 8;
+    const vw = viewportW(), vh = viewportH();
+    const tW = el.getBoundingClientRect().width / z;
+    const tH = el.getBoundingClientRect().height / z;
+    const aL = anchorRect.left / z, aT = anchorRect.top / z;
+    const aW = anchorRect.width / z, aB = anchorRect.bottom / z;
+
+    let left = aL + aW / 2 - tW / 2;
+    left = Math.max(margin, Math.min(left, vw - tW - margin));
+    let top = aT - gap - tH >= margin ? aT - gap - tH : aB + gap;
+    top = Math.max(margin, Math.min(top, vh - tH - margin));
+    setPos({ left, top });
+  }, [anchorRect]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="fixed pointer-events-none bg-[#1a1a1e] border border-red-500/40 shadow-lg rounded-[3px] animate-fade-in"
+      style={{
+        left: pos?.left ?? -9999, top: pos?.top ?? -9999,
+        width: 260, maxHeight: viewportH() - 16,
+        overflow: 'hidden', zIndex: 9999,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+    >
+      <div className="px-3 py-1.5">
+        {messages.map((msg, i) => (
+          <div key={i} className="flex items-start gap-1.5 py-[2px] text-[9px] font-mono">
+            <AlertTriangle size={8} className="text-red-400 shrink-0 mt-[2px]" />
+            <span className="text-red-300/90">{msg}</span>
+          </div>
+        ))}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* ── Config Tooltip ── */
 function TaskTooltip({ task, trackId, config, anchorRect }: {
   task: RawTaskConfig; trackId: string; config: RawPipelineConfig; anchorRect: DOMRect;
 }) {
@@ -125,7 +173,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
 /* ── Main ── */
 export function TaskCard({
   task, trackId, pipelineConfig, x, y, w, h,
-  isSelected, isInvalid, isDragging, isEdgeTarget,
+  isSelected, isInvalid, errorMessages, isDragging, isEdgeTarget,
   onPointerDown, onHandlePointerDown, onTargetPointerUp, onContextMenu,
 }: TaskCardProps) {
   const [hovered, setHovered] = useState(false);
@@ -140,12 +188,14 @@ export function TaskCard({
 
   const borderColor = isDragging
     ? 'border-tagma-accent'
+    : isInvalid ? 'border-red-500/60'
     : isSelected ? 'border-tagma-accent'
     : isEdgeTarget ? 'border-tagma-accent/60'
     : 'border-tagma-border/70';
 
   const bgColor = isDragging
     ? 'bg-tagma-accent/10'
+    : isInvalid ? 'bg-red-500/8'
     : isSelected ? 'bg-tagma-accent/6'
     : isEdgeTarget ? 'bg-tagma-accent/4'
     : 'bg-tagma-elevated hover:bg-tagma-elevated/80';
@@ -214,7 +264,7 @@ export function TaskCard({
             {badges}
           </span>
         )}
-        {isInvalid && <AlertTriangle size={8} className="text-tagma-warning shrink-0" />}
+        {isInvalid && <AlertTriangle size={8} className="text-red-400 shrink-0" />}
       </div>
 
       {/* ─── Row 2: Driver chip · Tier chip · Permissions ─── */}
@@ -249,7 +299,9 @@ export function TaskCard({
 
       {/* Hover tooltip */}
       {hovered && !isDragging && cardRef.current && (
-        <TaskTooltip task={task} trackId={trackId} config={pipelineConfig} anchorRect={cardRef.current.getBoundingClientRect()} />
+        isInvalid && errorMessages?.length
+          ? <ErrorTooltip messages={errorMessages} anchorRect={cardRef.current.getBoundingClientRect()} />
+          : <TaskTooltip task={task} trackId={trackId} config={pipelineConfig} anchorRect={cardRef.current.getBoundingClientRect()} />
       )}
     </div>
   );

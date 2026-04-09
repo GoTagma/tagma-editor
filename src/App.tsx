@@ -55,19 +55,44 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [yamlPath, saveFile]);
 
-  const invalidTaskIds = useMemo(() => {
-    const set = new Set<string>();
+  // Attribute each validation error to its root cause (track or task)
+  // If all errors in a track are track-level (no task index), mark the track.
+  // Otherwise mark the specific tasks.
+  const { errorsByTask, errorsByTrack } = useMemo(() => {
+    const byTask = new Map<string, string[]>();  // qid → messages
+    const byTrack = new Map<string, string[]>(); // trackId → messages
+
     for (const err of validationErrors) {
       const trackMatch = err.path.match(/tracks\[(\d+)\]/);
+      if (!trackMatch) continue;
+      const track = config.tracks[parseInt(trackMatch[1])];
+      if (!track) continue;
+
       const taskMatch = err.path.match(/tasks\[(\d+)\]/);
-      if (trackMatch && taskMatch) {
-        const track = config.tracks[parseInt(trackMatch[1])];
-        const task = track?.tasks[parseInt(taskMatch[1])];
-        if (track && task) set.add(`${track.id}.${task.id}`);
+      if (taskMatch) {
+        const task = track.tasks[parseInt(taskMatch[1])];
+        if (task) {
+          const qid = `${track.id}.${task.id}`;
+          const list = byTask.get(qid) ?? [];
+          list.push(err.message);
+          byTask.set(qid, list);
+        }
+      } else {
+        // Track-level error
+        const list = byTrack.get(track.id) ?? [];
+        list.push(err.message);
+        byTrack.set(track.id, list);
       }
     }
-    return set;
+
+    return { errorsByTask: byTask, errorsByTrack: byTrack };
   }, [validationErrors, config]);
+
+  // Compat: keep invalidTaskIds as a Set for BoardCanvas
+  const invalidTaskIds = useMemo(
+    () => new Set(errorsByTask.keys()),
+    [errorsByTask],
+  );
 
   const selectedInfo = useMemo(() => {
     if (!selectedTaskId) return null;
@@ -236,6 +261,7 @@ export function App() {
           <BoardCanvas
             config={config} dagEdges={dagEdges} positions={positions}
             selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
+            errorsByTask={errorsByTask} errorsByTrack={errorsByTrack}
             onSelectTask={selectTask}
             onSelectTrack={selectTrack}
             onAddTask={addTask} onAddTrack={addTrack}
@@ -268,37 +294,6 @@ export function App() {
           />
         )}
       </div>
-
-      {/* Validation bar — bottom of window, expands upward on hover */}
-      {validationErrors.length > 0 && (
-        <div className="relative group shrink-0">
-          <div className="flex items-center gap-2 px-4 py-1.5 bg-tagma-error/5 border-t border-tagma-error/20 cursor-default">
-            <AlertCircle size={12} className="text-tagma-error shrink-0" />
-            <span className="text-[10px] text-tagma-error font-mono flex-1 truncate">
-              {validationErrors.length} validation {validationErrors.length === 1 ? 'error' : 'errors'}
-              {validationErrors.length <= 3 && ': ' + validationErrors.map((e) => e.message).join(' | ')}
-            </span>
-            {validationErrors.length > 3 && (
-              <span className="text-[9px] text-tagma-error/60 font-mono shrink-0">hover to expand</span>
-            )}
-          </div>
-          {validationErrors.length > 1 && (
-            <div className="absolute left-0 right-0 bottom-full z-[80] hidden group-hover:block">
-              <div className="mx-4 mb-0.5 bg-tagma-surface border border-tagma-error/20 shadow-panel max-h-[200px] overflow-y-auto">
-                {validationErrors.map((err, i) => (
-                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-[10px] font-mono border-b border-tagma-border/30 last:border-b-0">
-                    <AlertCircle size={10} className="text-tagma-error shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <span className="text-tagma-error">{err.message}</span>
-                      {err.path && <span className="text-tagma-muted ml-2">{err.path}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Pipeline Settings modal */}
       {showPipelineSettings && (

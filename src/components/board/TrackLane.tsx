@@ -5,6 +5,7 @@ interface TrackLaneProps {
   track: RawTrackConfig;
   taskCount: number;
   hasParallelWarning: boolean;
+  errorMessages?: string[];
 }
 
 const TIER_TEXT: Record<string, string> = { high: 'HIGH', medium: 'MED', low: 'LOW' };
@@ -28,22 +29,30 @@ function Chip({ children, className = '' }: { children: React.ReactNode; classNa
   );
 }
 
-export function TrackLane({ track, taskCount, hasParallelWarning }: TrackLaneProps) {
+export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages }: TrackLaneProps) {
+  const hasError = errorMessages && errorMessages.length > 0;
   const perms = track.permissions;
   const fail = track.on_failure ? FAIL_CFG[track.on_failure] : null;
   const hasMeta = !!track.driver || !!track.model_tier || !!perms || !!fail
     || (track.middlewares && track.middlewares.length > 0) || !!track.agent_profile;
 
   return (
-    <div className="h-full w-full flex flex-col justify-center px-3 select-none">
+    <div className={`h-full w-full flex flex-col justify-center px-3 select-none ${hasError ? 'bg-red-500/6' : ''}`}
+      title={hasError ? errorMessages!.join('\n') : undefined}>
       {/* ─── Row 1 (22px): Color · Name · Badges · Count ─── */}
       <div className="flex items-center h-[22px] gap-[6px]">
         <div className="w-[6px] h-[6px] rounded-full shrink-0"
           style={{ backgroundColor: track.color ?? 'transparent', opacity: track.color ? 1 : 0 }} />
 
-        <span className="text-[11px] font-semibold text-tagma-text truncate flex-1 leading-[22px] tracking-tight">
+        <span className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : 'text-tagma-text'}`}>
           {track.name}
         </span>
+
+        {hasError && (
+          <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0">
+            <AlertTriangle size={9} className="text-red-400" />
+          </span>
+        )}
 
         {hasParallelWarning && (
           <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0" title="Tasks without edges run in parallel">
