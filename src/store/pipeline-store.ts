@@ -205,12 +205,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         if (current.isDirty && current.yamlPath) {
           await api.saveFile().catch(() => {});
         }
-        // Set new workspace, then reset to a blank pipeline (clears yamlPath)
+        // Set new workspace, then reset to a blank pipeline via store's newPipeline
         await api.setWorkDir(wd);
-        const state = await api.newPipeline();
-        set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
-        applyState(state);
-        set({ isDirty: false });
+        await _get().newPipeline();
       } catch (e: any) {
         set({ errorMessage: 'Failed to set workspace: ' + (e.message ?? e) });
       }
