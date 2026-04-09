@@ -221,13 +221,15 @@ export function App() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-tagma-bg" onClick={() => { selectTask(null); selectTrack(null); }}>
-      <Toolbar
-        pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
-        menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
-      />
+    <div className="h-full flex flex-col bg-tagma-bg">
+      <div onClick={() => { selectTask(null); selectTrack(null); }}>
+        <Toolbar
+          pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
+          menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
+        />
 
-      <PipelineSummaryBar config={config} />
+        <PipelineSummaryBar config={config} />
+      </div>
 
       {validationErrors.length > 0 && (
         <div className="relative group">

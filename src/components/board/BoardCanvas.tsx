@@ -465,7 +465,7 @@ export function BoardCanvas({
         onScroll={syncScroll}
         onContextMenu={handleCanvasContextMenu}
         onMouseDown={handleBackgroundPanMouseDown}
-        onClick={(e) => { if (e.target === e.currentTarget) { onSelectTask(null); setSelEdge(null); } }}
+        onClick={(e) => { if (e.target === e.currentTarget) { onSelectTask(null); onSelectTrack(null); setSelEdge(null); } }}
       >
         <div className="relative w-full cursor-grab active:cursor-grabbing" style={{ minWidth: contentW, minHeight: contentH }}>
           {/* Row backgrounds */}
@@ -475,7 +475,7 @@ export function BoardCanvas({
               className={`absolute left-0 right-0 border-b border-tagma-border/40 cursor-grab active:cursor-grabbing ${i % 2 === 0 ? 'track-row-even' : 'track-row-odd'}`}
               style={{ top: i * TRACK_H, height: TRACK_H }}
               onMouseDown={handleBackgroundPanMouseDown}
-              onClick={() => { if (!panDidDragRef.current) { onSelectTask(null); setSelEdge(null); } }}
+              onClick={() => { if (!panDidDragRef.current) { onSelectTask(null); onSelectTrack(null); setSelEdge(null); } }}
             />
           ))}
 
