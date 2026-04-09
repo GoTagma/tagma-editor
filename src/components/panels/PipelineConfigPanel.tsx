@@ -6,8 +6,6 @@ import { viewportH } from '../../utils/zoom';
 
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
-  yamlPath: string | null;
-  workDir: string;
   drivers: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
   onClose: () => void;
@@ -20,8 +18,7 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
 
 const GATE_HOOKS: ReadonlySet<string> = new Set(['pipeline_start', 'task_start']);
 
-export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
-  const [name, setName, blurName] = useLocalField(config.name, (v) => onUpdate({ name: v }));
+export function PipelineConfigPanel({ config, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
   const hooks = config.hooks ?? {};
@@ -49,30 +46,6 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpda
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {/* Info (readonly) */}
-          <div className="flex gap-4">
-            <div className="flex-1 min-w-0">
-              <label className="field-label">YAML File</label>
-              <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={yamlPath ?? undefined}>
-                {yamlPath ?? '(unsaved)'}
-              </div>
-            </div>
-            <div className="flex-1 min-w-0">
-              <label className="field-label">Workspace</label>
-              <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={workDir}>
-                {workDir || '(not set)'}
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-tagma-border" />
-
-          {/* Name * */}
-          <div>
-            <label className="field-label">Name <span className="text-tagma-error">*</span></label>
-            <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={blurName} placeholder="Pipeline name..." />
-          </div>
-
           {/* Driver & Timeout */}
           <div className="flex gap-4">
             <div className="flex-1">

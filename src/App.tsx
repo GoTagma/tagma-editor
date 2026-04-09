@@ -368,8 +368,6 @@ export function App() {
       {showPipelineSettings && (
         <PipelineConfigPanel
           config={config}
-          yamlPath={yamlPath}
-          workDir={workDir}
           drivers={registry.drivers}
           onUpdate={updatePipelineFields}
           onClose={() => setShowPipelineSettings(false)}
