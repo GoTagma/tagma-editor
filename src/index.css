@@ -61,7 +61,7 @@ input[type="checkbox"] { accent-color: #d4845a; }
     @apply w-full text-xs bg-tagma-bg border border-tagma-border px-2.5 py-1.5 text-tagma-text placeholder:text-tagma-muted/50 transition-colors;
   }
   .btn-primary {
-    @apply flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-tagma-accent text-white hover:bg-tagma-accent/85 transition-all;
+    @apply flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium tracking-wide bg-tagma-accent text-white hover:bg-tagma-accent/85 transition-all rounded-sm;
   }
   .btn-ghost {
     @apply flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-tagma-muted hover:text-tagma-text hover:bg-tagma-elevated transition-colors;

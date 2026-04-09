@@ -5,6 +5,7 @@ import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
+import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
 import { PipelineSummaryBar } from './components/board/PipelineSummaryBar';
@@ -29,6 +30,7 @@ export function App() {
   const { active: runActive, startRun, reset: resetRun } = useRunStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showPlugins, setShowPlugins] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
 
@@ -218,6 +220,12 @@ export function App() {
         { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
       ],
     },
+    {
+      label: 'Plugins',
+      items: [
+        { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
+      ],
+    },
   ], [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave]);
 
   // Ctrl+O → Import
@@ -347,9 +355,32 @@ export function App() {
           workDir={workDir}
           drivers={registry.drivers}
           onUpdate={updatePipelineFields}
-          onRegistryUpdate={setRegistry}
           onClose={() => setShowPipelineSettings(false)}
         />
+      )}
+
+      {/* Plugins modal */}
+      {showPlugins && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowPlugins(false)}>
+          <div
+            className="bg-tagma-surface border border-tagma-border shadow-panel w-[520px] max-h-[80vh] flex flex-col animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="panel-header">
+              <h2 className="panel-title">Plugins</h2>
+              <button onClick={() => setShowPlugins(false)} className="p-1 text-tagma-muted hover:text-tagma-text transition-colors">
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 px-5 py-4 flex flex-col">
+              <PluginManager
+                declaredPlugins={config.plugins ?? []}
+                onRegistryUpdate={setRegistry}
+                onPluginsChange={(plugins) => updatePipelineFields({ plugins: plugins.length > 0 ? plugins : undefined })}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* File Explorer modal */}

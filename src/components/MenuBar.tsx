@@ -83,34 +83,34 @@ export function MenuBar({ menus }: MenuBarProps) {
   }, [openIdx, close]);
 
   return (
-    <div ref={barRef} className="flex items-center relative z-[100]">
+    <div ref={barRef} className="flex items-center relative z-[100] h-full">
       {menus.map((menu, mi) => (
-        <div key={mi} className="relative">
+        <div key={mi} className="relative h-full flex items-center">
           <button
-            className={`px-2.5 py-0.5 text-[11px] transition-colors flex items-center gap-0.5 ${openIdx === mi ? 'bg-tagma-elevated text-tagma-text' : 'text-tagma-muted hover:text-tagma-text hover:bg-tagma-elevated/50'}`}
+            className={`h-full px-2.5 text-[11px] tracking-wide transition-colors flex items-center gap-1 ${openIdx === mi ? 'bg-tagma-elevated text-tagma-text' : 'text-tagma-muted hover:text-tagma-text hover:bg-tagma-elevated/40'}`}
             onClick={() => setOpenIdx(openIdx === mi ? null : mi)}
             onMouseEnter={() => { if (openIdx !== null) setOpenIdx(mi); }}
           >
             {menu.label}
-            <ChevronDown size={9} className="opacity-50" />
+            <ChevronDown size={8} className="opacity-40" />
           </button>
 
           {openIdx === mi && (
-            <div className="absolute left-0 top-full mt-px bg-tagma-surface border border-tagma-border shadow-panel py-1 min-w-[200px] animate-fade-in z-[101]">
+            <div className="absolute left-0 top-full bg-tagma-surface border border-tagma-border/80 shadow-xl py-1 min-w-[200px] animate-fade-in z-[101] rounded-sm">
               {menu.items.map((item, ii) => {
                 if (isSep(item)) {
-                  return <div key={`sep-${ii}`} className="my-1 border-t border-tagma-border/40" />;
+                  return <div key={`sep-${ii}`} className="my-1 border-t border-tagma-border/30" />;
                 }
                 return (
                   <button
                     key={ii}
                     disabled={item.disabled}
                     onClick={() => { item.onAction(); close(); }}
-                    className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] text-left transition-colors text-tagma-text hover:bg-tagma-elevated disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] text-left transition-colors text-tagma-text hover:bg-tagma-accent/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <span>{item.label}</span>
                     {item.shortcut && (
-                      <span className="text-[9px] text-tagma-muted font-mono ml-4">{item.shortcut}</span>
+                      <span className="text-[9px] text-tagma-muted/60 font-mono ml-6 tracking-wider">{item.shortcut}</span>
                     )}
                   </button>
                 );

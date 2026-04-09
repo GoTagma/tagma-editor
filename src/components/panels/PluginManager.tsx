@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
-import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw } from 'lucide-react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw, Search } from 'lucide-react';
 import { api } from '../../api/client';
 import type { PluginInfo, PluginRegistry } from '../../api/client';
 
@@ -17,17 +17,21 @@ type ActionState = { type: 'idle' }
   | { type: 'error'; plugin: string; message: string }
   | { type: 'success'; plugin: string; message: string };
 
+const ALL_CATEGORY = 'all';
+const INSTALLED_FILTER = 'installed';
+
 export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChange }: PluginManagerProps) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [actionState, setActionState] = useState<ActionState>({ type: 'idle' });
   const [inputValue, setInputValue] = useState('');
+  const [search, setSearch] = useState('');
+  const [activeFilter, setActiveFilter] = useState(ALL_CATEGORY);
 
   const refresh = useCallback(async () => {
     try {
       const { plugins: list } = await api.listPlugins();
       setPlugins(list);
     } catch {
-      // If no plugins declared, list will be empty
       setPlugins([]);
     }
   }, []);
@@ -36,13 +40,40 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
     refresh();
   }, [refresh, declaredPlugins]);
 
+  // Derive unique categories from all plugins
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    for (const p of plugins) {
+      for (const c of p.categories) cats.add(c);
+    }
+    return Array.from(cats).sort();
+  }, [plugins]);
+
+  // Filter plugins by search + category
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return plugins.filter((p) => {
+      // Category / installed filter
+      if (activeFilter === INSTALLED_FILTER) {
+        if (!p.installed) return false;
+      } else if (activeFilter !== ALL_CATEGORY) {
+        if (!p.categories.includes(activeFilter)) return false;
+      }
+      // Search text
+      if (q) {
+        const haystack = `${p.name} ${p.description ?? ''} ${p.categories.join(' ')}`.toLowerCase();
+        return haystack.includes(q);
+      }
+      return true;
+    });
+  }, [plugins, search, activeFilter]);
+
   const handleInstall = useCallback(async (name: string) => {
     setActionState({ type: 'loading', plugin: name, action: 'Installing' });
     try {
       const result = await api.installPlugin(name);
       onRegistryUpdate(result.registry);
 
-      // Add to pipeline plugins if not already there
       if (!declaredPlugins.includes(name)) {
         onPluginsChange([...declaredPlugins, name]);
       }
@@ -63,7 +94,6 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
       const result = await api.uninstallPlugin(name);
       onRegistryUpdate(result.registry);
 
-      // Remove from pipeline plugins
       onPluginsChange(declaredPlugins.filter((p) => p !== name));
 
       setActionState({ type: 'success', plugin: name, message: 'Uninstalled' });
@@ -94,24 +124,57 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
 
   const isLoading = actionState.type === 'loading';
 
+  const filterTabs = [
+    { key: ALL_CATEGORY, label: 'All' },
+    { key: INSTALLED_FILTER, label: 'Installed' },
+    ...categories.map((c) => ({ key: c, label: c })),
+  ];
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <label className="field-label mb-0">Plugins</label>
-        <button
-          onClick={refresh}
-          disabled={isLoading}
-          className="p-1 text-tagma-muted hover:text-tagma-text transition-colors disabled:opacity-50"
-          title="Refresh plugin status"
-        >
-          <RefreshCw size={12} />
-        </button>
+    <div className="flex flex-col h-full min-h-0">
+      {/* Search bar */}
+      <div className="relative mb-3 shrink-0">
+        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-tagma-muted pointer-events-none" />
+        <input
+          type="text"
+          className="field-input w-full pl-8 font-mono text-[11px]"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search plugins..."
+        />
       </div>
 
-      {/* Plugin list */}
-      {plugins.length > 0 && (
-        <div className="space-y-1.5 mb-2">
-          {plugins.map((p) => (
+      {/* Category filter tabs */}
+      {filterTabs.length > 2 && (
+        <div className="flex items-center gap-1 mb-3 shrink-0 overflow-x-auto scrollbar-thin">
+          {filterTabs.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveFilter(tab.key)}
+              className={`px-2 py-0.5 text-[10px] font-medium border whitespace-nowrap transition-colors ${
+                activeFilter === tab.key
+                  ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                  : 'bg-tagma-bg text-tagma-muted border-tagma-border hover:text-tagma-text'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+          <button
+            onClick={refresh}
+            disabled={isLoading}
+            className="ml-auto p-1 text-tagma-muted hover:text-tagma-text transition-colors disabled:opacity-50 shrink-0"
+            title="Refresh plugin list"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* Scrollable plugin list */}
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 mb-3">
+        {filtered.length > 0 ? (
+          filtered.map((p) => (
             <PluginRow
               key={p.name}
               plugin={p}
@@ -121,34 +184,50 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
               onLoad={handleLoad}
               disabled={isLoading}
             />
-          ))}
+          ))
+        ) : (
+          <div className="flex flex-col items-center justify-center py-8 text-tagma-muted">
+            <Package size={24} className="mb-2 opacity-40" />
+            <p className="text-[11px]">
+              {search ? 'No plugins match your search' : 'No plugins available'}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Count */}
+      {plugins.length > 0 && (
+        <div className="text-[10px] text-tagma-muted mb-2 shrink-0">
+          Showing {filtered.length} of {plugins.length} plugin{plugins.length !== 1 ? 's' : ''}
+          {plugins.filter((p) => p.installed).length > 0 && (
+            <span> · {plugins.filter((p) => p.installed).length} installed</span>
+          )}
         </div>
       )}
 
-      {plugins.length === 0 && (
-        <p className="text-[10px] text-tagma-muted mb-2">No plugins installed</p>
-      )}
-
       {/* Add new plugin */}
-      <div className="flex gap-1.5">
-        <input
-          type="text"
-          className="field-input flex-1 font-mono text-[11px]"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-          placeholder="@tagma/driver-codex"
-          disabled={isLoading}
-        />
-        <button
-          onClick={handleAdd}
-          disabled={isLoading || !inputValue.trim()}
-          className="px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Download size={12} />
-        </button>
+      <div className="shrink-0 border-t border-tagma-border pt-3">
+        <label className="field-label">Install Plugin</label>
+        <div className="flex gap-1.5">
+          <input
+            type="text"
+            className="field-input flex-1 font-mono text-[11px]"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="@tagma/driver-codex"
+            disabled={isLoading}
+          />
+          <button
+            onClick={handleAdd}
+            disabled={isLoading || !inputValue.trim()}
+            className="px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download size={12} />
+          </button>
+        </div>
+        <p className="text-[10px] text-tagma-muted mt-1">Enter a package name to install and register</p>
       </div>
-      <p className="text-[10px] text-tagma-muted mt-1">Enter a package name to install and register</p>
 
       {/* Status message */}
       {actionState.type !== 'idle' && actionState.type !== 'loading' && (
@@ -179,6 +258,9 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
             <span className="text-[9px] text-tagma-muted shrink-0">v{plugin.version}</span>
           )}
         </div>
+        {plugin.description && (
+          <div className="text-[10px] text-tagma-muted truncate mt-0.5">{plugin.description}</div>
+        )}
         <div className="flex items-center gap-1.5 mt-0.5 min-w-0 overflow-hidden">
           {plugin.installed ? (
             <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">installed</span>

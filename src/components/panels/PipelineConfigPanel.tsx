@@ -1,8 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import { X } from 'lucide-react';
-import type { RawPipelineConfig, HooksConfig, HookCommand, PluginRegistry } from '../../api/client';
+import type { RawPipelineConfig, HooksConfig, HookCommand } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
-import { PluginManager } from './PluginManager';
 import { viewportH } from '../../utils/zoom';
 
 interface PipelineConfigPanelProps {
@@ -11,7 +10,6 @@ interface PipelineConfigPanelProps {
   workDir: string;
   drivers: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
-  onRegistryUpdate: (registry: PluginRegistry) => void;
   onClose: () => void;
 }
 
@@ -22,7 +20,7 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
 
 const GATE_HOOKS: ReadonlySet<string> = new Set(['pipeline_start', 'task_start']);
 
-export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onRegistryUpdate, onClose }: PipelineConfigPanelProps) {
+export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
   const [name, setName, blurName] = useLocalField(config.name, (v) => onUpdate({ name: v }));
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
@@ -89,15 +87,6 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpda
               <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} onBlur={blurTimeout} placeholder="e.g. 10m, 60s" />
             </div>
           </div>
-
-          {/* Plugins */}
-          <PluginManager
-            declaredPlugins={config.plugins ?? []}
-            onRegistryUpdate={onRegistryUpdate}
-            onPluginsChange={(plugins) => onUpdate({ plugins: plugins.length > 0 ? plugins : undefined })}
-          />
-
-          <div className="border-t border-tagma-border" />
 
           {/* Hooks */}
           <div>
