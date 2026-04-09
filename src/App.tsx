@@ -233,15 +233,15 @@ export function App() {
       ],
     },
     {
-      label: 'Settings',
-      items: [
-        { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
-      ],
-    },
-    {
       label: 'Plugins',
       items: [
         { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
+      ],
+    },
+    {
+      label: 'Settings',
+      items: [
+        { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
       ],
     },
   ], [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave]);

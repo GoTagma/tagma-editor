@@ -58,7 +58,7 @@ export function Toolbar({
       <div className="w-px h-4 bg-tagma-border/60 mx-2 shrink-0" />
 
       {/* Pipeline name + file + status */}
-      <div className="flex items-center gap-2 min-w-0 shrink">
+      <div className="flex items-center gap-2 min-w-0 shrink overflow-hidden">
         {isEditing ? (
           <div className="flex items-center gap-1.5 shrink-0">
             <input
@@ -74,7 +74,7 @@ export function Toolbar({
         ) : (
           <button
             onClick={() => { setEditName(pipelineName); setIsEditing(true); }}
-            className="flex items-center gap-1.5 group min-w-0"
+            className="flex items-center gap-1.5 group min-w-0 shrink-0"
           >
             <span className="text-[11px] font-semibold tracking-wide text-tagma-text truncate max-w-[180px] group-hover:text-white transition-colors">{pipelineName}</span>
             <Pencil size={9} className="text-tagma-muted/50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
@@ -84,8 +84,8 @@ export function Toolbar({
         {displayPath && (
           <>
             <span className="text-tagma-muted/30 text-[10px] select-none shrink-0">/</span>
-            <div className="flex items-center gap-1 min-w-0 shrink group/file">
-              <span className="text-[10px] font-mono text-tagma-muted/60 truncate max-w-[220px]" title={yamlPath!}>
+            <div className="flex items-center gap-1 min-w-0 group/file">
+              <span className="text-[10px] font-mono text-tagma-muted/60 truncate" title={yamlPath!}>
                 {displayPath}
               </span>
               <button
@@ -98,24 +98,24 @@ export function Toolbar({
             </div>
           </>
         )}
-
-        {/* Status badges */}
-        {(isDirty || errorCount > 0) && (
-          <div className="flex items-center gap-1.5 ml-1 shrink-0">
-            {isDirty && (
-              <span className="text-[9px] font-medium tracking-wider uppercase text-tagma-warning/80 bg-tagma-warning/8 px-1.5 py-px rounded-sm">
-                modified
-              </span>
-            )}
-            {errorCount > 0 && (
-              <span className="flex items-center gap-1 text-[9px] font-medium tracking-wider uppercase text-tagma-error/90 bg-tagma-error/8 px-1.5 py-px rounded-sm whitespace-nowrap">
-                <AlertTriangle size={9} />
-                {errorCount} {errorCount === 1 ? 'error' : 'errors'}
-              </span>
-            )}
-          </div>
-        )}
       </div>
+
+      {/* Status badges — separated from path to prevent overlap */}
+      {(isDirty || errorCount > 0) && (
+        <div className="flex items-center gap-1.5 shrink-0 ml-1">
+          {isDirty && (
+            <span className="text-[9px] font-medium tracking-wider uppercase text-tagma-warning/80 bg-tagma-warning/8 px-1.5 py-px rounded-sm">
+              modified
+            </span>
+          )}
+          {errorCount > 0 && (
+            <span className="flex items-center gap-1 text-[9px] font-medium tracking-wider uppercase text-tagma-error/90 bg-tagma-error/8 px-1.5 py-px rounded-sm whitespace-nowrap">
+              <AlertTriangle size={9} />
+              {errorCount} {errorCount === 1 ? 'error' : 'errors'}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="flex-1 min-w-0" />
 
