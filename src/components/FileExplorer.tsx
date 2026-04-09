@@ -68,7 +68,7 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
       if (mode === 'open') {
         onConfirm(entry.path);
       } else if (mode === 'save') {
-        setFileName(entry.name);
+        setFileName(entry.name.replace(/\.(yaml|yml)$/i, ''));
       }
     }
   }, [mode, loadDir, onConfirm]);
@@ -77,9 +77,11 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
     if (mode === 'directory') {
       onConfirm(currentPath);
     } else if (mode === 'save') {
-      if (!fileName.trim()) return;
+      const base = fileName.trim();
+      if (!base) return;
       const sep = currentPath.includes('/') ? '/' : '\\';
-      onConfirm(currentPath + sep + fileName.trim());
+      const withExt = /\.(yaml|yml)$/i.test(base) ? base : base + '.yaml';
+      onConfirm(currentPath + sep + withExt);
     }
   }, [mode, currentPath, fileName, onConfirm]);
 
@@ -201,11 +203,14 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
           {mode === 'save' && (
             <div className="flex items-center gap-2">
               <label className="text-[10px] text-tagma-muted uppercase tracking-wider shrink-0">File name</label>
-              <input ref={fileNameRef} type="text" value={fileName}
-                onChange={(e) => setFileName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(); }}
-                className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border px-2 py-1 text-tagma-text"
-                placeholder="pipeline.yaml" autoFocus />
+              <div className="flex-1 flex items-center bg-tagma-bg border border-tagma-border">
+                <input ref={fileNameRef} type="text" value={fileName}
+                  onChange={(e) => setFileName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(); }}
+                  className="flex-1 text-[11px] font-mono bg-transparent px-2 py-1 text-tagma-text outline-none"
+                  placeholder="pipeline" autoFocus />
+                <span className="text-[11px] font-mono text-tagma-muted pr-2 select-none">.yaml</span>
+              </div>
             </div>
           )}
           <div className="flex justify-end gap-2">
