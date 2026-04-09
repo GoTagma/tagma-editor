@@ -371,10 +371,44 @@ async function loadPluginFromWorkDir(name: string): Promise<void> {
   registerPlugin(mod.pluginCategory, mod.pluginType, mod.default);
 }
 
-/** List all managed plugins (from pipeline config + any loaded this session) */
+/** Read/write .tagma/plugins.json — the persistent manifest of installed plugins */
+function readPluginManifest(): string[] {
+  try {
+    const p = resolve(workDir, '.tagma', 'plugins.json');
+    if (!existsSync(p)) return [];
+    return JSON.parse(readFileSync(p, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function writePluginManifest(names: string[]): void {
+  const dir = resolve(workDir, '.tagma');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(resolve(dir, 'plugins.json'), JSON.stringify(names, null, 2), 'utf-8');
+}
+
+function addToPluginManifest(name: string): void {
+  const list = readPluginManifest();
+  if (!list.includes(name)) {
+    list.push(name);
+    writePluginManifest(list);
+  }
+}
+
+function removeFromPluginManifest(name: string): void {
+  const list = readPluginManifest();
+  const filtered = list.filter((n) => n !== name);
+  if (filtered.length !== list.length) {
+    writePluginManifest(filtered);
+  }
+}
+
+/** List all managed plugins (from pipeline config + manifest + loaded this session) */
 app.get('/api/plugins', (_req, res) => {
   const declared = config.plugins ?? [];
-  const allNames = [...new Set([...declared, ...loadedPlugins])];
+  const manifest = readPluginManifest();
+  const allNames = [...new Set([...declared, ...manifest, ...loadedPlugins])];
   const plugins = allNames.map(getPluginInfo);
   res.json({ plugins });
 });
@@ -411,6 +445,7 @@ app.post('/api/plugins/install', async (req, res) => {
 
   try {
     await installPackage(name);
+    addToPluginManifest(name);
 
     // Load into SDK registry
     try {
@@ -439,6 +474,7 @@ app.post('/api/plugins/uninstall', (_req, res) => {
 
   try {
     uninstallPackage(name);
+    removeFromPluginManifest(name);
     loadedPlugins.delete(name);
 
     res.json({
@@ -509,6 +545,8 @@ app.post('/api/plugins/import-local', async (req, res) => {
     if (!pkgName) {
       return res.status(500).json({ error: 'Could not determine package name after install' });
     }
+
+    addToPluginManifest(pkgName);
 
     // Load into SDK registry
     try {
@@ -847,6 +885,11 @@ app.post('/api/new', (req, res) => {
   const randomId = Math.random().toString(36).slice(2, 10);
   const fileName = `pipeline-${randomId}.yaml`;
   config = createEmptyPipeline(name || 'Untitled Pipeline');
+  // Seed a default track + task so new pipelines start without validation errors
+  const trackId = Math.random().toString(36).slice(2, 10);
+  config = upsertTrack(config, { id: trackId, name: 'Track 1', color: '#3b82f6', tasks: [] });
+  const taskId = Math.random().toString(36).slice(2, 10);
+  config = upsertTask(config, trackId, { id: taskId, name: 'Task 1', prompt: 'Hello world!' });
   yamlPath = join(tagmaDir, fileName);
   const content = serializePipeline(config);
   writeFileSync(yamlPath, content, 'utf-8');

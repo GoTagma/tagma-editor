@@ -247,18 +247,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     newPipeline: async (name) => {
       try {
         set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
-        let state = await api.newPipeline(name);
+        const state = await api.newPipeline(name);
         applyState(state);
-        // Seed a default track + task so the blank pipeline has no validation errors
-        if (state.config.tracks.length === 0) {
-          const trackId = generateId();
-          const color = TRACK_COLORS[0];
-          state = await api.addTrack(trackId, 'Track 1', color);
-          applyState(state);
-          const taskId = generateId();
-          state = await api.addTask(trackId, { id: taskId, name: 'Task 1', prompt: 'Hello world!' });
-          applyState(state);
-        }
         set({ isDirty: false });
       } catch (e: any) {
         set({ errorMessage: 'Failed to create pipeline: ' + (e.message ?? e) });
