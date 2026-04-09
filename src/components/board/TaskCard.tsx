@@ -102,10 +102,12 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
   const track = config.tracks.find((t) => t.id === trackId);
   const perms = task.permissions ?? track?.permissions;
 
+  const isCmd = !!task.command;
   const rows: [string, string][] = [];
-  if (driver) rows.push(['Driver', driver]);
-  if (tier) rows.push(['Model', tier]);
-  if (perms) {
+  // AI-specific fields only for prompt/template tasks
+  if (!isCmd && driver) rows.push(['Driver', driver]);
+  if (!isCmd && tier) rows.push(['Model', tier]);
+  if (!isCmd && perms) {
     const parts = [perms.read && 'Read', perms.write && 'Write', perms.execute && 'Execute'].filter(Boolean);
     if (parts.length) rows.push(['Permissions', parts.join(', ')]);
   }
@@ -116,7 +118,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
   if (task.output) rows.push(['Output', task.output]);
   if (task.continue_from) rows.push(['Continue', task.continue_from]);
   if (task.cwd) rows.push(['CWD', task.cwd]);
-  if (task.agent_profile) rows.push(['Profile', task.agent_profile]);
+  if (!isCmd && task.agent_profile) rows.push(['Profile', task.agent_profile]);
   if (task.use) rows.push(['Template', task.use]);
   if (task.prompt) rows.push(['Prompt', task.prompt.length > 60 ? task.prompt.slice(0, 60) + '…' : task.prompt]);
   if (task.command) rows.push(['Command', task.command.length > 60 ? task.command.slice(0, 60) + '…' : task.command]);
@@ -268,35 +270,37 @@ export function TaskCard({
         {isInvalid && <AlertTriangle size={8} className="text-red-400 shrink-0" />}
       </div>
 
-      {/* ─── Row 2: Driver chip · Tier chip · Permissions ─── */}
-      <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden">
-        {driver && (
-          <Chip className="bg-tagma-accent/8 text-tagma-accent/70">{driver}</Chip>
-        )}
-        {tier && (
-          <Chip className={`font-bold ${
-            tier === 'high' ? 'bg-blue-500/10 text-blue-400/80'
-            : tier === 'low' ? 'bg-emerald-500/10 text-emerald-400/80'
-            : 'bg-tagma-muted/8 text-tagma-muted/70'
-          }`}>
-            {tier === 'high' ? 'HIGH' : tier === 'medium' ? 'MED' : tier === 'low' ? 'LOW' : tier}
-          </Chip>
-        )}
-        {perms && (
-          <span className="flex items-center h-[14px] gap-[1px] ml-auto">
-            {(['read', 'write', 'execute'] as const).map((k) => (
-              <span key={k} className={`text-[7px] font-mono font-bold w-[10px] text-center leading-[14px]
-                ${k === 'read' && perms.read ? 'text-emerald-400' : ''}
-                ${k === 'write' && perms.write ? 'text-amber-400' : ''}
-                ${k === 'execute' && perms.execute ? 'text-red-400' : ''}
-                ${!perms[k] ? 'text-tagma-muted/20' : ''}
-              `}>
-                {k[0].toUpperCase()}
-              </span>
-            ))}
-          </span>
-        )}
-      </div>
+      {/* ─── Row 2: Driver chip · Tier chip · Permissions (prompt/template only) ─── */}
+      {!isCommand && (
+        <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden">
+          {driver && (
+            <Chip className="bg-tagma-accent/8 text-tagma-accent/70">{driver}</Chip>
+          )}
+          {tier && (
+            <Chip className={`font-bold ${
+              tier === 'high' ? 'bg-blue-500/10 text-blue-400/80'
+              : tier === 'low' ? 'bg-emerald-500/10 text-emerald-400/80'
+              : 'bg-tagma-muted/8 text-tagma-muted/70'
+            }`}>
+              {tier === 'high' ? 'HIGH' : tier === 'medium' ? 'MED' : tier === 'low' ? 'LOW' : tier}
+            </Chip>
+          )}
+          {perms && (
+            <span className="flex items-center h-[14px] gap-[1px] ml-auto">
+              {(['read', 'write', 'execute'] as const).map((k) => (
+                <span key={k} className={`text-[7px] font-mono font-bold w-[10px] text-center leading-[14px]
+                  ${k === 'read' && perms.read ? 'text-emerald-400' : ''}
+                  ${k === 'write' && perms.write ? 'text-amber-400' : ''}
+                  ${k === 'execute' && perms.execute ? 'text-red-400' : ''}
+                  ${!perms[k] ? 'text-tagma-muted/20' : ''}
+                `}>
+                  {k[0].toUpperCase()}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Hover tooltip */}
       {hovered && !isDragging && cardRef.current && (
