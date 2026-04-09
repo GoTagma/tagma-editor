@@ -5,16 +5,21 @@ interface PipelineSummaryBarProps {
   config: RawPipelineConfig;
 }
 
-/* Uniform icon+label group with fixed 10px icon box */
+/* Uniform icon+label chip */
 function InfoChip({ icon, label, color }: { icon: React.ReactNode; label: string; color: string }) {
   return (
-    <div className="flex items-center h-[20px] gap-1">
-      <span className={`inline-flex items-center justify-center w-[10px] h-[10px] shrink-0 ${color}`}>
+    <div className="flex items-center gap-1.5 h-full min-w-0 overflow-hidden">
+      <span className={`inline-flex items-center justify-center shrink-0 ${color}`}>
         {icon}
       </span>
-      <span className="text-[9px] font-mono text-tagma-muted leading-[20px]">{label}</span>
+      <span className="text-[9px] font-mono text-tagma-muted/70 whitespace-nowrap">{label}</span>
     </div>
   );
+}
+
+/* Dot separator between chips */
+function Dot() {
+  return <span className="text-tagma-border text-[8px] select-none shrink-0">·</span>;
 }
 
 export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
@@ -32,22 +37,24 @@ export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
 
   const totalTasks = config.tracks.reduce((n, t) => n + t.tasks.length, 0);
 
+  const chips: React.ReactNode[] = [];
+  if (config.driver)   chips.push(<InfoChip key="d" icon={<Cpu size={9} />} label={config.driver} color="text-tagma-accent/50" />);
+  if (config.timeout)  chips.push(<InfoChip key="t" icon={<Clock size={9} />} label={config.timeout} color="text-sky-400/50" />);
+  if (pluginCount > 0) chips.push(<InfoChip key="p" icon={<Plug size={9} />} label={config.plugins!.join(', ')} color="text-purple-400/50" />);
+  if (hookCount > 0)   chips.push(<InfoChip key="h" icon={<Webhook size={9} />} label={`${hookCount}/6 hooks`} color="text-emerald-400/50" />);
+
   return (
-    <div className="flex items-center h-[28px] gap-4 px-4 bg-tagma-surface/40 border-b border-tagma-border/40 shrink-0">
-      {config.driver && (
-        <InfoChip icon={<Cpu size={10} />} label={config.driver} color="text-tagma-accent/60" />
-      )}
-      {config.timeout && (
-        <InfoChip icon={<Clock size={10} />} label={config.timeout} color="text-sky-400/60" />
-      )}
-      {pluginCount > 0 && (
-        <InfoChip icon={<Plug size={10} />} label={config.plugins!.join(', ')} color="text-purple-400/60" />
-      )}
-      {hookCount > 0 && (
-        <InfoChip icon={<Webhook size={10} />} label={`${hookCount}/6 hooks`} color="text-emerald-400/60" />
-      )}
+    <div className="flex items-center h-[26px] px-[44px] bg-tagma-bg border-b border-tagma-border/30 shrink-0">
+      <div className="flex items-center gap-2.5 h-full">
+        {chips.map((chip, i) => (
+          <div key={i} className="flex items-center gap-2.5 h-full">
+            {i > 0 && <Dot />}
+            {chip}
+          </div>
+        ))}
+      </div>
       <span className="flex-1" />
-      <span className="text-[9px] font-mono text-tagma-muted/40 leading-[28px]">
+      <span className="text-[9px] font-mono text-tagma-muted/30 tracking-wide">
         {config.tracks.length} track{config.tracks.length !== 1 ? 's' : ''}
         {' · '}
         {totalTasks} task{totalTasks !== 1 ? 's' : ''}

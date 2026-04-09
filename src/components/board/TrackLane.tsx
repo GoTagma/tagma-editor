@@ -149,7 +149,7 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
       onMouseLeave={() => setHovered(false)}
     >
       {/* ─── Row 1 (22px): Color · Name · Badges · Count ─── */}
-      <div className="flex items-center h-[22px] gap-[6px]">
+      <div className="flex items-center h-[22px] gap-[6px] min-w-0 overflow-hidden">
         <div className="w-[6px] h-[6px] rounded-full shrink-0"
           style={{ backgroundColor: track.color ?? 'transparent', opacity: track.color ? 1 : 0 }} />
 
@@ -176,7 +176,7 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
 
       {/* ─── Row 2 (18px): Driver chip · Tier chip · R W X · Failure · MW · Profile ─── */}
       {hasMeta && (
-        <div className="flex items-center h-[18px] gap-[4px]">
+        <div className="flex items-center h-[18px] gap-[4px] min-w-0 overflow-hidden">
           {track.driver && (
             <Chip className="bg-tagma-accent/8 text-tagma-accent/60">{track.driver}</Chip>
           )}

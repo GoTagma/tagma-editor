@@ -173,13 +173,13 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
     <div className="flex items-center gap-2 px-2 py-1.5 bg-tagma-bg border border-tagma-border group">
       <Package size={12} className="text-tagma-muted shrink-0" />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
           <span className="text-[11px] font-mono text-tagma-text truncate">{plugin.name}</span>
           {plugin.version && (
             <span className="text-[9px] text-tagma-muted shrink-0">v{plugin.version}</span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex items-center gap-1.5 mt-0.5 min-w-0 overflow-hidden">
           {plugin.installed ? (
             <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">installed</span>
           ) : (

@@ -246,7 +246,7 @@ export function TaskCard({
       {isSelected && <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-tagma-accent rounded-l-[2px]" />}
 
       {/* ─── Row 1: Type icon · Name · Status badges ─── */}
-      <div className="flex items-center h-[24px] gap-[6px] pointer-events-none">
+      <div className="flex items-center h-[24px] gap-[6px] pointer-events-none min-w-0 overflow-hidden">
         <span className={`inline-flex items-center justify-center w-[16px] h-[16px] rounded-[2px] shrink-0
           ${isTemplate ? 'bg-purple-500/10' : isCommand ? 'bg-sky-500/10' : 'bg-tagma-muted/8'}`}>
           {isTemplate
@@ -269,7 +269,7 @@ export function TaskCard({
       </div>
 
       {/* ─── Row 2: Driver chip · Tier chip · Permissions ─── */}
-      <div className="flex items-center h-[16px] gap-[4px] pointer-events-none">
+      <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden">
         {driver && (
           <Chip className="bg-tagma-accent/8 text-tagma-accent/70">{driver}</Chip>
         )}
