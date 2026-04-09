@@ -1,33 +1,18 @@
 const BASE = '/api';
 
 /**
- * Recursively replace undefined values with null so JSON.stringify preserves
- * the key — this tells the server "clear this field" instead of silently
- * dropping it.
+ * Serialize an object to JSON, converting undefined → null so the server
+ * receives "clear this field" instead of silently dropping the key.
+ * Single choke-point: every API method uses this instead of JSON.stringify.
  */
-function undefinedToNull(obj: unknown): unknown {
-  if (obj === undefined) return null;
-  if (obj === null || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(undefinedToNull);
-  const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    result[k] = undefinedToNull(v);
-  }
-  return result;
+function jsonBody(obj: unknown): string {
+  return JSON.stringify(obj, (_key, value) => (value === undefined ? null : value));
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  // Re-serialize body to convert undefined → null
-  let finalOptions = options;
-  if (options?.body && typeof options.body === 'string') {
-    try {
-      const parsed = JSON.parse(options.body);
-      finalOptions = { ...options, body: JSON.stringify(undefinedToNull(parsed)) };
-    } catch { /* not JSON, pass through */ }
-  }
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
-    ...finalOptions,
+    ...options,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -198,42 +183,42 @@ export const api = {
   getRegistry: () => request<PluginRegistry>('/registry'),
 
   updatePipeline: (fields: Record<string, unknown>) =>
-    request<ServerState>('/pipeline', { method: 'PATCH', body: JSON.stringify(fields) }),
+    request<ServerState>('/pipeline', { method: 'PATCH', body: jsonBody(fields) }),
 
   addTrack: (id: string, name: string, color?: string) =>
-    request<ServerState>('/tracks', { method: 'POST', body: JSON.stringify({ id, name, color }) }),
+    request<ServerState>('/tracks', { method: 'POST', body: jsonBody({ id, name, color }) }),
 
   updateTrack: (trackId: string, fields: Record<string, unknown>) =>
-    request<ServerState>(`/tracks/${trackId}`, { method: 'PATCH', body: JSON.stringify(fields) }),
+    request<ServerState>(`/tracks/${trackId}`, { method: 'PATCH', body: jsonBody(fields) }),
 
   deleteTrack: (trackId: string) =>
     request<ServerState>(`/tracks/${trackId}`, { method: 'DELETE' }),
 
   reorderTrack: (trackId: string, toIndex: number) =>
-    request<ServerState>('/tracks/reorder', { method: 'POST', body: JSON.stringify({ trackId, toIndex }) }),
+    request<ServerState>('/tracks/reorder', { method: 'POST', body: jsonBody({ trackId, toIndex }) }),
 
   addTask: (trackId: string, task: RawTaskConfig) =>
-    request<ServerState>('/tasks', { method: 'POST', body: JSON.stringify({ trackId, task }) }),
+    request<ServerState>('/tasks', { method: 'POST', body: jsonBody({ trackId, task }) }),
 
   updateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) =>
-    request<ServerState>(`/tasks/${trackId}/${taskId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    request<ServerState>(`/tasks/${trackId}/${taskId}`, { method: 'PATCH', body: jsonBody(patch) }),
 
   deleteTask: (trackId: string, taskId: string) =>
     request<ServerState>(`/tasks/${trackId}/${taskId}`, { method: 'DELETE' }),
 
   transferTask: (fromTrackId: string, taskId: string, toTrackId: string) =>
-    request<ServerState>('/tasks/transfer', { method: 'POST', body: JSON.stringify({ fromTrackId, taskId, toTrackId }) }),
+    request<ServerState>('/tasks/transfer', { method: 'POST', body: jsonBody({ fromTrackId, taskId, toTrackId }) }),
 
   addDependency: (fromTrackId: string, fromTaskId: string, toTrackId: string, toTaskId: string) =>
-    request<ServerState>('/dependencies', { method: 'POST', body: JSON.stringify({ fromTrackId, fromTaskId, toTrackId, toTaskId }) }),
+    request<ServerState>('/dependencies', { method: 'POST', body: jsonBody({ fromTrackId, fromTaskId, toTrackId, toTaskId }) }),
 
   removeDependency: (trackId: string, taskId: string, depRef: string) =>
-    request<ServerState>('/dependencies', { method: 'DELETE', body: JSON.stringify({ trackId, taskId, depRef }) }),
+    request<ServerState>('/dependencies', { method: 'DELETE', body: jsonBody({ trackId, taskId, depRef }) }),
 
   exportYaml: () => request<string>('/export'),
 
   importYaml: (yaml: string) =>
-    request<ServerState>('/import', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    request<ServerState>('/import', { method: 'POST', body: jsonBody({ yaml }) }),
 
   loadDemo: () => request<ServerState>('/demo', { method: 'POST' }),
 
@@ -244,25 +229,25 @@ export const api = {
     request<{ roots: string[] }>('/fs/roots'),
 
   mkdir: (path: string) =>
-    request<{ path: string }>('/fs/mkdir', { method: 'POST', body: JSON.stringify({ path }) }),
+    request<{ path: string }>('/fs/mkdir', { method: 'POST', body: jsonBody({ path }) }),
 
   reveal: (path: string) =>
-    request<{ ok: boolean }>('/fs/reveal', { method: 'POST', body: JSON.stringify({ path }) }),
+    request<{ ok: boolean }>('/fs/reveal', { method: 'POST', body: jsonBody({ path }) }),
 
   setWorkDir: (workDir: string) =>
-    request<ServerState>('/workspace', { method: 'PATCH', body: JSON.stringify({ workDir }) }),
+    request<ServerState>('/workspace', { method: 'PATCH', body: jsonBody({ workDir }) }),
 
   openFile: (path: string) =>
-    request<ServerState>('/open', { method: 'POST', body: JSON.stringify({ path }) }),
+    request<ServerState>('/open', { method: 'POST', body: jsonBody({ path }) }),
 
   saveFile: (path?: string) =>
-    request<ServerState>('/save', { method: 'POST', body: JSON.stringify({ path }) }),
+    request<ServerState>('/save', { method: 'POST', body: jsonBody({ path }) }),
 
   saveFileAs: (path: string) =>
-    request<ServerState>('/save-as', { method: 'POST', body: JSON.stringify({ path }) }),
+    request<ServerState>('/save-as', { method: 'POST', body: jsonBody({ path }) }),
 
   newPipeline: (name?: string) =>
-    request<ServerState>('/new', { method: 'POST', body: JSON.stringify({ name }) }),
+    request<ServerState>('/new', { method: 'POST', body: jsonBody({ name }) }),
 
   startRun: () =>
     request<{ ok: boolean }>('/run/start', { method: 'POST' }),
