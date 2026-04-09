@@ -101,7 +101,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
       className="fixed pointer-events-none bg-[#1a1a1e] border border-[#2a2a30] shadow-lg rounded-[3px] animate-fade-in"
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
-        width: 230, maxHeight: viewportH() - 16,
+        width: 260, maxHeight: viewportH() - 16,
         overflow: 'hidden', zIndex: 9999,
         visibility: pos ? 'visible' : 'hidden',
       }}
@@ -111,9 +111,9 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
       </div>
       <div className="px-3 py-1.5">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline py-[1.5px] text-[9px] font-mono">
-            <span className="text-tagma-muted/70 w-[58px] shrink-0">{label}</span>
-            <span className="text-tagma-text/80 truncate flex-1">{value}</span>
+          <div key={label} className="flex py-[1.5px] text-[9px] font-mono gap-2 min-w-0">
+            <span className="text-tagma-muted/70 w-[72px] shrink-0 text-right truncate">{label}</span>
+            <span className="text-tagma-text/80 truncate min-w-0 flex-1">{value}</span>
           </div>
         ))}
       </div>
