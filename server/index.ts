@@ -151,6 +151,8 @@ app.get('/api/registry', (_req, res) => {
 
 // ── Plugin management ──
 
+const NPM_REGISTRY = 'https://registry.npmjs.org';
+
 /** Build npm proxy flags from system env vars (http_proxy / https_proxy) */
 function npmProxyFlags(): string {
   const flags: string[] = [];
@@ -159,6 +161,137 @@ function npmProxyFlags(): string {
   if (httpProxy) flags.push(`--proxy ${httpProxy}`);
   if (httpsProxy) flags.push(`--https-proxy ${httpsProxy}`);
   return flags.join(' ');
+}
+
+/** Check whether npm CLI is available on this machine */
+function hasNpmCli(): boolean {
+  try {
+    execSync('npm --version', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+    return true;
+  } catch { return false; }
+}
+
+// ── Built-in npm registry installer (no npm CLI required) ──
+
+/** Encode a package name for the npm registry URL */
+function registryUrl(name: string): string {
+  // Scoped: @scope/pkg → @scope%2fpkg
+  if (name.startsWith('@')) {
+    return `${NPM_REGISTRY}/${name.replace('/', '%2f')}`;
+  }
+  return `${NPM_REGISTRY}/${encodeURIComponent(name)}`;
+}
+
+/** Fetch package metadata from npm registry (uses Node.js built-in fetch) */
+async function registryMeta(name: string): Promise<{ version: string; description: string | null; tarball: string }> {
+  const res = await fetch(registryUrl(name), {
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`Package "${name}" not found on registry (${res.status})`);
+  const meta = await res.json() as any;
+  const latest = meta['dist-tags']?.latest;
+  if (!latest) throw new Error(`No published version for "${name}"`);
+  const info = meta.versions?.[latest];
+  if (!info?.dist?.tarball) throw new Error(`No tarball for ${name}@${latest}`);
+  return {
+    version: latest,
+    description: info.description ?? null,
+    tarball: info.dist.tarball,
+  };
+}
+
+/**
+ * Install a package from the npm registry without npm CLI.
+ * Downloads tarball → extracts via system tar → updates package.json.
+ */
+async function directRegistryInstall(name: string): Promise<void> {
+  const meta = await registryMeta(name);
+
+  // Download tarball
+  const tarRes = await fetch(meta.tarball);
+  if (!tarRes.ok) throw new Error(`Tarball download failed (${tarRes.status})`);
+  const tarBuffer = Buffer.from(await tarRes.arrayBuffer());
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'tagma-pkg-'));
+  const tgzPath = join(tmpDir, 'package.tgz');
+  writeFileSync(tgzPath, tarBuffer);
+
+  try {
+    // Prepare destination in node_modules
+    const parts = name.startsWith('@') ? name.split('/') : [name];
+    const destDir = resolve(workDir, 'node_modules', ...parts);
+    mkdirSync(destDir, { recursive: true });
+
+    // Extract (tar is built-in on Windows 10+, macOS, Linux)
+    execSync(`tar -xzf "${tgzPath}" -C "${destDir}" --strip-components=1`, {
+      timeout: 30000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // Record in workspace package.json
+  ensureWorkDirPackageJson();
+  const pkgPath = resolve(workDir, 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+  pkg.dependencies = pkg.dependencies ?? {};
+  pkg.dependencies[name] = `^${meta.version}`;
+  writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf-8');
+}
+
+/**
+ * Install a package: try built-in registry fetch first, fall back to npm CLI.
+ * This lets users without npm/bun install @tagma/* plugins directly.
+ */
+async function installPackage(name: string): Promise<void> {
+  ensureWorkDirPackageJson();
+  try {
+    await directRegistryInstall(name);
+  } catch (directErr: any) {
+    if (hasNpmCli()) {
+      execSync(`npm install ${name} --legacy-peer-deps ${npmProxyFlags()}`, {
+        cwd: workDir, timeout: 120000, encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return;
+    }
+    throw new Error(`${directErr.message}${directErr.cause ? '' : ' (npm CLI not available as fallback)'}`);
+  }
+}
+
+/**
+ * Uninstall a package: remove from node_modules + package.json.
+ * No npm CLI required.
+ */
+function uninstallPackage(name: string): void {
+  // Remove from node_modules
+  const parts = name.startsWith('@') ? name.split('/') : [name];
+  const pkgDir = resolve(workDir, 'node_modules', ...parts);
+  if (existsSync(pkgDir)) {
+    rmSync(pkgDir, { recursive: true, force: true });
+  }
+
+  // Clean up empty scope directory
+  if (name.startsWith('@') && parts.length > 1) {
+    const scopeDir = resolve(workDir, 'node_modules', parts[0]);
+    try {
+      if (existsSync(scopeDir) && readdirSync(scopeDir).length === 0) {
+        rmSync(scopeDir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+
+  // Remove from package.json
+  const pkgPath = resolve(workDir, 'package.json');
+  if (existsSync(pkgPath)) {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    if (pkg.dependencies?.[name]) {
+      delete pkg.dependencies[name];
+      writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf-8');
+    }
+  }
 }
 
 /** Set of plugin package names that have been dynamically loaded into the registry this session */
@@ -246,7 +379,7 @@ app.get('/api/plugins', (_req, res) => {
   res.json({ plugins });
 });
 
-/** Look up a single plugin from npm */
+/** Look up a single plugin from npm registry */
 app.get('/api/plugins/info', async (req, res) => {
   const name = req.query.name as string;
   if (!name) return res.status(400).json({ error: 'name query parameter required' });
@@ -255,17 +388,14 @@ app.get('/api/plugins/info', async (req, res) => {
   if (local.installed) return res.json(local);
 
   try {
-    const output = execSync(`npm view ${name} ${npmProxyFlags()} version description --json 2>&1`, {
-      cwd: workDir, timeout: 15000, encoding: 'utf-8',
-    });
-    const info = JSON.parse(output);
+    const meta = await registryMeta(name);
     res.json({
       name, installed: false, loaded: false,
-      version: info.version ?? null, description: info.description ?? null,
+      version: meta.version, description: meta.description,
       categories: [],
     });
   } catch (e: any) {
-    res.status(404).json({ error: `Package "${name}" not found on npm` });
+    res.status(404).json({ error: `Package "${name}" not found on registry` });
   }
 });
 
@@ -280,13 +410,7 @@ app.post('/api/plugins/install', async (req, res) => {
   }
 
   try {
-    ensureWorkDirPackageJson();
-    execSync(`npm install ${name} --legacy-peer-deps ${npmProxyFlags()}`, {
-      cwd: workDir,
-      timeout: 120000,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    await installPackage(name);
 
     // Load into SDK registry
     try {
@@ -306,20 +430,15 @@ app.post('/api/plugins/install', async (req, res) => {
   }
 });
 
-/** Uninstall a plugin from workDir */
-app.post('/api/plugins/uninstall', (req, res) => {
-  const { name } = req.body;
+/** Uninstall a plugin from workDir (no npm CLI required) */
+app.post('/api/plugins/uninstall', (_req, res) => {
+  const { name } = _req.body;
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'name is required' });
   }
 
   try {
-    execSync(`npm uninstall ${name} ${npmProxyFlags()}`, {
-      cwd: workDir,
-      timeout: 60000,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    uninstallPackage(name);
     loadedPlugins.delete(name);
 
     res.json({
