@@ -216,7 +216,7 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
             className="px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title="Install from npm"
           >
-            <Download size={12} />
+            {isLoading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
           </button>
           {onRequestBrowse && (
             <button
@@ -229,7 +229,14 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
             </button>
           )}
         </div>
-        <p className="text-[10px] text-tagma-muted mt-1">Enter a package name or browse a local plugin directory</p>
+        {isLoading ? (
+          <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-blue-400">
+            <Loader2 size={10} className="animate-spin" />
+            <span>{(actionState as { action: string }).action} <span className="font-mono">{(actionState as { plugin: string }).plugin}</span>...</span>
+          </div>
+        ) : (
+          <p className="text-[10px] text-tagma-muted mt-1">Enter a package name or browse a local plugin directory</p>
+        )}
       </div>
 
       {/* Status message */}
