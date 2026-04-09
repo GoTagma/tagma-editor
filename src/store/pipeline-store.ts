@@ -183,6 +183,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     removeDependency: (trackId, taskId, depRef) =>
       fire(() => api.removeDependency(trackId, taskId, depRef)),
 
+    setRegistry: (registry) => set({ registry }),
+
     selectTask: (qualifiedId) => set({ selectedTaskId: qualifiedId, selectedTrackId: null }),
     selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
 

@@ -1,8 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { X } from 'lucide-react';
 import type { RawPipelineConfig, HooksConfig, HookCommand, PluginRegistry } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { PluginManager } from './PluginManager';
+import { viewportH } from '../../utils/zoom';
 
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
@@ -37,9 +38,11 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpda
     onUpdate({ hooks: Object.keys(next).length > 0 ? next : undefined });
   }, [hooks, onUpdate]);
 
+  const maxH = useMemo(() => Math.floor(viewportH() * 0.8), []);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[80vh] flex flex-col animate-fade-in" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] flex flex-col animate-fade-in" style={{ maxHeight: maxH }} onClick={(e) => e.stopPropagation()}>
         <div className="panel-header">
           <h2 className="panel-title">Pipeline Settings</h2>
           <button onClick={onClose} className="p-1 text-tagma-muted hover:text-tagma-text transition-colors">

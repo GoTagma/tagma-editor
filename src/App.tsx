@@ -21,7 +21,7 @@ export function App() {
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
-    selectTask, selectTrack, setTaskPosition,
+    selectTask, selectTrack, setTaskPosition, setRegistry,
     setWorkDir, openFile, saveFile, saveFileAs,
     exportYaml, importYaml, init, clearError,
   } = usePipelineStore();
@@ -303,6 +303,7 @@ export function App() {
           workDir={workDir}
           drivers={registry.drivers}
           onUpdate={updatePipelineFields}
+          onRegistryUpdate={setRegistry}
           onClose={() => setShowPipelineSettings(false)}
         />
       )}
