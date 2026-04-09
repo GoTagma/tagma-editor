@@ -7,12 +7,12 @@ import type { RawPipelineConfig, DagEdge, TaskStatus } from '../../api/client';
 import type { TaskPosition } from '../../store/pipeline-store';
 
 // Reuse same layout constants as BoardCanvas
-const HEADER_W = 200;
-const TASK_W = 170;
-const TASK_H = 50;
+const HEADER_W = 210;
+const TASK_W = 176;
+const TASK_H = 52;
 const TASK_GAP = 24;
 const PAD_LEFT = 20;
-const TRACK_H = 68;
+const TRACK_H = 64;
 const CANVAS_PAD_RIGHT = 300;
 
 interface RunViewProps {
