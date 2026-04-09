@@ -8,7 +8,7 @@ import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
-import { PipelineSummaryBar } from './components/board/PipelineSummaryBar';
+
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
 
@@ -305,7 +305,6 @@ export function App() {
           menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
         />
 
-        <PipelineSummaryBar config={config} />
       </div>
 
       <div className="flex-1 flex overflow-hidden">

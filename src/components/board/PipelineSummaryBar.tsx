@@ -40,7 +40,7 @@ export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
   const chips: React.ReactNode[] = [];
   if (config.driver)   chips.push(<InfoChip key="d" icon={<Cpu size={9} />} label={config.driver} color="text-tagma-accent/50" />);
   if (config.timeout)  chips.push(<InfoChip key="t" icon={<Clock size={9} />} label={config.timeout} color="text-sky-400/50" />);
-  if (pluginCount > 0) chips.push(<InfoChip key="p" icon={<Plug size={9} />} label={config.plugins!.join(', ')} color="text-purple-400/50" />);
+  if (pluginCount > 0) chips.push(<InfoChip key="p" icon={<Plug size={9} />} label={`${pluginCount} plugin${pluginCount !== 1 ? 's' : ''}`} color="text-purple-400/50" />);
   if (hookCount > 0)   chips.push(<InfoChip key="h" icon={<Webhook size={9} />} label={`${hookCount}/6 hooks`} color="text-emerald-400/50" />);
 
   return (

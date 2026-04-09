@@ -1,22 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find:*)",
-      "Bash(grep -oE '\\\\b[A-Z][a-zA-Z]{3,}\\\\b')",
       "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(npx tsc:*)",
-      "Bash(node:*)",
-      "Bash(npx tsx:*)",
-      "Bash(where tagma:*)",
-      "Bash(where bun:*)",
-      "Bash(xargs grep:*)",
-      "Bash(xargs wc:*)",
-      "Bash(npx vite:*)",
-      "mcp__claude_ai_Notion__notion-search",
-      "mcp__claude_ai_Notion__notion-fetch",
-      "Bash(node_modules/.bin/tsc:*)",
-      "Bash(npm view:*)"
+      "Bash(git commit -m ':*)"
     ]
   }
 }

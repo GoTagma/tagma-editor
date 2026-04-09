@@ -195,16 +195,6 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
         )}
       </div>
 
-      {/* Count */}
-      {plugins.length > 0 && (
-        <div className="text-[10px] text-tagma-muted mb-2 shrink-0">
-          Showing {filtered.length} of {plugins.length} plugin{plugins.length !== 1 ? 's' : ''}
-          {plugins.filter((p) => p.installed).length > 0 && (
-            <span> · {plugins.filter((p) => p.installed).length} installed</span>
-          )}
-        </div>
-      )}
-
       {/* Add new plugin */}
       <div className="shrink-0 border-t border-tagma-border pt-3">
         <label className="field-label">Install Plugin</label>
