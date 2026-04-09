@@ -14,7 +14,6 @@ interface TaskConfigPanelProps {
   onUpdateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
   onRemoveDependency: (trackId: string, taskId: string, depRef: string) => void;
-  onClose: () => void;
 }
 
 /** Resolve inherited value: track → pipeline */
@@ -33,7 +32,7 @@ function inheritedPermissions(trackId: string, config: RawPipelineConfig) {
 
 export function TaskConfigPanel({
   task, trackId, qualifiedId, pipelineConfig, dependencies, drivers,
-  onUpdateTask, onDeleteTask, onRemoveDependency, onClose,
+  onUpdateTask, onDeleteTask, onRemoveDependency,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -106,14 +105,8 @@ export function TaskConfigPanel({
   }, [task.completion, commitField]);
 
   return (
-    <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right">
-      <div className="panel-header">
-        <h2 className="panel-title truncate">{task.name || task.id}</h2>
-        <button onClick={onClose} className="p-1 text-tagma-muted hover:text-tagma-text transition-colors">
-          <X size={14} />
-        </button>
-      </div>
-
+    <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
+      onClick={(e) => e.stopPropagation()}>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {/* ID (readonly) * */}
         <div>

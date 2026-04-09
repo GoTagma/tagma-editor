@@ -221,7 +221,7 @@ export function App() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-tagma-bg">
+    <div className="h-full flex flex-col bg-tagma-bg" onClick={() => { selectTask(null); selectTrack(null); }}>
       <Toolbar
         pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
         menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
@@ -282,7 +282,7 @@ export function App() {
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
             drivers={registry.drivers}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}
-            onRemoveDependency={removeDependency} onClose={() => selectTask(null)}
+            onRemoveDependency={removeDependency}
           />
         )}
 
@@ -293,7 +293,6 @@ export function App() {
             drivers={registry.drivers}
             onUpdateTrack={updateTrackFields}
             onDeleteTrack={deleteTrack}
-            onClose={() => selectTrack(null)}
           />
         )}
       </div>
