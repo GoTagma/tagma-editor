@@ -51,6 +51,11 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+const TRACK_COLORS = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
+];
+
 export const usePipelineStore = create<PipelineState>((set, _get) => {
   const applyState = (state: ServerState) => {
     set({
@@ -101,7 +106,11 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     setPipelineName: (name) => fire(() => api.updatePipeline({ name })),
     updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields)),
-    addTrack: (name) => fire(() => api.addTrack(generateId(), name)),
+    addTrack: (name) => {
+      const trackCount = _get().config.tracks.length;
+      const color = TRACK_COLORS[trackCount % TRACK_COLORS.length];
+      fire(() => api.addTrack(generateId(), name, color));
+    },
     renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name })),
     updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields)),
 
