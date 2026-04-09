@@ -116,7 +116,7 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={onCancel}>
-      <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[560px] max-h-[70vh] flex flex-col animate-fade-in"
+      <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[560px] h-[50vh] flex flex-col animate-fade-in"
         onClick={(e) => e.stopPropagation()}>
 
         {/* Header */}
