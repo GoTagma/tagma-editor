@@ -60,18 +60,11 @@ const TRACK_COLORS = [
 ];
 
 export const usePipelineStore = create<PipelineState>((set, _get) => {
-  let layoutTimer: ReturnType<typeof setTimeout> | null = null;
-
   const flushLayout = () => {
     const positions = _get().positions;
     const obj: Record<string, { x: number }> = {};
     for (const [k, v] of positions) obj[k] = v;
     api.saveLayout(obj).catch(() => {});
-  };
-
-  const debouncedSaveLayout = () => {
-    if (layoutTimer) clearTimeout(layoutTimer);
-    layoutTimer = setTimeout(flushLayout, 500);
   };
 
   const applyState = (state: ServerState) => {
@@ -159,7 +152,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         }
         return { positions, selectedTaskId: s.selectedTaskId?.startsWith(trackId + '.') ? null : s.selectedTaskId };
       });
-      debouncedSaveLayout();
+
       fire(() => api.deleteTrack(trackId));
     },
 
@@ -199,7 +192,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         selectedTaskId: s.selectedTaskId === qid ? null : s.selectedTaskId,
         positions: (() => { const p = new Map(s.positions); p.delete(qid); return p; })(),
       }));
-      debouncedSaveLayout();
+
       fire(() => api.deleteTask(trackId, taskId));
     },
 
@@ -212,7 +205,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         if (pos) { positions.delete(qidOld); positions.set(qidNew, pos); }
         return { positions, selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId };
       });
-      debouncedSaveLayout();
+
       fire(() => api.transferTask(fromTrackId, taskId, toTrackId));
     },
 
@@ -233,7 +226,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         positions.set(qualifiedId, { x });
         return { positions };
       });
-      debouncedSaveLayout();
+
     },
 
     setWorkDir: async (wd) => {
@@ -264,7 +257,6 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     saveFile: async () => {
       try {
-        if (layoutTimer) { clearTimeout(layoutTimer); layoutTimer = null; }
         flushLayout();
         const state = await api.saveFile();
         applyState(state);
