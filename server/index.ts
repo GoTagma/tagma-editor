@@ -648,10 +648,11 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Task not found' });
   let updated = { ...existing, ...patch } as RawTaskConfig;
   // prompt and command are mutually exclusive
-  if (patch.prompt !== undefined) {
-    delete updated.command;
-  } else if (patch.command !== undefined) {
+  // jsonBody converts undefined → null, so check for truthy or explicit empty string
+  if ('command' in patch && patch.command != null) {
     delete updated.prompt;
+  } else if ('prompt' in patch && patch.prompt != null) {
+    delete updated.command;
   }
   // Strip empty optional fields so they don't appear as '' in YAML
   stripEmptyFields(updated, TASK_REQUIRED_KEYS);
