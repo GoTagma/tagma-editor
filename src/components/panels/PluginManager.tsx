@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw, Search } from 'lucide-react';
+import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw, Search, FolderOpen } from 'lucide-react';
 import { api } from '../../api/client';
 import type { PluginInfo, PluginRegistry } from '../../api/client';
 
@@ -10,6 +10,8 @@ interface PluginManagerProps {
   onRegistryUpdate: (registry: PluginRegistry) => void;
   /** Called to update the pipeline plugins list */
   onPluginsChange: (plugins: string[]) => void;
+  /** Called to open file explorer for local plugin import */
+  onRequestBrowse?: () => void;
 }
 
 type ActionState = { type: 'idle' }
@@ -20,7 +22,7 @@ type ActionState = { type: 'idle' }
 const ALL_CATEGORY = 'all';
 const INSTALLED_FILTER = 'installed';
 
-export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChange }: PluginManagerProps) {
+export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChange, onRequestBrowse }: PluginManagerProps) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [actionState, setActionState] = useState<ActionState>({ type: 'idle' });
   const [inputValue, setInputValue] = useState('');
@@ -212,11 +214,22 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
             onClick={handleAdd}
             disabled={isLoading || !inputValue.trim()}
             className="px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Install from npm"
           >
             <Download size={12} />
           </button>
+          {onRequestBrowse && (
+            <button
+              onClick={onRequestBrowse}
+              disabled={isLoading}
+              className="px-2 py-1 text-[10px] font-medium bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Import from local directory"
+            >
+              <FolderOpen size={12} />
+            </button>
+          )}
         </div>
-        <p className="text-[10px] text-tagma-muted mt-1">Enter a package name to install and register</p>
+        <p className="text-[10px] text-tagma-muted mt-1">Enter a package name or browse a local plugin directory</p>
       </div>
 
       {/* Status message */}

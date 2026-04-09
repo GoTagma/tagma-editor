@@ -332,6 +332,83 @@ app.post('/api/plugins/uninstall', (req, res) => {
   }
 });
 
+/** Import a plugin from a local directory or .tgz file */
+app.post('/api/plugins/import-local', async (req, res) => {
+  const { path: localPath } = req.body;
+  if (!localPath || typeof localPath !== 'string') {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
+  }
+
+  const absPath = resolve(localPath);
+  if (!existsSync(absPath)) {
+    return res.status(400).json({ error: `Path does not exist: ${absPath}` });
+  }
+
+  // Read package name from local package.json (for directories)
+  let pkgName: string | undefined;
+  const stat = statSync(absPath);
+  if (stat.isDirectory()) {
+    const localPkg = resolve(absPath, 'package.json');
+    if (!existsSync(localPkg)) {
+      return res.status(400).json({ error: 'Directory does not contain a package.json' });
+    }
+    pkgName = JSON.parse(readFileSync(localPkg, 'utf-8')).name;
+  }
+
+  try {
+    ensureWorkDirPackageJson();
+    execSync(`npm install "${absPath}" --legacy-peer-deps ${npmProxyFlags()}`, {
+      cwd: workDir,
+      timeout: 120000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // For tarballs, discover the package name from what npm actually installed
+    if (!pkgName) {
+      const output = execSync('npm ls --json --depth=0 2>nul', {
+        cwd: workDir, timeout: 10000, encoding: 'utf-8',
+      });
+      const deps = JSON.parse(output).dependencies ?? {};
+      // Find the dependency whose resolved path matches
+      for (const [name, info] of Object.entries<any>(deps)) {
+        if (info.resolved && resolve(info.resolved).startsWith(absPath)) {
+          pkgName = name;
+          break;
+        }
+      }
+      // Fallback: the most recently added dep
+      if (!pkgName) {
+        const names = Object.keys(deps);
+        pkgName = names[names.length - 1];
+      }
+    }
+
+    if (!pkgName) {
+      return res.status(500).json({ error: 'Could not determine package name after install' });
+    }
+
+    // Load into SDK registry
+    try {
+      await loadPluginFromWorkDir(pkgName);
+      loadedPlugins.add(pkgName);
+    } catch (loadErr: any) {
+      return res.json({
+        plugin: getPluginInfo(pkgName),
+        registry: getRegistrySnapshot(),
+        warning: `Installed but failed to load: ${loadErr.message}`,
+      });
+    }
+
+    res.json({ plugin: getPluginInfo(pkgName), registry: getRegistrySnapshot() });
+  } catch (e: any) {
+    res.status(500).json({ error: `Local import failed: ${e.message}` });
+  }
+});
+
 /** Load an already-installed plugin from workDir into the registry */
 app.post('/api/plugins/load', async (req, res) => {
   const { name } = req.body;

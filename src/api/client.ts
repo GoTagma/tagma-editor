@@ -309,4 +309,7 @@ export const api = {
 
   loadPlugin: (name: string) =>
     request<PluginActionResult>('/plugins/load', { method: 'POST', body: jsonBody({ name }) }),
+
+  importLocalPlugin: (path: string) =>
+    request<PluginActionResult>('/plugins/import-local', { method: 'POST', body: jsonBody({ path }) }),
 };

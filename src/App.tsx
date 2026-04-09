@@ -7,12 +7,13 @@ import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
+import { api } from './api/client';
 import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
 
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
 
-type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' };
+type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' | 'plugin-import' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
 
 export function App() {
@@ -182,8 +183,25 @@ export function App() {
       if (destPath) {
         setDialog({ type: 'success', title: 'Export Successful', details: [`Exported to: ${destPath}`] });
       }
+    } else if (explorer.purpose === 'plugin-import') {
+      setExplorer(null);
+      setShowPlugins(true);
+      try {
+        const result = await api.importLocalPlugin(path);
+        setRegistry(result.registry);
+        const name = result.plugin.name;
+        if (!config.plugins?.includes(name)) {
+          updatePipelineFields({ plugins: [...(config.plugins ?? []), name] });
+        }
+        setDialog({ type: 'success', title: 'Plugin Imported', details: [
+          `${name} v${result.plugin.version ?? '?'}`,
+          ...(result.warning ? [result.warning] : []),
+        ]});
+      } catch (e: any) {
+        setDialog({ type: 'error', title: 'Import Failed', details: [e.message ?? 'Unknown error'] });
+      }
     }
-  }, [explorer, setWorkDir, importFile, exportFile, newPipeline, saveFile]);
+  }, [explorer, setWorkDir, importFile, exportFile, newPipeline, saveFile, config.plugins, setRegistry, updatePipelineFields]);
 
   const handleNewPipeline = useCallback(() => {
     if (!requireWorkspace('new')) return;
@@ -376,6 +394,10 @@ export function App() {
                 declaredPlugins={config.plugins ?? []}
                 onRegistryUpdate={setRegistry}
                 onPluginsChange={(plugins) => updatePipelineFields({ plugins: plugins.length > 0 ? plugins : undefined })}
+                onRequestBrowse={() => {
+                  setShowPlugins(false);
+                  setExplorer({ mode: 'directory', purpose: 'plugin-import' });
+                }}
               />
             </div>
           </div>
