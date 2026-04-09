@@ -23,6 +23,7 @@ import {
   listRegistered,
   loadPlugins,
   hasHandler,
+  registerPlugin,
 } from '@tagma/sdk';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '@tagma/sdk';
 import type { ValidationError, RawDag } from '@tagma/sdk';
@@ -150,11 +151,26 @@ app.get('/api/registry', (_req, res) => {
 
 // ── Plugin management ──
 
-/** Root of the editor project (where package.json lives) */
-const editorRoot = resolve(import.meta.dirname ?? '.', '..');
+/** Build npm proxy flags from system env vars (http_proxy / https_proxy) */
+function npmProxyFlags(): string {
+  const flags: string[] = [];
+  const httpProxy = process.env.http_proxy || process.env.HTTP_PROXY;
+  const httpsProxy = process.env.https_proxy || process.env.HTTPS_PROXY;
+  if (httpProxy) flags.push(`--proxy ${httpProxy}`);
+  if (httpsProxy) flags.push(`--https-proxy ${httpsProxy}`);
+  return flags.join(' ');
+}
 
 /** Set of plugin package names that have been dynamically loaded into the registry this session */
 const loadedPlugins = new Set<string>();
+
+/** Ensure workDir has a package.json so npm install works there */
+function ensureWorkDirPackageJson(): void {
+  const pkgPath = resolve(workDir, 'package.json');
+  if (!existsSync(pkgPath)) {
+    writeFileSync(pkgPath, JSON.stringify({ name: 'tagma-workspace', private: true, dependencies: {} }, null, 2), 'utf-8');
+  }
+}
 
 interface PluginInfo {
   name: string;
@@ -162,7 +178,7 @@ interface PluginInfo {
   loaded: boolean;
   version: string | null;
   description: string | null;
-  categories: string[];  // e.g. ['drivers'] — what it registered
+  categories: string[];
 }
 
 function getPluginInfo(name: string): PluginInfo {
@@ -170,7 +186,7 @@ function getPluginInfo(name: string): PluginInfo {
   let version: string | null = null;
   let description: string | null = null;
   try {
-    const pkgPath = resolve(editorRoot, 'node_modules', ...name.split('/'), 'package.json');
+    const pkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
     if (existsSync(pkgPath)) {
       installed = true;
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
@@ -181,10 +197,7 @@ function getPluginInfo(name: string): PluginInfo {
 
   const loaded = loadedPlugins.has(name);
 
-  // Check which registry categories this plugin contributed to
   const categories: string[] = [];
-  // Convention: @tagma/driver-xxx registers as driver "xxx"
-  // @tagma/trigger-xxx, @tagma/completion-xxx, @tagma/middleware-xxx
   const match = name.match(/@tagma\/(driver|trigger|completion|middleware)-(.+)/);
   if (match) {
     const [, cat, type] = match;
@@ -197,7 +210,35 @@ function getPluginInfo(name: string): PluginInfo {
   return { name, installed, loaded, version, description, categories };
 }
 
-/** List all managed plugins (from pipeline config + any that have been installed this session) */
+function getRegistrySnapshot() {
+  return {
+    drivers: listRegistered('drivers'),
+    triggers: listRegistered('triggers'),
+    completions: listRegistered('completions'),
+    middlewares: listRegistered('middlewares'),
+  };
+}
+
+/** Dynamically import a plugin from the workDir's node_modules */
+async function loadPluginFromWorkDir(name: string): Promise<void> {
+  // Resolve to the plugin's entry point inside workDir/node_modules
+  const pluginPkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
+  const pluginPkg = JSON.parse(readFileSync(pluginPkgPath, 'utf-8'));
+  const entryPoint = pluginPkg.exports?.['.'] ?? pluginPkg.main ?? './src/index.ts';
+  const pluginDir = resolve(workDir, 'node_modules', ...name.split('/'));
+  const modulePath = resolve(pluginDir, entryPoint);
+
+  // Use file:// URL for Windows compatibility with dynamic import
+  const fileUrl = `file:///${modulePath.replace(/\\/g, '/')}`;
+  const mod = await import(fileUrl);
+
+  if (!mod.pluginCategory || !mod.pluginType || !mod.default) {
+    throw new Error(`Plugin "${name}" must export pluginCategory, pluginType, and default`);
+  }
+  registerPlugin(mod.pluginCategory, mod.pluginType, mod.default);
+}
+
+/** List all managed plugins (from pipeline config + any loaded this session) */
 app.get('/api/plugins', (_req, res) => {
   const declared = config.plugins ?? [];
   const allNames = [...new Set([...declared, ...loadedPlugins])];
@@ -205,27 +246,22 @@ app.get('/api/plugins', (_req, res) => {
   res.json({ plugins });
 });
 
-/** Look up a single plugin from npm (check version/description without installing) */
+/** Look up a single plugin from npm */
 app.get('/api/plugins/info', async (req, res) => {
   const name = req.query.name as string;
   if (!name) return res.status(400).json({ error: 'name query parameter required' });
 
-  // First check local
   const local = getPluginInfo(name);
   if (local.installed) return res.json(local);
 
-  // Check npm registry
   try {
-    const output = execSync(`npm view ${name} version description --json 2>&1`, {
-      cwd: editorRoot, timeout: 15000, encoding: 'utf-8',
+    const output = execSync(`npm view ${name} ${npmProxyFlags()} version description --json 2>&1`, {
+      cwd: workDir, timeout: 15000, encoding: 'utf-8',
     });
     const info = JSON.parse(output);
     res.json({
-      name,
-      installed: false,
-      loaded: false,
-      version: info.version ?? null,
-      description: info.description ?? null,
+      name, installed: false, loaded: false,
+      version: info.version ?? null, description: info.description ?? null,
       categories: [],
     });
   } catch (e: any) {
@@ -233,55 +269,44 @@ app.get('/api/plugins/info', async (req, res) => {
   }
 });
 
-/** Install a plugin via npm and optionally load it */
+/** Install a plugin into workDir and load it into the registry */
 app.post('/api/plugins/install', async (req, res) => {
   const { name } = req.body;
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'name is required' });
   }
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
+  }
 
   try {
-    // Install via npm
-    execSync(`npm install ${name}`, {
-      cwd: editorRoot,
-      timeout: 60000,
+    ensureWorkDirPackageJson();
+    execSync(`npm install ${name} --legacy-peer-deps ${npmProxyFlags()}`, {
+      cwd: workDir,
+      timeout: 120000,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    // Load the plugin into the SDK registry
+    // Load into SDK registry
     try {
-      await loadPlugins([name]);
+      await loadPluginFromWorkDir(name);
       loadedPlugins.add(name);
     } catch (loadErr: any) {
-      // Installed but failed to load — still report as installed
       return res.json({
         plugin: getPluginInfo(name),
-        registry: {
-          drivers: listRegistered('drivers'),
-          triggers: listRegistered('triggers'),
-          completions: listRegistered('completions'),
-          middlewares: listRegistered('middlewares'),
-        },
+        registry: getRegistrySnapshot(),
         warning: `Installed but failed to load: ${loadErr.message}`,
       });
     }
 
-    res.json({
-      plugin: getPluginInfo(name),
-      registry: {
-        drivers: listRegistered('drivers'),
-        triggers: listRegistered('triggers'),
-        completions: listRegistered('completions'),
-        middlewares: listRegistered('middlewares'),
-      },
-    });
+    res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot() });
   } catch (e: any) {
     res.status(500).json({ error: `Install failed: ${e.message}` });
   }
 });
 
-/** Uninstall a plugin via npm */
+/** Uninstall a plugin from workDir */
 app.post('/api/plugins/uninstall', (req, res) => {
   const { name } = req.body;
   if (!name || typeof name !== 'string') {
@@ -289,24 +314,17 @@ app.post('/api/plugins/uninstall', (req, res) => {
   }
 
   try {
-    execSync(`npm uninstall ${name}`, {
-      cwd: editorRoot,
-      timeout: 30000,
+    execSync(`npm uninstall ${name} ${npmProxyFlags()}`, {
+      cwd: workDir,
+      timeout: 60000,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     loadedPlugins.delete(name);
 
-    // Note: We can't unregister from the SDK registry (no API for it),
-    // but the plugin is removed from disk. A server restart will clean up.
     res.json({
       plugin: getPluginInfo(name),
-      registry: {
-        drivers: listRegistered('drivers'),
-        triggers: listRegistered('triggers'),
-        completions: listRegistered('completions'),
-        middlewares: listRegistered('middlewares'),
-      },
+      registry: getRegistrySnapshot(),
       note: 'Plugin uninstalled. Registry entries persist until server restart.',
     });
   } catch (e: any) {
@@ -314,7 +332,7 @@ app.post('/api/plugins/uninstall', (req, res) => {
   }
 });
 
-/** Load an already-installed plugin into the registry without reinstalling */
+/** Load an already-installed plugin from workDir into the registry */
 app.post('/api/plugins/load', async (req, res) => {
   const { name } = req.body;
   if (!name || typeof name !== 'string') {
@@ -327,29 +345,13 @@ app.post('/api/plugins/load', async (req, res) => {
   }
 
   if (loadedPlugins.has(name)) {
-    return res.json({
-      plugin: getPluginInfo(name),
-      registry: {
-        drivers: listRegistered('drivers'),
-        triggers: listRegistered('triggers'),
-        completions: listRegistered('completions'),
-        middlewares: listRegistered('middlewares'),
-      },
-    });
+    return res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot() });
   }
 
   try {
-    await loadPlugins([name]);
+    await loadPluginFromWorkDir(name);
     loadedPlugins.add(name);
-    res.json({
-      plugin: getPluginInfo(name),
-      registry: {
-        drivers: listRegistered('drivers'),
-        triggers: listRegistered('triggers'),
-        completions: listRegistered('completions'),
-        middlewares: listRegistered('middlewares'),
-      },
-    });
+    res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot() });
   } catch (e: any) {
     res.status(500).json({ error: `Load failed: ${e.message}` });
   }
@@ -492,7 +494,10 @@ app.get('/api/workspace', (_req, res) => {
 
 app.patch('/api/workspace', (req, res) => {
   const { workDir: wd } = req.body;
-  if (wd !== undefined) workDir = resolve(wd);
+  if (wd !== undefined) {
+    workDir = resolve(wd);
+    mkdirSync(join(workDir, '.tagma'), { recursive: true });
+  }
   res.json(getState());
 });
 
@@ -605,9 +610,15 @@ app.post('/api/open', (req, res) => {
   }
 });
 
-app.post('/api/save', (req, res) => {
-  const savePath = req.body?.path || yamlPath;
-  if (!savePath) return res.status(400).json({ error: 'No file path set. Use save-as.' });
+app.post('/api/save', (_req, res) => {
+  let savePath = yamlPath;
+  if (!savePath) {
+    if (!workDir) return res.status(400).json({ error: 'No file path and no workspace configured.' });
+    const tagmaDir = join(workDir, '.tagma');
+    mkdirSync(tagmaDir, { recursive: true });
+    const randomId = Math.random().toString(36).slice(2, 10);
+    savePath = join(tagmaDir, `pipeline-${randomId}.yaml`);
+  }
   try {
     const content = serializePipeline(config);
     writeFileSync(savePath, content, 'utf-8');
@@ -634,9 +645,66 @@ app.post('/api/save-as', (req, res) => {
 
 app.post('/api/new', (req, res) => {
   const { name } = req.body;
+  if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
+  const tagmaDir = join(workDir, '.tagma');
+  mkdirSync(tagmaDir, { recursive: true });
+  const randomId = Math.random().toString(36).slice(2, 10);
+  const fileName = `pipeline-${randomId}.yaml`;
   config = createEmptyPipeline(name || 'Untitled Pipeline');
-  yamlPath = null;
+  yamlPath = join(tagmaDir, fileName);
+  const content = serializePipeline(config);
+  writeFileSync(yamlPath, content, 'utf-8');
   res.json(getState());
+});
+
+// Import: copy external YAML into .tagma/ and open the copy
+app.post('/api/import-file', (req, res) => {
+  const { sourcePath } = req.body;
+  if (!sourcePath) return res.status(400).json({ error: 'sourcePath is required' });
+  if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
+  const absSource = resolve(sourcePath);
+  if (!existsSync(absSource)) return res.status(404).json({ error: `File not found: ${absSource}` });
+  const tagmaDir = join(workDir, '.tagma');
+  mkdirSync(tagmaDir, { recursive: true });
+  const destPath = join(tagmaDir, basename(absSource));
+  try {
+    const content = readFileSync(absSource, 'utf-8');
+    writeFileSync(destPath, content, 'utf-8');
+    try {
+      config = parseYaml(content);
+    } catch {
+      const doc = yaml.load(content) as any;
+      const p = doc?.pipeline ?? doc ?? {};
+      config = {
+        name: p.name || basename(absSource, '.yaml').replace(/[-_]/g, ' '),
+        driver: p.driver,
+        timeout: p.timeout,
+        tracks: Array.isArray(p.tracks) ? p.tracks : [],
+      } as RawPipelineConfig;
+    }
+    yamlPath = destPath;
+    res.json(getState());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message ?? 'Failed to import file' });
+  }
+});
+
+// Export: serialize current config and copy to destination directory
+app.post('/api/export-file', (req, res) => {
+  const { destDir } = req.body;
+  if (!destDir) return res.status(400).json({ error: 'destDir is required' });
+  if (!yamlPath) return res.status(400).json({ error: 'No pipeline file to export' });
+  const absDestDir = resolve(destDir);
+  if (!existsSync(absDestDir)) return res.status(404).json({ error: `Directory not found: ${absDestDir}` });
+  try {
+    const content = serializePipeline(config);
+    writeFileSync(yamlPath, content, 'utf-8');
+    const destPath = join(absDestDir, basename(yamlPath));
+    writeFileSync(destPath, content, 'utf-8');
+    res.json({ ok: true, path: destPath });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to export file' });
+  }
 });
 
 // ── Load demo ──

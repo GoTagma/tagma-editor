@@ -38,11 +38,13 @@ interface PipelineState {
   selectTask: (qualifiedId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
   setTaskPosition: (qualifiedId: string, x: number) => void;
-  setWorkDir: (workDir: string) => void;
+  setWorkDir: (workDir: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
   saveFile: () => Promise<void>;
   saveFileAs: (path: string) => Promise<void>;
-  newPipeline: (name?: string) => void;
+  newPipeline: (name?: string) => Promise<void>;
+  importFile: (sourcePath: string) => Promise<void>;
+  exportFile: (destDir: string) => Promise<string | null>;
   exportYaml: () => Promise<string>;
   importYaml: (yaml: string) => Promise<void>;
   loadDemo: () => Promise<void>;
@@ -196,7 +198,14 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       });
     },
 
-    setWorkDir: (wd) => fire(() => api.setWorkDir(wd)),
+    setWorkDir: async (wd) => {
+      try {
+        const state = await api.setWorkDir(wd);
+        applyState(state);
+      } catch (e: any) {
+        set({ errorMessage: 'Failed to set workspace: ' + (e.message ?? e) });
+      }
+    },
 
     openFile: async (path) => {
       try {
@@ -211,8 +220,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     saveFile: async () => {
       try {
-        const { yamlPath: currentPath } = _get();
-        const state = await api.saveFile(currentPath ?? undefined);
+        const state = await api.saveFile();
         applyState(state);
         set({ isDirty: false });
       } catch (e: any) {
@@ -230,9 +238,36 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       }
     },
 
-    newPipeline: (name) => {
-      set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
-      fire(() => api.newPipeline(name));
+    newPipeline: async (name) => {
+      try {
+        set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
+        const state = await api.newPipeline(name);
+        applyState(state);
+        set({ isDirty: false });
+      } catch (e: any) {
+        set({ errorMessage: 'Failed to create pipeline: ' + (e.message ?? e) });
+      }
+    },
+
+    importFile: async (sourcePath) => {
+      try {
+        const state = await api.importFile(sourcePath);
+        set({ positions: new Map(), selectedTaskId: null, selectedTrackId: null });
+        applyState(state);
+        set({ isDirty: false });
+      } catch (e: any) {
+        set({ errorMessage: 'Failed to import file: ' + (e.message ?? e) });
+      }
+    },
+
+    exportFile: async (destDir) => {
+      try {
+        const result = await api.exportFile(destDir);
+        return result.path;
+      } catch (e: any) {
+        set({ errorMessage: 'Failed to export: ' + (e.message ?? e) });
+        return null;
+      }
     },
 
     exportYaml: () => api.exportYaml(),

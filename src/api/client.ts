@@ -258,14 +258,20 @@ export const api = {
   openFile: (path: string) =>
     request<ServerState>('/open', { method: 'POST', body: jsonBody({ path }) }),
 
-  saveFile: (path?: string) =>
-    request<ServerState>('/save', { method: 'POST', body: jsonBody({ path }) }),
+  saveFile: () =>
+    request<ServerState>('/save', { method: 'POST' }),
 
   saveFileAs: (path: string) =>
     request<ServerState>('/save-as', { method: 'POST', body: jsonBody({ path }) }),
 
   newPipeline: (name?: string) =>
     request<ServerState>('/new', { method: 'POST', body: jsonBody({ name }) }),
+
+  importFile: (sourcePath: string) =>
+    request<ServerState>('/import-file', { method: 'POST', body: jsonBody({ sourcePath }) }),
+
+  exportFile: (destDir: string) =>
+    request<{ ok: boolean; path: string }>('/export-file', { method: 'POST', body: jsonBody({ destDir }) }),
 
   startRun: () =>
     request<{ ok: boolean }>('/run/start', { method: 'POST' }),

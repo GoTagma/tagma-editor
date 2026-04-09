@@ -11,7 +11,7 @@ import { PipelineSummaryBar } from './components/board/PipelineSummaryBar';
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
 
-type ExplorerIntent = { mode: FileExplorerMode; purpose: 'open' | 'save' | 'workdir' };
+type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
 
 export function App() {
@@ -22,7 +22,7 @@ export function App() {
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition, setRegistry,
-    setWorkDir, openFile, saveFile, saveFileAs,
+    setWorkDir, saveFile, newPipeline, importFile, exportFile,
     exportYaml, importYaml, init, clearError,
   } = usePipelineStore();
 
@@ -31,6 +31,9 @@ export function App() {
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
+
+  // Pending action to execute after workspace is set
+  const afterWorkspaceRef = useRef<'new' | 'import' | 'save' | 'run' | null>(null);
 
   // Show store errors in the dialog
   useEffect(() => {
@@ -42,18 +45,31 @@ export function App() {
 
   useEffect(() => { init(); }, []);
 
+  // Helper: ensure workspace is set before proceeding
+  const requireWorkspace = useCallback((then: 'new' | 'import' | 'save' | 'run'): boolean => {
+    if (workDir) return true;
+    afterWorkspaceRef.current = then;
+    setExplorer({ mode: 'directory', purpose: 'workdir' });
+    return false;
+  }, [workDir]);
+
+  // Save: workspace required, server auto-creates path in .tagma if needed
+  const handleSave = useCallback(async () => {
+    if (!requireWorkspace('save')) return;
+    await saveFile();
+  }, [requireWorkspace, saveFile]);
+
   // Ctrl+S
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        if (yamlPath) saveFile();
-        else setExplorer({ mode: 'save', purpose: 'save' });
+        handleSave();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [yamlPath, saveFile]);
+  }, [handleSave]);
 
   // Attribute each validation error to its root cause (track or task)
   // If all errors in a track are track-level (no task index), mark the track.
@@ -111,16 +127,7 @@ export function App() {
   const [pendingRun, setPendingRun] = useState(false);
 
   const handleRun = useCallback(async () => {
-    if (!workDir) {
-      const ok = confirm('Workspace directory is not set. Please configure it before running.\n\nOpen workspace selector now?');
-      if (ok) setExplorer({ mode: 'directory', purpose: 'workdir' });
-      return;
-    }
-    if (!yamlPath) {
-      setPendingRun(true);
-      setExplorer({ mode: 'save', purpose: 'save' });
-      return;
-    }
+    if (!requireWorkspace('run')) return;
     if (validationErrors.length > 0) {
       setDialog({
         type: 'error',
@@ -129,12 +136,13 @@ export function App() {
       });
       return;
     }
-    if (isDirty) {
+    if (!yamlPath || isDirty) {
+      setPendingRun(true);
       await saveFile();
+      return;
     }
-    // Switch to run mode and start execution
     startRun(config);
-  }, [workDir, yamlPath, validationErrors, isDirty, saveFile, config]);
+  }, [requireWorkspace, yamlPath, validationErrors, isDirty, saveFile, config]);
 
   // After save completes and yamlPath is set, auto-trigger run
   useEffect(() => {
@@ -146,26 +154,62 @@ export function App() {
 
   const handleExplorerConfirm = useCallback(async (path: string) => {
     if (!explorer) return;
-    if (explorer.purpose === 'open') {
-      openFile(path);
-    } else if (explorer.purpose === 'save') {
-      await saveFileAs(path);
-      // pendingRun stays true; useEffect above will trigger handleRun once yamlPath updates
-    } else if (explorer.purpose === 'workdir') {
-      setWorkDir(path);
+    if (explorer.purpose === 'workdir') {
+      await setWorkDir(path);
+      const pending = afterWorkspaceRef.current;
+      afterWorkspaceRef.current = null;
+      if (pending === 'import') {
+        setExplorer({ mode: 'open', purpose: 'import' });
+        return;
+      }
+      setExplorer(null);
+      if (pending === 'new') {
+        await newPipeline();
+      } else if (pending === 'save') {
+        await saveFile();
+      } else if (pending === 'run') {
+        setPendingRun(true);
+        await saveFile();
+      }
+    } else if (explorer.purpose === 'import') {
+      await importFile(path);
+      setExplorer(null);
+    } else if (explorer.purpose === 'export') {
+      const destPath = await exportFile(path);
+      setExplorer(null);
+      if (destPath) {
+        setDialog({ type: 'success', title: 'Export Successful', details: [`Exported to: ${destPath}`] });
+      }
     }
-    setExplorer(null);
-  }, [explorer, openFile, saveFileAs, setWorkDir]);
+  }, [explorer, setWorkDir, importFile, exportFile, newPipeline, saveFile]);
+
+  const handleNewPipeline = useCallback(() => {
+    if (!requireWorkspace('new')) return;
+    newPipeline();
+  }, [requireWorkspace, newPipeline]);
+
+  const handleImport = useCallback(() => {
+    if (!requireWorkspace('import')) return;
+    setExplorer({ mode: 'open', purpose: 'import' });
+  }, [requireWorkspace]);
+
+  const handleExport = useCallback(() => {
+    if (!yamlPath) return;
+    setExplorer({ mode: 'directory', purpose: 'export' });
+  }, [yamlPath]);
 
   const menus = useMemo(() => [
     {
       label: 'File',
       items: [
-        { label: 'Open YAML...', shortcut: 'Ctrl+O', onAction: () => setExplorer({ mode: 'open', purpose: 'open' }) },
-        { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
+        { label: 'New Pipeline', onAction: handleNewPipeline },
         { separator: true as const },
-        { label: 'Save', shortcut: 'Ctrl+S', onAction: () => yamlPath ? saveFile() : setExplorer({ mode: 'save', purpose: 'save' }) },
-        { label: 'Save As...', onAction: () => setExplorer({ mode: 'save', purpose: 'save' }) },
+        { label: 'Import YAML...', shortcut: 'Ctrl+O', onAction: handleImport },
+        { label: 'Export YAML...', disabled: !yamlPath, onAction: handleExport },
+        { separator: true as const },
+        { label: 'Save', shortcut: 'Ctrl+S', onAction: handleSave },
+        { separator: true as const },
+        { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
       ],
     },
     {
@@ -174,19 +218,19 @@ export function App() {
         { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
       ],
     },
-  ], [yamlPath, saveFile]);
+  ], [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave]);
 
-  // Ctrl+O
+  // Ctrl+O → Import
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
         e.preventDefault();
-        setExplorer({ mode: 'open', purpose: 'open' });
+        handleImport();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [handleImport]);
 
   if (loading) {
     return (
@@ -312,11 +356,19 @@ export function App() {
       {explorer && (
         <FileExplorer
           mode={explorer.mode}
-          title={explorer.purpose === 'open' ? 'Open Pipeline YAML' : explorer.purpose === 'save' ? 'Save Pipeline As' : 'Select Workspace Directory'}
-          initialPath={explorer.purpose === 'workdir' ? workDir : (yamlPath ?? (workDir || undefined))}
-          fileFilter={explorer.purpose !== 'workdir' ? ['.yaml', '.yml'] : undefined}
+          title={
+            explorer.purpose === 'import' ? 'Import Pipeline YAML'
+            : explorer.purpose === 'export' ? 'Export Pipeline — Select Destination'
+            : 'Select Workspace Directory'
+          }
+          initialPath={
+            explorer.purpose === 'import' ? undefined
+            : explorer.purpose === 'export' ? workDir
+            : (workDir || undefined)
+          }
+          fileFilter={explorer.purpose === 'import' ? ['.yaml', '.yml'] : undefined}
           onConfirm={handleExplorerConfirm}
-          onCancel={() => { setExplorer(null); setPendingRun(false); }}
+          onCancel={() => { setExplorer(null); setPendingRun(false); afterWorkspaceRef.current = null; }}
         />
       )}
 
