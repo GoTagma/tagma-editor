@@ -19,6 +19,7 @@ interface TaskCardProps {
   isInvalid: boolean;
   errorMessages?: string[];
   isDragging: boolean;
+  isTrackDragging: boolean;
   isEdgeTarget: boolean;
   onPointerDown: (taskId: string, e: React.PointerEvent) => void;
   onHandlePointerDown: (taskId: string, e: React.PointerEvent) => void;
@@ -173,7 +174,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
 /* ── Main ── */
 export function TaskCard({
   task, trackId, pipelineConfig, x, y, w, h,
-  isSelected, isInvalid, errorMessages, isDragging, isEdgeTarget,
+  isSelected, isInvalid, errorMessages, isDragging, isTrackDragging, isEdgeTarget,
   onPointerDown, onHandlePointerDown, onTargetPointerUp, onContextMenu,
 }: TaskCardProps) {
   const [hovered, setHovered] = useState(false);
@@ -222,7 +223,7 @@ export function TaskCard({
       `}
       style={{
         left: x, top: y, width: w, height: h,
-        transition: isDragging ? 'none' : 'left 100ms ease-out, top 100ms ease-out',
+        transition: (isDragging || isTrackDragging) ? 'none' : 'left 100ms ease-out, top 100ms ease-out',
       }}
       onPointerDown={(e) => { if (e.button === 0) onPointerDown(task.id, e); }}
       onPointerUp={() => onTargetPointerUp(task.id)}

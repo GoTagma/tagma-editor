@@ -19,7 +19,11 @@ function InfoChip({ icon, label, color }: { icon: React.ReactNode; label: string
 
 export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
   const hookCount = config.hooks
-    ? Object.values(config.hooks).filter((v) => v !== undefined && v !== null && v !== '').length
+    ? Object.values(config.hooks).filter((v) => {
+        if (v === undefined || v === null || v === '') return false;
+        if (Array.isArray(v)) return v.length > 0;
+        return true;
+      }).length
     : 0;
   const pluginCount = config.plugins?.length ?? 0;
 

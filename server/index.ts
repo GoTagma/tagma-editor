@@ -21,6 +21,8 @@ import {
   serializePipeline,
   bootstrapBuiltins,
   listRegistered,
+  loadPlugins,
+  hasHandler,
 } from '@tagma/sdk';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '@tagma/sdk';
 import type { ValidationError, RawDag } from '@tagma/sdk';
@@ -144,6 +146,213 @@ app.get('/api/registry', (_req, res) => {
     completions: listRegistered('completions'),
     middlewares: listRegistered('middlewares'),
   });
+});
+
+// ── Plugin management ──
+
+/** Root of the editor project (where package.json lives) */
+const editorRoot = resolve(import.meta.dirname ?? '.', '..');
+
+/** Set of plugin package names that have been dynamically loaded into the registry this session */
+const loadedPlugins = new Set<string>();
+
+interface PluginInfo {
+  name: string;
+  installed: boolean;
+  loaded: boolean;
+  version: string | null;
+  description: string | null;
+  categories: string[];  // e.g. ['drivers'] — what it registered
+}
+
+function getPluginInfo(name: string): PluginInfo {
+  let installed = false;
+  let version: string | null = null;
+  let description: string | null = null;
+  try {
+    const pkgPath = resolve(editorRoot, 'node_modules', ...name.split('/'), 'package.json');
+    if (existsSync(pkgPath)) {
+      installed = true;
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      version = pkg.version ?? null;
+      description = pkg.description ?? null;
+    }
+  } catch {}
+
+  const loaded = loadedPlugins.has(name);
+
+  // Check which registry categories this plugin contributed to
+  const categories: string[] = [];
+  // Convention: @tagma/driver-xxx registers as driver "xxx"
+  // @tagma/trigger-xxx, @tagma/completion-xxx, @tagma/middleware-xxx
+  const match = name.match(/@tagma\/(driver|trigger|completion|middleware)-(.+)/);
+  if (match) {
+    const [, cat, type] = match;
+    const pluralCat = cat + 's' as 'drivers' | 'triggers' | 'completions' | 'middlewares';
+    if (hasHandler(pluralCat, type)) {
+      categories.push(pluralCat);
+    }
+  }
+
+  return { name, installed, loaded, version, description, categories };
+}
+
+/** List all managed plugins (from pipeline config + any that have been installed this session) */
+app.get('/api/plugins', (_req, res) => {
+  const declared = config.plugins ?? [];
+  const allNames = [...new Set([...declared, ...loadedPlugins])];
+  const plugins = allNames.map(getPluginInfo);
+  res.json({ plugins });
+});
+
+/** Look up a single plugin from npm (check version/description without installing) */
+app.get('/api/plugins/info', async (req, res) => {
+  const name = req.query.name as string;
+  if (!name) return res.status(400).json({ error: 'name query parameter required' });
+
+  // First check local
+  const local = getPluginInfo(name);
+  if (local.installed) return res.json(local);
+
+  // Check npm registry
+  try {
+    const output = execSync(`npm view ${name} version description --json 2>&1`, {
+      cwd: editorRoot, timeout: 15000, encoding: 'utf-8',
+    });
+    const info = JSON.parse(output);
+    res.json({
+      name,
+      installed: false,
+      loaded: false,
+      version: info.version ?? null,
+      description: info.description ?? null,
+      categories: [],
+    });
+  } catch (e: any) {
+    res.status(404).json({ error: `Package "${name}" not found on npm` });
+  }
+});
+
+/** Install a plugin via npm and optionally load it */
+app.post('/api/plugins/install', async (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  try {
+    // Install via npm
+    execSync(`npm install ${name}`, {
+      cwd: editorRoot,
+      timeout: 60000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Load the plugin into the SDK registry
+    try {
+      await loadPlugins([name]);
+      loadedPlugins.add(name);
+    } catch (loadErr: any) {
+      // Installed but failed to load — still report as installed
+      return res.json({
+        plugin: getPluginInfo(name),
+        registry: {
+          drivers: listRegistered('drivers'),
+          triggers: listRegistered('triggers'),
+          completions: listRegistered('completions'),
+          middlewares: listRegistered('middlewares'),
+        },
+        warning: `Installed but failed to load: ${loadErr.message}`,
+      });
+    }
+
+    res.json({
+      plugin: getPluginInfo(name),
+      registry: {
+        drivers: listRegistered('drivers'),
+        triggers: listRegistered('triggers'),
+        completions: listRegistered('completions'),
+        middlewares: listRegistered('middlewares'),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: `Install failed: ${e.message}` });
+  }
+});
+
+/** Uninstall a plugin via npm */
+app.post('/api/plugins/uninstall', (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  try {
+    execSync(`npm uninstall ${name}`, {
+      cwd: editorRoot,
+      timeout: 30000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    loadedPlugins.delete(name);
+
+    // Note: We can't unregister from the SDK registry (no API for it),
+    // but the plugin is removed from disk. A server restart will clean up.
+    res.json({
+      plugin: getPluginInfo(name),
+      registry: {
+        drivers: listRegistered('drivers'),
+        triggers: listRegistered('triggers'),
+        completions: listRegistered('completions'),
+        middlewares: listRegistered('middlewares'),
+      },
+      note: 'Plugin uninstalled. Registry entries persist until server restart.',
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: `Uninstall failed: ${e.message}` });
+  }
+});
+
+/** Load an already-installed plugin into the registry without reinstalling */
+app.post('/api/plugins/load', async (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  const info = getPluginInfo(name);
+  if (!info.installed) {
+    return res.status(404).json({ error: `Plugin "${name}" is not installed. Install it first.` });
+  }
+
+  if (loadedPlugins.has(name)) {
+    return res.json({
+      plugin: getPluginInfo(name),
+      registry: {
+        drivers: listRegistered('drivers'),
+        triggers: listRegistered('triggers'),
+        completions: listRegistered('completions'),
+        middlewares: listRegistered('middlewares'),
+      },
+    });
+  }
+
+  try {
+    await loadPlugins([name]);
+    loadedPlugins.add(name);
+    res.json({
+      plugin: getPluginInfo(name),
+      registry: {
+        drivers: listRegistered('drivers'),
+        triggers: listRegistered('triggers'),
+        completions: listRegistered('completions'),
+        middlewares: listRegistered('middlewares'),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: `Load failed: ${e.message}` });
+  }
 });
 
 // ── Pipeline name ──

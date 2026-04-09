@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
 import { X } from 'lucide-react';
-import type { RawPipelineConfig, HooksConfig } from '../../api/client';
+import type { RawPipelineConfig, HooksConfig, HookCommand, PluginRegistry } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { PluginManager } from './PluginManager';
 
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
@@ -9,6 +10,7 @@ interface PipelineConfigPanelProps {
   workDir: string;
   drivers: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
+  onRegistryUpdate: (registry: PluginRegistry) => void;
   onClose: () => void;
 }
 
@@ -17,19 +19,17 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
   'task_failure', 'pipeline_complete', 'pipeline_error',
 ];
 
-export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
+const GATE_HOOKS: ReadonlySet<string> = new Set(['pipeline_start', 'task_start']);
+
+export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpdate, onRegistryUpdate, onClose }: PipelineConfigPanelProps) {
   const [name, setName, blurName] = useLocalField(config.name, (v) => onUpdate({ name: v }));
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
-  const [plugins, setPlugins, blurPlugins] = useLocalField(
-    (config.plugins ?? []).join(', '),
-    (v) => onUpdate({ plugins: v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined }),
-  );
 
   const hooks = config.hooks ?? {};
 
-  const commitHook = useCallback((key: keyof HooksConfig, value: string) => {
+  const commitHook = useCallback((key: keyof HooksConfig, value: HookCommand | undefined) => {
     const next = { ...hooks };
-    if (value) {
+    if (value !== undefined) {
       next[key] = value;
     } else {
       delete next[key];
@@ -88,22 +88,21 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpda
           </div>
 
           {/* Plugins */}
-          <div>
-            <label className="field-label">Plugins</label>
-            <input type="text" className="field-input font-mono text-[11px]" value={plugins} onChange={(e) => setPlugins(e.target.value)} onBlur={blurPlugins}
-              placeholder='e.g. @tagma/driver-codex, @tagma/driver-opencode' />
-            <p className="text-[10px] text-tagma-muted mt-1">Comma-separated plugin package names</p>
-          </div>
+          <PluginManager
+            declaredPlugins={config.plugins ?? []}
+            onRegistryUpdate={onRegistryUpdate}
+            onPluginsChange={(plugins) => onUpdate({ plugins: plugins.length > 0 ? plugins : undefined })}
+          />
 
           <div className="border-t border-tagma-border" />
 
           {/* Hooks */}
           <div>
             <label className="field-label">Hooks</label>
-            <p className="text-[10px] text-tagma-muted mb-2">Shell commands to run at lifecycle events</p>
-            <div className="space-y-2">
+            <p className="text-[10px] text-tagma-muted mb-2">Shell commands to run at lifecycle events. One command per line; multiple lines are executed sequentially.</p>
+            <div className="space-y-3">
               {HOOK_KEYS.map((key) => (
-                <HookField key={key} hookKey={key} value={hooks[key]} onCommit={commitHook} />
+                <HookField key={key} hookKey={key} value={hooks[key]} isGate={GATE_HOOKS.has(key)} onCommit={commitHook} />
               ))}
             </div>
           </div>
@@ -124,19 +123,46 @@ export function PipelineConfigPanel({ config, yamlPath, workDir, drivers, onUpda
   );
 }
 
-function HookField({ hookKey, value, onCommit }: {
+function hookToText(value: HookCommand | undefined): string {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  return value.join('\n');
+}
+
+function textToHook(text: string): HookCommand | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return undefined;
+  if (lines.length === 1) return lines[0];
+  return lines;
+}
+
+function HookField({ hookKey, value, isGate, onCommit }: {
   hookKey: keyof HooksConfig;
-  value: string | string[] | undefined;
-  onCommit: (key: keyof HooksConfig, value: string) => void;
+  value: HookCommand | undefined;
+  isGate: boolean;
+  onCommit: (key: keyof HooksConfig, value: HookCommand | undefined) => void;
 }) {
-  const strValue = Array.isArray(value) ? value.join(' && ') : (value ?? '');
-  const [val, setVal, blurVal] = useLocalField(strValue, (v) => onCommit(hookKey, v));
+  const [val, setVal, blurVal] = useLocalField(hookToText(value), (v) => onCommit(hookKey, textToHook(v)));
+  const lineCount = val ? val.split('\n').length : 0;
 
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-[10px] font-mono text-tagma-muted w-[120px] shrink-0 text-right">{hookKey}</label>
-      <input type="text" className="field-input flex-1 font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal}
-        placeholder="shell command..." />
+    <div>
+      <div className="flex items-center gap-1.5 mb-1">
+        <label className="text-[10px] font-mono text-tagma-muted">{hookKey}</label>
+        {isGate && <span className="text-[9px] px-1 py-px bg-amber-500/10 text-amber-400/70 border border-amber-500/20">gate</span>}
+        {lineCount > 1 && <span className="text-[9px] text-tagma-muted">{lineCount} cmds</span>}
+      </div>
+      <textarea
+        className="field-input w-full font-mono text-[11px] resize-y"
+        style={{ minHeight: 28, height: lineCount > 1 ? lineCount * 20 + 12 : 28 }}
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={blurVal}
+        placeholder="shell command(s)..."
+        rows={1}
+      />
     </div>
   );
 }

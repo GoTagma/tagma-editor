@@ -34,6 +34,7 @@ interface PipelineState {
   transferTaskToTrack: (fromTrackId: string, taskId: string, toTrackId: string) => void;
   addDependency: (fromTrackId: string, fromTaskId: string, toTrackId: string, toTaskId: string) => void;
   removeDependency: (trackId: string, taskId: string, depRef: string) => void;
+  setRegistry: (registry: PluginRegistry) => void;
   selectTask: (qualifiedId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
   setTaskPosition: (qualifiedId: string, x: number) => void;
@@ -125,7 +126,20 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       fire(() => api.deleteTrack(trackId));
     },
 
-    moveTrackTo: (trackId, toIndex) => fire(() => api.reorderTrack(trackId, toIndex)),
+    moveTrackTo: (trackId, toIndex) => {
+      // Optimistically reorder tracks locally before API round-trip
+      set((s) => {
+        const tracks = s.config.tracks;
+        const fromIndex = tracks.findIndex((t) => t.id === trackId);
+        if (fromIndex < 0 || fromIndex === toIndex) return s;
+        const without = tracks.filter((t) => t.id !== trackId);
+        const moved = tracks[fromIndex];
+        const newTracks = [...without];
+        newTracks.splice(Math.min(toIndex, newTracks.length), 0, moved);
+        return { config: { ...s.config, tracks: newTracks } };
+      });
+      fire(() => api.reorderTrack(trackId, toIndex));
+    },
 
     addTask: (trackId, name, positionX) => {
       const id = generateId();

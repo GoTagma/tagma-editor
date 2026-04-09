@@ -124,7 +124,7 @@ function findNearestTarget(mx: number, my: number, positions: Map<string, Pos>, 
 interface CtxState { x: number; y: number; items: MenuEntry[] }
 interface TaskDragState { qid: string; taskId: string; trackId: string; contentX: number; targetTrackId: string }
 interface EdgeDragState { srcQid: string; mx: number; my: number; target: string | null }
-interface TrackDragState { trackId: string; startIndex: number; dropIndex: number }
+interface TrackDragState { trackId: string; startIndex: number; dropIndex: number; deltaY: number }
 
 export function BoardCanvas({
   config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds, errorsByTask, errorsByTrack,
@@ -320,13 +320,18 @@ export function BoardCanvas({
     if (!headerEl) return;
     const headerRect = headerEl.getBoundingClientRect();
     let started = false;
-    const startY = e.clientY;
+    const startClientY = e.clientY;
+    const startRelY = (e.clientY - headerRect.top) / getZoom() + headerEl.scrollTop;
+    const grabOffsetY = startRelY - startIndex * TRACK_H;
 
     const onMove = (ev: PointerEvent) => {
-      if (!started) { if (Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return; started = true; }
+      if (!started) { if (Math.abs(ev.clientY - startClientY) < DRAG_THRESHOLD) return; started = true; }
       const relY = (ev.clientY - headerRect.top) / getZoom() + headerEl.scrollTop;
-      const dropIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(relY / TRACK_H)));
-      setTrackDrag({ trackId, startIndex, dropIndex: dropIdx });
+      const deltaY = relY - startRelY;
+      // Use dragged track center for drop index — provides natural hysteresis
+      const draggedCenterY = relY - grabOffsetY + TRACK_H / 2;
+      const dropIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(draggedCenterY / TRACK_H)));
+      setTrackDrag({ trackId, startIndex, dropIndex: dropIdx, deltaY });
     };
     const onUp = () => {
       document.removeEventListener('pointermove', onMove);
@@ -439,18 +444,34 @@ export function BoardCanvas({
         style={{ width: HEADER_W }}
         onContextMenu={handleHeaderContextMenu}
       >
-        {visualTracks.map((track) => {
+        {tracks.map((track, origIdx) => {
           const taskCount = track.tasks.length;
           // Check if tasks have dependencies connecting them all
           const depCount = dagEdges.filter((e) => e.from.startsWith(track.id + '.') && e.to.startsWith(track.id + '.')).length;
           const hasParallel = taskCount > 1 && depCount < taskCount - 1;
           const isDraggedTrack = trackDrag?.trackId === track.id;
 
+          let translateY = 0;
+          if (trackDrag) {
+            if (isDraggedTrack) {
+              translateY = trackDrag.deltaY;
+            } else {
+              const visIdx = visualTracks.findIndex((t) => t.id === track.id);
+              translateY = (visIdx - origIdx) * TRACK_H;
+            }
+          }
+
           return (
             <div
               key={track.id}
-              className={`relative border-b border-tagma-border/60 transition-opacity duration-100 ${isDraggedTrack ? 'opacity-50 bg-tagma-accent/5' : ''}`}
-              style={{ height: TRACK_H }}
+              className={`relative border-b border-tagma-border/60 ${isDraggedTrack ? 'opacity-60 bg-tagma-accent/5' : ''}`}
+              style={{
+                height: TRACK_H,
+                transform: translateY ? `translateY(${translateY}px)` : undefined,
+                transition: trackDrag ? (isDraggedTrack ? 'none' : 'transform 150ms ease-out') : undefined,
+                zIndex: isDraggedTrack ? 10 : 0,
+                position: 'relative',
+              }}
             >
               {/* Color bar on left edge — red if track has errors */}
               <div className="absolute left-0 top-0"
@@ -499,6 +520,7 @@ export function BoardCanvas({
                 isInvalid={invalidTaskIds.has(ft.qid)}
                 errorMessages={errorsByTask.get(ft.qid)}
                 isDragging={taskDrag?.qid === ft.qid}
+                isTrackDragging={trackDrag !== null}
                 isEdgeTarget={edgeDrag !== null && edgeDrag.srcQid !== ft.qid && edgeDrag.target === ft.qid}
                 onPointerDown={handleTaskPointerDown}
                 onHandlePointerDown={handleHandlePointerDown}

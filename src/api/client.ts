@@ -32,13 +32,15 @@ export interface ServerState {
   workDir: string;
 }
 
+export type HookCommand = string | string[];
+
 export interface HooksConfig {
-  pipeline_start?: string | string[];
-  task_start?: string | string[];
-  task_success?: string | string[];
-  task_failure?: string | string[];
-  pipeline_complete?: string | string[];
-  pipeline_error?: string | string[];
+  pipeline_start?: HookCommand;
+  task_start?: HookCommand;
+  task_success?: HookCommand;
+  task_failure?: HookCommand;
+  pipeline_complete?: HookCommand;
+  pipeline_error?: HookCommand;
 }
 
 export interface Permissions {
@@ -132,6 +134,22 @@ export interface PluginRegistry {
   triggers: string[];
   completions: string[];
   middlewares: string[];
+}
+
+export interface PluginInfo {
+  name: string;
+  installed: boolean;
+  loaded: boolean;
+  version: string | null;
+  description: string | null;
+  categories: string[];
+}
+
+export interface PluginActionResult {
+  plugin: PluginInfo;
+  registry: PluginRegistry;
+  warning?: string;
+  note?: string;
 }
 
 export interface FsEntry {
@@ -268,4 +286,21 @@ export const api = {
     };
     return () => es.close();
   },
+
+  // ── Plugin management ──
+
+  listPlugins: () =>
+    request<{ plugins: PluginInfo[] }>('/plugins'),
+
+  getPluginInfo: (name: string) =>
+    request<PluginInfo>(`/plugins/info?name=${encodeURIComponent(name)}`),
+
+  installPlugin: (name: string) =>
+    request<PluginActionResult>('/plugins/install', { method: 'POST', body: jsonBody({ name }) }),
+
+  uninstallPlugin: (name: string) =>
+    request<PluginActionResult>('/plugins/uninstall', { method: 'POST', body: jsonBody({ name }) }),
+
+  loadPlugin: (name: string) =>
+    request<PluginActionResult>('/plugins/load', { method: 'POST', body: jsonBody({ name }) }),
 };
