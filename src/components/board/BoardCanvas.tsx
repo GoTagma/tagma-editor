@@ -450,10 +450,9 @@ export function BoardCanvas({
               className={`relative border-b border-tagma-border/60 transition-opacity duration-100 ${isDraggedTrack ? 'opacity-50 bg-tagma-accent/5' : ''}`}
               style={{ height: TRACK_H }}
             >
-              {/* Color bar on left edge */}
-              {track.color && (
-                <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ backgroundColor: track.color }} />
-              )}
+              {/* Color bar on left edge — full height minus bottom border */}
+              <div className="absolute left-0 top-0 w-[3px]"
+                style={{ height: TRACK_H - 1, backgroundColor: track.color || 'transparent' }} />
               <div className="h-full flex items-center cursor-grab active:cursor-grabbing" onPointerDown={(e) => handleTrackDragStart(track.id, e)}>
                 <TrackLane track={track} taskCount={taskCount} hasParallelWarning={hasParallel} />
               </div>
