@@ -411,6 +411,7 @@ export function App() {
           title={
             explorer.purpose === 'import' ? 'Import Pipeline YAML'
             : explorer.purpose === 'export' ? 'Export Pipeline — Select Destination'
+            : explorer.purpose === 'plugin-import' ? 'Import Local Plugin — Select Directory'
             : 'Select Workspace Directory'
           }
           initialPath={
@@ -420,7 +421,13 @@ export function App() {
           }
           fileFilter={explorer.purpose === 'import' ? ['.yaml', '.yml'] : undefined}
           onConfirm={handleExplorerConfirm}
-          onCancel={() => { setExplorer(null); setPendingRun(false); afterWorkspaceRef.current = null; }}
+          onCancel={() => {
+            const wasPluginImport = explorer?.purpose === 'plugin-import';
+            setExplorer(null);
+            setPendingRun(false);
+            afterWorkspaceRef.current = null;
+            if (wasPluginImport) setShowPlugins(true);
+          }}
         />
       )}
 
