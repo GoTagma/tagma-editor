@@ -245,7 +245,7 @@ export function TaskCard({
           hover:border-tagma-accent hover:bg-tagma-accent/20 transition-all duration-75"
         onPointerDown={(e) => { if (e.button === 0) { e.stopPropagation(); onHandlePointerDown(task.id, e); } }}
       />
-      {isSelected && <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-tagma-accent rounded-l-[2px]" />}
+      {isSelected && <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-red-500' : 'bg-tagma-accent'}`} />}
 
       {/* ─── Row 1: Type icon · Name · Status badges ─── */}
       <div className="flex items-center h-[24px] gap-[6px] pointer-events-none min-w-0 overflow-hidden">
