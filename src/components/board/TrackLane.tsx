@@ -148,11 +148,8 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* ─── Row 1 (22px): Color · Name · Badges · Count ─── */}
+      {/* ─── Row 1 (22px): Name · Badges · Count ─── */}
       <div className="flex items-center h-[22px] gap-[6px] min-w-0 overflow-hidden">
-        <div className="w-[6px] h-[6px] rounded-full shrink-0"
-          style={{ backgroundColor: track.color ?? 'transparent', opacity: track.color ? 1 : 0 }} />
-
         <span className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : 'text-tagma-text'}`}>
           {track.name}
         </span>

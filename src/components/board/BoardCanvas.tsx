@@ -473,11 +473,12 @@ export function BoardCanvas({
                 position: 'relative',
               }}
             >
-              {/* Color bar on left edge — red if track has errors */}
-              <div className="absolute left-0 top-0"
-                style={{ width: 3, height: TRACK_H - 1, backgroundColor: errorsByTrack.has(track.id) ? '#ef4444' : (track.color || 'transparent') }} />
-              <div className="h-full flex items-center cursor-grab active:cursor-grabbing" onPointerDown={(e) => handleTrackDragStart(track.id, e)}>
-                <TrackLane track={track} taskCount={taskCount} hasParallelWarning={hasParallel} errorMessages={errorsByTrack.get(track.id)} />
+              <div className="h-full flex cursor-grab active:cursor-grabbing" onPointerDown={(e) => handleTrackDragStart(track.id, e)}>
+                {/* Color bar — fixed width, always aligned */}
+                <div className="shrink-0" style={{ width: 3, backgroundColor: errorsByTrack.has(track.id) ? '#ef4444' : (track.color || 'transparent') }} />
+                <div className="flex-1 min-w-0 flex items-center">
+                  <TrackLane track={track} taskCount={taskCount} hasParallelWarning={hasParallel} errorMessages={errorsByTrack.get(track.id)} />
+                </div>
               </div>
             </div>
           );
