@@ -1,5 +1,8 @@
+import { useState, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, ShieldAlert, SkipForward, Ban } from 'lucide-react';
 import type { RawTrackConfig } from '../../api/client';
+import { getZoom, viewportW, viewportH } from '../../utils/zoom';
 
 interface TrackLaneProps {
   track: RawTrackConfig;
@@ -29,6 +32,105 @@ function Chip({ children, className = '' }: { children: React.ReactNode; classNa
   );
 }
 
+/* ── Floating tooltip (portal, same style as TaskCard tooltips) ── */
+function TrackTooltip({ track, anchorRect }: { track: RawTrackConfig; anchorRect: DOMRect }) {
+  const perms = track.permissions;
+  const rows: [string, string][] = [];
+  if (track.driver) rows.push(['Driver', track.driver]);
+  if (track.model_tier) rows.push(['Model', track.model_tier]);
+  if (perms) {
+    const parts = [perms.read && 'Read', perms.write && 'Write', perms.execute && 'Execute'].filter(Boolean);
+    if (parts.length) rows.push(['Permissions', parts.join(', ')]);
+  }
+  if (track.on_failure) rows.push(['On Failure', track.on_failure]);
+  if (track.agent_profile) rows.push(['Profile', track.agent_profile]);
+  if (track.cwd) rows.push(['CWD', track.cwd]);
+  if (track.middlewares?.length) rows.push(['Middleware', track.middlewares.map((m) => m.type).join(', ')]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <FloatingPanel anchorRect={anchorRect} width={240} borderClass="border-[#2a2a30]">
+      <div className="px-3 py-1.5 text-[10px] font-semibold text-tagma-text truncate border-b border-[#2a2a30]">
+        {track.name}
+      </div>
+      <div className="px-3 py-1.5">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex py-[1.5px] text-[9px] font-mono gap-2 min-w-0">
+            <span className="text-tagma-muted/70 w-[72px] shrink-0 text-right truncate">{label}</span>
+            <span className="text-tagma-text/80 truncate min-w-0 flex-1">{value}</span>
+          </div>
+        ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function ErrorTooltipPanel({ messages, anchorRect }: { messages: string[]; anchorRect: DOMRect }) {
+  return (
+    <FloatingPanel anchorRect={anchorRect} width={260} borderClass="border-red-500/40">
+      <div className="px-3 py-1.5">
+        {messages.map((msg, i) => (
+          <div key={i} className="flex items-start gap-1.5 py-[2px] text-[9px] font-mono">
+            <AlertTriangle size={8} className="text-red-400 shrink-0 mt-[2px]" />
+            <span className="text-red-300/90">{msg}</span>
+          </div>
+        ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+/* ── Shared floating panel with viewport clamping ── */
+function FloatingPanel({ anchorRect, width, borderClass, children }: {
+  anchorRect: DOMRect; width: number; borderClass: string; children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const z = getZoom();
+    const gap = 6, margin = 8;
+    const vw = viewportW(), vh = viewportH();
+    const tW = el.getBoundingClientRect().width / z;
+    const tH = el.getBoundingClientRect().height / z;
+    const aR = anchorRect.right / z;
+    const aT = anchorRect.top / z;
+    const aH = anchorRect.height / z;
+    const aL = anchorRect.left / z;
+
+    // Horizontal: prefer right of anchor, fall back to left
+    let left = aR + gap;
+    if (left + tW > vw - margin) left = aL - gap - tW;
+    left = Math.max(margin, Math.min(left, vw - tW - margin));
+
+    // Vertical: align top of tooltip with top of anchor, clamp to viewport
+    let top = aT;
+    top = Math.max(margin, Math.min(top, vh - tH - margin));
+
+    setPos({ left, top });
+  }, [anchorRect, width]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      className={`fixed pointer-events-none bg-[#1a1a1e] ${borderClass} border shadow-lg rounded-[3px] animate-fade-in`}
+      style={{
+        left: pos?.left ?? -9999, top: pos?.top ?? -9999,
+        width, maxHeight: viewportH() - 16,
+        overflow: 'hidden', zIndex: 9999,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+/* ── Main ── */
 export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages }: TrackLaneProps) {
   const hasError = errorMessages && errorMessages.length > 0;
   const perms = track.permissions;
@@ -36,9 +138,16 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
   const hasMeta = !!track.driver || !!track.model_tier || !!perms || !!fail
     || (track.middlewares && track.middlewares.length > 0) || !!track.agent_profile;
 
+  const [hovered, setHovered] = useState(false);
+  const laneRef = useRef<HTMLDivElement>(null);
+
   return (
-    <div className={`h-full w-full flex flex-col justify-center px-3 select-none ${hasError ? 'bg-red-500/6' : ''}`}
-      title={hasError ? errorMessages!.join('\n') : undefined}>
+    <div
+      ref={laneRef}
+      className={`h-full w-full flex flex-col justify-center px-3 select-none ${hasError ? 'bg-red-500/6' : ''}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {/* ─── Row 1 (22px): Color · Name · Badges · Count ─── */}
       <div className="flex items-center h-[22px] gap-[6px]">
         <div className="w-[6px] h-[6px] rounded-full shrink-0"
@@ -104,6 +213,13 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
             </span>
           )}
         </div>
+      )}
+
+      {/* ─── Hover tooltip ─── */}
+      {hovered && laneRef.current && (
+        hasError
+          ? <ErrorTooltipPanel messages={errorMessages!} anchorRect={laneRef.current.getBoundingClientRect()} />
+          : <TrackTooltip track={track} anchorRect={laneRef.current.getBoundingClientRect()} />
       )}
     </div>
   );
