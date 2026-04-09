@@ -1,9 +1,33 @@
 const BASE = '/api';
 
+/**
+ * Recursively replace undefined values with null so JSON.stringify preserves
+ * the key — this tells the server "clear this field" instead of silently
+ * dropping it.
+ */
+function undefinedToNull(obj: unknown): unknown {
+  if (obj === undefined) return null;
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(undefinedToNull);
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[k] = undefinedToNull(v);
+  }
+  return result;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  // Re-serialize body to convert undefined → null
+  let finalOptions = options;
+  if (options?.body && typeof options.body === 'string') {
+    try {
+      const parsed = JSON.parse(options.body);
+      finalOptions = { ...options, body: JSON.stringify(undefinedToNull(parsed)) };
+    } catch { /* not JSON, pass through */ }
+  }
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
-    ...options,
+    ...finalOptions,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
