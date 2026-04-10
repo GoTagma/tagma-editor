@@ -278,6 +278,9 @@ export const api = {
   exportFile: (destDir: string) =>
     request<{ ok: boolean; path: string }>('/export-file', { method: 'POST', body: jsonBody({ destDir }) }),
 
+  deleteFile: (path: string) =>
+    request<ServerState>('/delete-file', { method: 'POST', body: jsonBody({ path }) }),
+
   saveLayout: (positions: Record<string, { x: number }>) =>
     request<{ ok: boolean }>('/layout', { method: 'PATCH', body: jsonBody({ positions }) }),
 

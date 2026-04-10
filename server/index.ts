@@ -1011,6 +1011,32 @@ app.post('/api/export-file', (req, res) => {
   }
 });
 
+// Delete a YAML and its companion .layout.json. If the deleted file is the
+// one currently loaded, reset in-memory state back to a blank pipeline so the
+// client can decide what to open next.
+app.post('/api/delete-file', (req, res) => {
+  const { path: filePath } = req.body;
+  if (!filePath) return res.status(400).json({ error: 'path is required' });
+  const absPath = resolve(filePath);
+  try {
+    if (existsSync(absPath)) {
+      rmSync(absPath, { force: true });
+    }
+    const layoutFile = companionLayoutPath(absPath);
+    if (existsSync(layoutFile)) {
+      rmSync(layoutFile, { force: true });
+    }
+    if (yamlPath === absPath) {
+      yamlPath = null;
+      config = createEmptyPipeline('Untitled Pipeline');
+      layout = { positions: {} };
+    }
+    res.json(getState());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to delete file' });
+  }
+});
+
 // ── Load demo ──
 app.post('/api/demo', (_req, res) => {
   const DEMO = `pipeline:

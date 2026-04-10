@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Trash2 } from 'lucide-react';
 
 interface MenuAction {
   label: string;
   shortcut?: string;
   disabled?: boolean;
   onAction: () => void;
+  onDelete?: () => void;
+  deleteTitle?: string;
 }
 
 interface MenuSep {
@@ -96,23 +98,41 @@ export function MenuBar({ menus }: MenuBarProps) {
           </button>
 
           {openIdx === mi && (
-            <div className="absolute left-0 top-full bg-tagma-surface border border-tagma-border/80 shadow-xl py-1 min-w-[200px] animate-fade-in z-[101] rounded-sm">
+            <div className="absolute left-0 top-full bg-tagma-surface border border-tagma-border/80 shadow-xl py-1 min-w-[200px] max-h-[70vh] overflow-y-auto animate-fade-in z-[101] rounded-sm">
               {menu.items.map((item, ii) => {
                 if (isSep(item)) {
                   return <div key={`sep-${ii}`} className="my-1 border-t border-tagma-border/30" />;
                 }
                 return (
-                  <button
+                  <div
                     key={ii}
-                    disabled={item.disabled}
-                    onClick={() => { item.onAction(); close(); }}
-                    className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] text-left transition-colors text-tagma-text hover:bg-tagma-accent/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                    className={`group w-full flex items-center justify-between pr-1 text-[11px] text-left transition-colors ${item.disabled ? 'text-tagma-muted/45 cursor-not-allowed' : 'text-tagma-text hover:bg-tagma-accent/10 hover:text-white'}`}
                   >
-                    <span>{item.label}</span>
-                    {item.shortcut && (
-                      <span className="text-[9px] text-tagma-muted/60 font-mono ml-6 tracking-wider">{item.shortcut}</span>
+                    <button
+                      disabled={item.disabled}
+                      onClick={() => { if (!item.disabled) { item.onAction(); close(); } }}
+                      className="flex-1 flex items-center justify-between px-3 py-1.5 text-left text-inherit disabled:cursor-not-allowed disabled:text-inherit"
+                    >
+                      <span>{item.label}</span>
+                      {item.shortcut && (
+                        <span className={`text-[9px] font-mono ml-6 tracking-wider ${item.disabled ? 'text-inherit' : 'text-tagma-muted/60'}`}>{item.shortcut}</span>
+                      )}
+                    </button>
+                    {item.onDelete && !item.disabled && (
+                      <button
+                        type="button"
+                        title={item.deleteTitle ?? 'Remove'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          item.onDelete?.();
+                          close();
+                        }}
+                        className="ml-1 p-1 text-tagma-muted/60 hover:text-tagma-error opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <Trash2 size={11} />
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>

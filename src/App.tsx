@@ -15,6 +15,13 @@ import { useRunStore } from './store/run-store';
 
 type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' | 'plugin-import' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
+type ConfirmInfo = {
+  title: string;
+  details: string[];
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+};
 
 export function App() {
   const {
@@ -24,7 +31,7 @@ export function App() {
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition, setRegistry,
-    setWorkDir, saveFile, newPipeline, importFile, exportFile,
+    setWorkDir, saveFile, newPipeline, importFile, exportFile, openFile,
     exportYaml, importYaml, init, clearError,
   } = usePipelineStore();
 
@@ -34,6 +41,8 @@ export function App() {
   const [showPlugins, setShowPlugins] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
+  const [confirmInfo, setConfirmInfo] = useState<ConfirmInfo | null>(null);
+  const [workspaceYamls, setWorkspaceYamls] = useState<{ name: string; path: string }[]>([]);
 
   // Pending action to execute after workspace is set
   const afterWorkspaceRef = useRef<'new' | 'import' | 'save' | 'run' | null>(null);
@@ -47,6 +56,80 @@ export function App() {
   }, [errorMessage, clearError]);
 
   useEffect(() => { init(); }, []);
+
+  const refreshWorkspaceYamls = useCallback(async (): Promise<{ name: string; path: string }[]> => {
+    if (!workDir) {
+      setWorkspaceYamls([]);
+      return [];
+    }
+    try {
+      const sep = workDir.includes('\\') ? '\\' : '/';
+      const tagmaPath = `${workDir}${sep}.tagma`;
+      const result = await api.listDir(tagmaPath);
+      const yamls = result.entries
+        .filter((e) => e.type === 'file' && /\.ya?ml$/i.test(e.name))
+        .map((e) => ({ name: e.name, path: e.path }));
+      setWorkspaceYamls(yamls);
+      return yamls;
+    } catch {
+      setWorkspaceYamls([]);
+      return [];
+    }
+  }, [workDir]);
+
+  // Refresh the list of YAML files under {workDir}/.tagma whenever the
+  // workspace or current file changes (covers save/new/import side-effects).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const yamls = await refreshWorkspaceYamls();
+      if (cancelled) {
+        // no-op: cancellation guard for unmounted effect
+        void yamls;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshWorkspaceYamls, yamlPath]);
+
+  const handleOpenWorkspaceFile = useCallback(async (path: string) => {
+    await openFile(path);
+  }, [openFile]);
+
+  const handleDeleteWorkspaceFile = useCallback((path: string) => {
+    const name = path.split(/[/\\]/).pop() ?? path;
+    setConfirmInfo({
+      title: 'Remove YAML',
+      details: [
+        `Remove "${name}" and its companion .layout.json?`,
+        'This cannot be undone.',
+      ],
+      confirmLabel: 'Remove',
+      danger: true,
+      onConfirm: async () => {
+        const wasActive = yamlPath === path;
+        const nextPath = wasActive
+          ? workspaceYamls.find((y) => y.path !== path)?.path ?? null
+          : null;
+
+        try {
+          await api.deleteFile(path);
+        } catch (e: any) {
+          setDialog({ type: 'error', title: 'Remove Failed', details: [e?.message ?? 'Unknown error'] });
+          return;
+        }
+
+        if (wasActive) {
+          if (nextPath) {
+            await openFile(nextPath);
+          } else {
+            await newPipeline();
+          }
+        } else {
+          await refreshWorkspaceYamls();
+        }
+      },
+    });
+  }, [yamlPath, workspaceYamls, openFile, newPipeline, refreshWorkspaceYamls]);
 
   // Helper: ensure workspace is set before proceeding
   const requireWorkspace = useCallback((then: 'new' | 'import' | 'save' | 'run'): boolean => {
@@ -218,33 +301,63 @@ export function App() {
     setExplorer({ mode: 'directory', purpose: 'export' });
   }, [yamlPath]);
 
-  const menus = useMemo(() => [
-    {
-      label: 'File',
-      items: [
-        { label: 'New Pipeline', onAction: handleNewPipeline },
-        { separator: true as const },
-        { label: 'Import YAML...', shortcut: 'Ctrl+O', onAction: handleImport },
-        { label: 'Export YAML...', disabled: !yamlPath, onAction: handleExport },
-        { separator: true as const },
-        { label: 'Save', shortcut: 'Ctrl+S', onAction: handleSave },
-        { separator: true as const },
-        { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
-      ],
-    },
-    {
-      label: 'Plugins',
-      items: [
-        { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
-      ],
-    },
-    {
-      label: 'Settings',
-      items: [
-        { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
-      ],
-    },
-  ], [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave]);
+  const activeYamlName = useMemo(
+    () => (yamlPath ? yamlPath.split(/[/\\]/).pop() ?? null : null),
+    [yamlPath],
+  );
+
+  const menus = useMemo(() => {
+    type ActionItem = {
+      label: string;
+      shortcut?: string;
+      disabled?: boolean;
+      onAction: () => void;
+      onDelete?: () => void;
+      deleteTitle?: string;
+    };
+    const workspaceItems: ActionItem[] = !workDir
+      ? [{ label: '(No workspace selected)', disabled: true, onAction: () => {} }]
+      : workspaceYamls.length === 0
+      ? [{ label: '(No YAML files in .tagma)', disabled: true, onAction: () => {} }]
+      : workspaceYamls.map((y) => ({
+          label: y.name === activeYamlName ? `● ${y.name}` : `   ${y.name}`,
+          onAction: () => handleOpenWorkspaceFile(y.path),
+          onDelete: () => handleDeleteWorkspaceFile(y.path),
+          deleteTitle: `Remove ${y.name} and its .layout.json`,
+        }));
+
+    return [
+      {
+        label: 'File',
+        items: [
+          { label: 'New YAML', onAction: handleNewPipeline },
+          { separator: true as const },
+          { label: 'Import YAML...', shortcut: 'Ctrl+O', onAction: handleImport },
+          { label: 'Export YAML...', disabled: !yamlPath, onAction: handleExport },
+          { separator: true as const },
+          { label: 'Save', shortcut: 'Ctrl+S', onAction: handleSave },
+          { separator: true as const },
+          { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
+        ],
+      },
+      {
+        label: 'Workspace',
+        items: workspaceItems,
+      },
+      {
+        label: 'Plugins',
+        items: [
+          { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
+        ],
+      },
+      {
+        label: 'Settings',
+        items: [
+          { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
+        ],
+      },
+    ];
+  }, [yamlPath, workDir, workspaceYamls, activeYamlName, handleNewPipeline, handleImport, handleExport, handleSave, handleOpenWorkspaceFile, handleDeleteWorkspaceFile]);
 
   // Ctrl+O → Import
   useEffect(() => {
@@ -457,6 +570,53 @@ export function App() {
             </div>
             <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
               <button onClick={() => setDialog(null)} className="btn-primary">OK</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm dialog */}
+      {confirmInfo && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60" onClick={() => setConfirmInfo(null)}>
+          <div
+            className="bg-tagma-surface border border-tagma-border shadow-panel w-[440px] max-h-[60vh] flex flex-col animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="panel-header">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle size={14} className={`shrink-0 ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-accent'}`} />
+                <h2 className={`panel-title truncate ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-text'}`}>
+                  {confirmInfo.title}
+                </h2>
+              </div>
+              <button onClick={() => setConfirmInfo(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {confirmInfo.details.map((detail, i) => (
+                <div key={i} className="px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0 text-[11px] text-tagma-text font-mono break-words">
+                  {detail}
+                </div>
+              ))}
+            </div>
+            <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmInfo(null)}
+                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors rounded-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const info = confirmInfo;
+                  setConfirmInfo(null);
+                  info.onConfirm();
+                }}
+                className={confirmInfo.danger ? 'btn-danger' : 'btn-primary'}
+              >
+                {confirmInfo.confirmLabel}
+              </button>
             </div>
           </div>
         </div>
