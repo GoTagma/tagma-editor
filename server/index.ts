@@ -940,7 +940,13 @@ app.patch('/api/layout', (req, res) => {
   res.json({ ok: true });
 });
 
-// Import: copy external YAML into .tagma/ and open the copy
+/** Given a YAML path, return the companion layout.json path. */
+function companionLayoutPath(yamlFilePath: string): string {
+  return yamlFilePath.replace(/\.ya?ml$/i, '.layout.json');
+}
+
+// Import: copy external YAML (and its companion .layout.json, if present)
+// into .tagma/ and open the copy
 app.post('/api/import-file', (req, res) => {
   const { sourcePath } = req.body;
   if (!sourcePath) return res.status(400).json({ error: 'sourcePath is required' });
@@ -953,6 +959,14 @@ app.post('/api/import-file', (req, res) => {
   try {
     const content = readFileSync(absSource, 'utf-8');
     writeFileSync(destPath, content, 'utf-8');
+    // Copy the companion layout file alongside the YAML, if it exists.
+    const sourceLayoutFile = companionLayoutPath(absSource);
+    const destLayoutFile = companionLayoutPath(destPath);
+    if (existsSync(sourceLayoutFile)) {
+      try {
+        writeFileSync(destLayoutFile, readFileSync(sourceLayoutFile, 'utf-8'), 'utf-8');
+      } catch { /* best-effort — missing or unreadable layout should not block import */ }
+    }
     try {
       config = parseYaml(content);
     } catch {
@@ -966,14 +980,15 @@ app.post('/api/import-file', (req, res) => {
       } as RawPipelineConfig;
     }
     yamlPath = destPath;
-    layout = { positions: {} };
+    loadLayout();
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to import file' });
   }
 });
 
-// Export: serialize current config and copy to destination directory
+// Export: serialize current config and copy to destination directory,
+// along with its companion .layout.json so positions travel with the YAML.
 app.post('/api/export-file', (req, res) => {
   const { destDir } = req.body;
   if (!destDir) return res.status(400).json({ error: 'destDir is required' });
@@ -983,8 +998,13 @@ app.post('/api/export-file', (req, res) => {
   try {
     const content = serializePipeline(config);
     writeFileSync(yamlPath, content, 'utf-8');
+    // Keep the source-of-truth layout in sync on disk before copying.
+    saveLayout();
     const destPath = join(absDestDir, basename(yamlPath));
     writeFileSync(destPath, content, 'utf-8');
+    // Write the companion layout next to the exported YAML.
+    const destLayoutFile = companionLayoutPath(destPath);
+    writeFileSync(destLayoutFile, JSON.stringify(layout, null, 2), 'utf-8');
     res.json({ ok: true, path: destPath });
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to export file' });
