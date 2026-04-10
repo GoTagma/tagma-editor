@@ -144,27 +144,31 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
   return (
     <div
       ref={laneRef}
-      className={`h-full w-full flex flex-col justify-center px-3 select-none ${hasError ? 'bg-red-500/6' : ''}`}
+      className="h-full w-full flex flex-col justify-center px-3 select-none"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       {/* ─── Row 1 (22px): Name · Badges · Count ─── */}
+      {/* The error- and parallel-warning slots are ALWAYS rendered at the
+          same fixed size (even when empty) so the row layout — and, in turn,
+          anything computed relative to it — is pixel-identical whether or
+          not the track has errors. This keeps the left color bar aligned
+          across tracks. */}
       <div className="flex items-center h-[22px] gap-[6px] min-w-0 overflow-hidden">
         <span className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : 'text-tagma-text'}`}>
           {track.name}
         </span>
 
-        {hasError && (
-          <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0">
-            <AlertTriangle size={9} className="text-red-400" />
-          </span>
-        )}
+        <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0">
+          {hasError && <AlertTriangle size={9} className="text-red-400" />}
+        </span>
 
-        {hasParallelWarning && (
-          <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0" title="Tasks without edges run in parallel">
-            <AlertTriangle size={9} className="text-tagma-warning" />
-          </span>
-        )}
+        <span
+          className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0"
+          title={hasParallelWarning ? 'Tasks without edges run in parallel' : undefined}
+        >
+          {hasParallelWarning && <AlertTriangle size={9} className="text-tagma-warning" />}
+        </span>
 
         <span className="text-[9px] font-mono text-tagma-muted/50 tabular-nums shrink-0 leading-[22px]">
           {taskCount}
