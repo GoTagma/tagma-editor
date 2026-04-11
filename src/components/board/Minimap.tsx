@@ -7,8 +7,7 @@ import { getZoom } from '../../utils/zoom';
 const TASK_W = 176;
 const TASK_H = 52;
 const TRACK_H = 64;
-const PAD_LEFT = 24;
-const CANVAS_PAD_RIGHT = 200;
+const PAD_LEFT = 20;
 const SCROLL_ELEMENT_ID = 'board-scroll';
 
 /**
@@ -26,11 +25,23 @@ export function Minimap() {
   const [visible, setVisible] = useState(true);
   const [scrollTick, setScrollTick] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [wrapW, setWrapW] = useState(248);
 
-  // Minimap footprint — fills available width up to 260 px; height is fixed.
-  const MAP_W = 248;
+  // Minimap footprint — width fills container; height is fixed.
+  const MAP_W = wrapW;
   const MAP_H = 128;
   const PAD = 4;
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setWrapW(Math.max(1, el.clientWidth));
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Derive content bounds from tracks + positions (matches BoardCanvas logic).
   const { contentW, contentH } = useMemo(() => {
@@ -44,8 +55,8 @@ export function Minimap() {
       });
     });
     return {
-      contentW: Math.max(maxX + CANVAS_PAD_RIGHT, 2000),
-      contentH: Math.max(tracks.length * TRACK_H, 200),
+      contentW: Math.max(maxX + PAD_LEFT, 1),
+      contentH: Math.max(tracks.length * TRACK_H, 1),
     };
   }, [tracks, positions]);
 
@@ -192,7 +203,8 @@ export function Minimap() {
           <X size={10} />
         </button>
       </div>
-      <div className="flex justify-start p-1.5">
+      <div className="p-1.5">
+        <div ref={wrapRef}>
         <svg
           ref={svgRef}
           width={MAP_W}
@@ -234,6 +246,7 @@ export function Minimap() {
             />
           )}
         </svg>
+        </div>
       </div>
     </div>
   );

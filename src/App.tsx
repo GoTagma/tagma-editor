@@ -316,28 +316,34 @@ export function App() {
     [yamlPath],
   );
 
-  const menus = useMemo(() => {
-    type ActionItem = {
-      label: string;
-      subLabel?: string;
-      shortcut?: string;
-      disabled?: boolean;
-      onAction: () => void;
-      onDelete?: () => void;
-      deleteTitle?: string;
-    };
-    const workspaceItems: ActionItem[] = !workDir
-      ? [{ label: '(No workspace selected)', disabled: true, onAction: () => {} }]
-      : workspaceYamls.length === 0
-      ? [{ label: '(No YAML files in .tagma)', disabled: true, onAction: () => {} }]
-      : workspaceYamls.map((y) => ({
-          label: y.name === activeYamlName ? `● ${y.name}` : `   ${y.name}`,
-          subLabel: y.pipelineName ?? undefined,
-          onAction: () => handleOpenWorkspaceFile(y.path),
-          onDelete: () => handleDeleteWorkspaceFile(y.path),
-          deleteTitle: `Remove ${y.name} and its .layout.json`,
-        }));
+  type ActionItem = {
+    label: string;
+    subLabel?: string;
+    shortcut?: string;
+    disabled?: boolean;
+    onAction: () => void;
+    onDelete?: () => void;
+    deleteTitle?: string;
+  };
 
+  const workspaceItems = useMemo<ActionItem[]>(() => {
+    if (!workDir) return [{ label: '(No workspace selected)', disabled: true, onAction: () => {} }];
+    if (workspaceYamls.length === 0) return [{ label: '(No YAML files in .tagma)', disabled: true, onAction: () => {} }];
+    return workspaceYamls.map((y) => {
+      const isActive = y.name === activeYamlName;
+      const primary = y.pipelineName && y.pipelineName.trim() ? y.pipelineName : y.name;
+      const secondary = y.pipelineName && y.pipelineName.trim() ? y.name : undefined;
+      return {
+        label: isActive ? `● ${primary}` : `   ${primary}`,
+        subLabel: secondary,
+        onAction: () => handleOpenWorkspaceFile(y.path),
+        onDelete: () => handleDeleteWorkspaceFile(y.path),
+        deleteTitle: `Remove ${y.name} and its .layout.json`,
+      };
+    });
+  }, [workDir, workspaceYamls, activeYamlName, handleOpenWorkspaceFile, handleDeleteWorkspaceFile]);
+
+  const menus = useMemo(() => {
     return [
       {
         label: 'File',
@@ -354,10 +360,6 @@ export function App() {
         ],
       },
       {
-        label: 'Workspace',
-        items: workspaceItems,
-      },
-      {
         label: 'Plugins',
         items: [
           { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
@@ -370,7 +372,7 @@ export function App() {
         ],
       },
     ];
-  }, [yamlPath, workDir, workspaceYamls, activeYamlName, handleNewPipeline, handleImport, handleExport, handleSave, handleSaveAs, handleOpenWorkspaceFile, handleDeleteWorkspaceFile]);
+  }, [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave, handleSaveAs, workspaceItems]);
 
   // Ctrl+O → Import
   useEffect(() => {
@@ -488,7 +490,8 @@ export function App() {
       <div onClick={() => { selectTask(null); selectTrack(null); }}>
         <Toolbar
           pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
-          menus={menus} onUpdateName={setPipelineName} onRun={handleRun}
+          menus={menus} workspaceItems={workspaceItems}
+          onUpdateName={setPipelineName} onRun={handleRun}
         />
 
       </div>

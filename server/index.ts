@@ -1117,7 +1117,11 @@ app.get('/api/workspace/yamls', (_req, res) => {
         let pipelineName: string | null = null;
         try {
           const doc = yaml.load(readFileSync(absPath, 'utf-8')) as any;
-          if (doc && typeof doc.name === 'string') pipelineName = doc.name;
+          const candidate =
+            (doc && typeof doc?.pipeline?.name === 'string' && doc.pipeline.name) ||
+            (doc && typeof doc?.name === 'string' && doc.name) ||
+            null;
+          if (candidate && String(candidate).trim()) pipelineName = String(candidate).trim();
         } catch {}
         return { name: e.name, path: absPath, pipelineName };
       })

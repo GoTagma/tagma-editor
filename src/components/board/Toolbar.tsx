@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
-import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink } from 'lucide-react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink, ChevronDown } from 'lucide-react';
 import { MenuBar } from '../MenuBar';
+import { DropdownMenu, type DropdownItem } from '../DropdownMenu';
 import { api } from '../../api/client';
 
 interface ToolbarProps {
@@ -9,17 +10,19 @@ interface ToolbarProps {
   workDir: string;
   isDirty: boolean;
   errorCount: number;
-  menus: { label: string; items: any[] }[];
+  menus: { label: string; items: DropdownItem[] }[];
+  workspaceItems: DropdownItem[];
   onUpdateName: (name: string) => void;
   onRun: () => void;
 }
 
 export function Toolbar({
-  pipelineName, yamlPath, workDir, isDirty, errorCount, menus,
+  pipelineName, yamlPath, workDir, isDirty, errorCount, menus, workspaceItems,
   onUpdateName, onRun,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
+  const [wdMenuOpen, setWdMenuOpen] = useState(false);
 
   const handleSaveName = useCallback(() => {
     const trimmed = editName.trim();
@@ -123,9 +126,17 @@ export function Toolbar({
       {/* Right section */}
       <div className="flex items-center gap-2 shrink-0 h-full">
         {workDir && (
-          <div className="flex items-center gap-1.5 min-w-0 shrink group/wd" title={workDir}>
-            <FolderOpen size={10} className="text-tagma-muted/40 shrink-0" />
-            <span className="text-[10px] font-mono text-tagma-muted/40 truncate max-w-[180px]">{workDir}</span>
+          <div className="relative flex items-center gap-1.5 min-w-0 shrink group/wd">
+            <button
+              type="button"
+              onClick={() => setWdMenuOpen((v) => !v)}
+              className="flex items-center gap-1.5 min-w-0 hover:text-tagma-text transition-colors"
+              title={`${workDir}\nClick to browse workspace YAMLs`}
+            >
+              <FolderOpen size={10} className="text-tagma-muted/40 shrink-0" />
+              <span className="text-[10px] font-mono text-tagma-muted/40 truncate max-w-[180px]">{workDir}</span>
+              <ChevronDown size={8} className="text-tagma-muted/40 opacity-60 shrink-0" />
+            </button>
             <button
               onClick={() => api.reveal(workDir).catch(() => {})}
               className="text-tagma-muted/40 hover:text-tagma-accent opacity-0 group-hover/wd:opacity-100 transition-opacity shrink-0"
@@ -133,6 +144,13 @@ export function Toolbar({
             >
               <ExternalLink size={9} />
             </button>
+            {wdMenuOpen && (
+              <DropdownMenu
+                items={workspaceItems}
+                onClose={() => setWdMenuOpen(false)}
+                anchorClassName="absolute right-0 top-full mt-1 z-[101]"
+              />
+            )}
           </div>
         )}
 
