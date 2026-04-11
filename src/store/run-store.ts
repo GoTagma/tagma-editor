@@ -10,6 +10,10 @@ import type {
 import { foldRunEvent, type RunFoldState } from './run-event-reducer';
 
 interface RunStoreState extends RunFoldState {
+  // `active` means the RunView is currently rendered. It is independent
+  // from `status`: a run can still be executing on the server while the
+  // user is back in the editor (minimized). Only `reset()` tears the
+  // whole thing down and unsubscribes the SSE channel.
   active: boolean;
   selectedTaskId: string | null;
   selectedTrackId: string | null;
@@ -20,6 +24,14 @@ interface RunStoreState extends RunFoldState {
   selectTask: (taskId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
   resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) => Promise<void>;
+  /**
+   * Hide the RunView without stopping the run. SSE stays subscribed,
+   * tasks / snapshot / pendingApprovals are preserved, and `showView()`
+   * re-renders the view seamlessly when the user wants to come back.
+   */
+  minimizeView: () => void;
+  /** Re-open the RunView after a prior `minimizeView()`. */
+  showView: () => void;
   reset: () => void;
 }
 
@@ -63,6 +75,10 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     lastEventSeq: 0,
 
     startRun: async (config) => {
+      // Defensive: a previous run may have been minimized (still alive
+      // server-side). Close its SSE subscription before starting the new
+      // one so we don't leak listeners / get stray events.
+      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       set({
         active: true,
         status: 'starting',
@@ -84,6 +100,10 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         set({ status: 'error', error: message });
       }
     },
+
+    minimizeView: () => set({ active: false }),
+
+    showView: () => set({ active: true }),
 
     abortRun: async () => {
       try {

@@ -8,7 +8,10 @@ import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { api } from './api/client';
-import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
+import {
+  Loader2, AlertCircle, CheckCircle2, X as XIcon,
+  Check, Square, ShieldCheck, LayoutGrid,
+} from 'lucide-react';
 
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
@@ -38,7 +41,16 @@ export function App() {
     exportYaml, importYaml, init,
   } = usePipelineStore();
 
-  const { active: runActive, startRun, reset: resetRun } = useRunStore();
+  const {
+    active: runActive,
+    status: runStatus,
+    tasks: runTasks,
+    pendingApprovals: runPendingApprovals,
+    startRun,
+    reset: resetRun,
+    minimizeView: minimizeRun,
+    showView: showRun,
+  } = useRunStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
@@ -219,6 +231,14 @@ export function App() {
   const [pendingRun, setPendingRun] = useState(false);
 
   const handleRun = useCallback(async () => {
+    // If a run is already live (possibly minimized), don't start a new
+    // one — just reopen the existing view. This prevents the server's
+    // 409 "run already in progress" and is almost always what the user
+    // wanted when they click Run after minimizing.
+    if (runStatus === 'running' || runStatus === 'starting') {
+      showRun();
+      return;
+    }
     if (!requireWorkspace('run')) return;
     if (validationErrors.length > 0) {
       setDialog({
@@ -234,7 +254,7 @@ export function App() {
       return;
     }
     startRun(config);
-  }, [requireWorkspace, yamlPath, validationErrors, isDirty, saveFile, config]);
+  }, [runStatus, showRun, requireWorkspace, yamlPath, validationErrors, isDirty, saveFile, config, startRun]);
 
   // After save completes and yamlPath is set, auto-trigger run
   useEffect(() => {
@@ -443,6 +463,31 @@ export function App() {
     );
   }
 
+  // Back-from-run handler: while the run is live we just minimize the
+  // view (SSE stays alive, run keeps executing server-side). Once the
+  // run has reached a terminal state, Back actually tears it all down.
+  const handleRunBack = () => {
+    if (runStatus === 'running' || runStatus === 'starting') {
+      minimizeRun();
+    } else {
+      resetRun();
+    }
+  };
+
+  // Summary numbers used by the minimized-run indicator.
+  const runTaskCounts = useMemo(() => {
+    const counts = { success: 0, failed: 0, running: 0, waiting: 0, skipped: 0, timeout: 0, blocked: 0 };
+    for (const [, t] of runTasks) {
+      if (t.status in counts) (counts as any)[t.status] += 1;
+    }
+    return counts;
+  }, [runTasks]);
+
+  // Is the run "minimized" — i.e. alive somewhere but the view is not
+  // currently rendered? This drives the editor-side floating indicator.
+  const runIsMinimized = !runActive && runStatus !== 'idle';
+  const runIsLive = runStatus === 'starting' || runStatus === 'running';
+
   // Run mode
   if (runActive) {
     return (
@@ -451,7 +496,7 @@ export function App() {
           config={config}
           dagEdges={dagEdges}
           positions={positions}
-          onBack={resetRun}
+          onBack={handleRunBack}
         />
         <ErrorToast />
         {/* Dialog overlay (shared) */}
@@ -749,6 +794,86 @@ export function App() {
       )}
 
       <ErrorToast />
+
+      {/* Minimized-run indicator (§run-minimize).
+          Appears when a run is still alive — or just terminated — but
+          the RunView is not on-screen. Clicking it reopens the view,
+          and the X button resets the run-store when the run is in a
+          terminal state. While the run is live the X aborts first. */}
+      {runIsMinimized && (
+        <div className="fixed bottom-4 right-4 z-[130] animate-fade-in">
+          <div
+            className={`flex items-center gap-2 pl-3 pr-1 py-1.5 border shadow-panel cursor-pointer select-none bg-tagma-surface transition-colors
+              ${runStatus === 'running' || runStatus === 'starting'
+                ? 'border-tagma-ready/50 hover:bg-tagma-ready/5'
+                : runStatus === 'done'
+                  ? 'border-tagma-success/50 hover:bg-tagma-success/5'
+                  : 'border-tagma-error/50 hover:bg-tagma-error/5'}
+            `}
+            onClick={showRun}
+            title="Return to Run view"
+          >
+            {/* Status icon */}
+            {runIsLive && <Loader2 size={12} className="text-tagma-ready animate-spin shrink-0" />}
+            {runStatus === 'done' && <Check size={12} className="text-tagma-success shrink-0" />}
+            {(runStatus === 'aborted' || runStatus === 'error') && <XIcon size={12} className="text-tagma-error shrink-0" />}
+
+            <div className="flex items-center gap-2 text-[10px] font-mono">
+              <LayoutGrid size={11} className="text-tagma-accent" />
+              <span className={`
+                ${runIsLive ? 'text-tagma-ready' : ''}
+                ${runStatus === 'done' ? 'text-tagma-success' : ''}
+                ${runStatus === 'aborted' || runStatus === 'error' ? 'text-tagma-error' : ''}
+              `}>
+                {runIsLive ? 'Run in progress' :
+                  runStatus === 'done' ? 'Run completed' :
+                  runStatus === 'aborted' ? 'Run aborted' :
+                  'Run error'}
+              </span>
+              {runTasks.size > 0 && (
+                <span className="flex items-center gap-1 text-[9px] text-tagma-muted">
+                  {runTaskCounts.success > 0 && <span className="text-tagma-success">{runTaskCounts.success}✓</span>}
+                  {runTaskCounts.failed > 0 && <span className="text-tagma-error">{runTaskCounts.failed}✗</span>}
+                  {runTaskCounts.running > 0 && <span className="text-tagma-ready">{runTaskCounts.running}⟳</span>}
+                  {runTaskCounts.waiting > 0 && <span className="text-tagma-muted">{runTaskCounts.waiting}…</span>}
+                </span>
+              )}
+              {runPendingApprovals.size > 0 && (
+                <span className="flex items-center gap-0.5 text-[9px] text-tagma-warning animate-pulse-slow">
+                  <ShieldCheck size={10} />
+                  {runPendingApprovals.size}
+                </span>
+              )}
+            </div>
+
+            {/* Abort (live) or Close (terminal) */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (runIsLive) {
+                  setConfirmInfo({
+                    title: 'Abort run?',
+                    details: [
+                      'The pipeline is still executing on the server.',
+                      'Aborting will signal the engine to stop and discard any in-flight tasks.',
+                    ],
+                    confirmLabel: 'Abort run',
+                    danger: true,
+                    onConfirm: () => { api.abortRun().catch(() => { /* best effort */ }); resetRun(); },
+                  });
+                } else {
+                  resetRun();
+                }
+              }}
+              className="p-1 text-tagma-muted hover:text-tagma-text transition-colors"
+              title={runIsLive ? 'Abort run' : 'Dismiss'}
+            >
+              {runIsLive ? <Square size={10} /> : <XIcon size={11} />}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Confirm dialog */}
       {confirmInfo && (
