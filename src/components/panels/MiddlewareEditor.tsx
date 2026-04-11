@@ -2,6 +2,9 @@ import { useCallback } from 'react';
 import { X, Plus } from 'lucide-react';
 import type { MiddlewareConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { usePipelineStore } from '../../store/pipeline-store';
+
+const KNOWN_MIDDLEWARE_TYPES = new Set(['static_context']);
 
 interface MiddlewareEditorProps {
   middlewares: MiddlewareConfig[];
@@ -9,6 +12,9 @@ interface MiddlewareEditorProps {
 }
 
 export function MiddlewareEditor({ middlewares, onChange }: MiddlewareEditorProps) {
+  const registry = usePipelineStore((s) => s.registry);
+  const typeOptions = Array.from(new Set<string>(['static_context', ...registry.middlewares]));
+
   const handleAdd = useCallback(() => {
     onChange([...middlewares, { type: 'static_context', file: '' }]);
   }, [middlewares, onChange]);
@@ -36,20 +42,25 @@ export function MiddlewareEditor({ middlewares, onChange }: MiddlewareEditorProp
       )}
       <div className="space-y-2">
         {middlewares.map((m, i) => (
-          <MiddlewareItem key={i} middleware={m} onUpdate={(patch) => handleUpdate(i, patch)} onRemove={() => handleRemove(i)} />
+          <MiddlewareItem key={i} middleware={m} typeOptions={typeOptions}
+            onUpdate={(patch) => handleUpdate(i, patch)} onRemove={() => handleRemove(i)} />
         ))}
       </div>
     </div>
   );
 }
 
-function MiddlewareItem({ middleware, onUpdate, onRemove }: {
+function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove }: {
   middleware: MiddlewareConfig;
+  typeOptions: string[];
   onUpdate: (patch: Partial<MiddlewareConfig>) => void;
   onRemove: () => void;
 }) {
   const [file, setFile, blurFile] = useLocalField(middleware.file ?? '', (v) => onUpdate({ file: v || undefined }));
   const [label, setLabel, blurLabel] = useLocalField(middleware.label ?? '', (v) => onUpdate({ label: v || undefined }));
+
+  const isKnown = KNOWN_MIDDLEWARE_TYPES.has(middleware.type);
+  const customEntries = Object.entries(middleware).filter(([k]) => k !== 'type');
 
   return (
     <div className="bg-tagma-bg border border-tagma-border p-2 space-y-1.5 relative">
@@ -59,7 +70,9 @@ function MiddlewareItem({ middleware, onUpdate, onRemove }: {
       <div>
         <label className="text-[10px] text-tagma-muted">Type</label>
         <select className="field-input text-[11px]" value={middleware.type} onChange={(e) => onUpdate({ type: e.target.value })}>
-          <option value="static_context">static_context</option>
+          {typeOptions.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
         </select>
       </div>
       {middleware.type === 'static_context' && (
@@ -74,6 +87,49 @@ function MiddlewareItem({ middleware, onUpdate, onRemove }: {
           </div>
         </>
       )}
+      {!isKnown && (
+        <div className="space-y-1">
+          <p className="text-[10px] text-tagma-muted">Custom fields (from plugin "{middleware.type}"):</p>
+          <CustomFieldsEditor
+            entries={customEntries as [string, unknown][]}
+            onChange={(next) => onUpdate({
+              // Replace non-type fields wholesale so keys removed in the editor are dropped.
+              ...({ type: middleware.type } as MiddlewareConfig),
+              ...Object.fromEntries(next),
+            })}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Small KV editor shared by custom middleware plugins. */
+function CustomFieldsEditor({ entries, onChange }: {
+  entries: [string, unknown][];
+  onChange: (entries: [string, unknown][]) => void;
+}) {
+  const add = () => onChange([...entries, [`key${entries.length + 1}`, '']]);
+  const remove = (i: number) => onChange(entries.filter((_, idx) => idx !== i));
+  const updateKey = (i: number, key: string) => onChange(entries.map((e, idx) => idx === i ? [key, e[1]] : e));
+  const updateValue = (i: number, value: string) => onChange(entries.map((e, idx) => idx === i ? [e[0], value] : e));
+
+  return (
+    <div className="space-y-1">
+      {entries.map(([k, v], i) => (
+        <div key={i} className="flex items-center gap-1">
+          <input type="text" className="field-input font-mono text-[11px] w-[90px]" value={k}
+            onChange={(e) => updateKey(i, e.target.value)} placeholder="key" />
+          <input type="text" className="field-input font-mono text-[11px] flex-1" value={String(v ?? '')}
+            onChange={(e) => updateValue(i, e.target.value)} placeholder="value" />
+          <button onClick={() => remove(i)} className="text-tagma-muted hover:text-tagma-error transition-colors shrink-0">
+            <X size={10} />
+          </button>
+        </div>
+      ))}
+      <button onClick={add} className="text-[10px] text-tagma-accent hover:text-tagma-text transition-colors">
+        + Add field
+      </button>
     </div>
   );
 }

@@ -190,6 +190,12 @@ export function App() {
     return { errorsByTask: byTask, errorsByTrack: byTrack };
   }, [validationErrors, config]);
 
+  // Pipeline-level (top-level) errors: anything whose path does not start with "tracks[".
+  const pipelineLevelErrors = useMemo(
+    () => validationErrors.filter((e) => !/^tracks\[/.test(e.path)).map((e) => e.message),
+    [validationErrors],
+  );
+
   // Compat: keep invalidTaskIds as a Set for BoardCanvas
   const invalidTaskIds = useMemo(
     () => new Set(errorsByTask.keys()),
@@ -461,6 +467,7 @@ export function App() {
             pipelineConfig={config}
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
             drivers={registry.drivers}
+            errors={errorsByTask.get(selectedTaskId!) ?? []}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}
             onRemoveDependency={removeDependency}
           />
@@ -471,6 +478,7 @@ export function App() {
             key={selectedTrackId}
             track={selectedTrack}
             drivers={registry.drivers}
+            errors={errorsByTrack.get(selectedTrackId!) ?? []}
             onUpdateTrack={updateTrackFields}
             onDeleteTrack={deleteTrack}
           />
@@ -482,6 +490,7 @@ export function App() {
         <PipelineConfigPanel
           config={config}
           drivers={registry.drivers}
+          errors={pipelineLevelErrors}
           onUpdate={updatePipelineFields}
           onClose={() => setShowPipelineSettings(false)}
         />

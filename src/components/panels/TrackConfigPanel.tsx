@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, AlertTriangle } from 'lucide-react';
 import type { RawTrackConfig, MiddlewareConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { MiddlewareEditor } from './MiddlewareEditor';
@@ -7,11 +7,12 @@ import { MiddlewareEditor } from './MiddlewareEditor';
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
   drivers: string[];
+  errors: string[];
   onUpdateTrack: (trackId: string, fields: Record<string, unknown>) => void;
   onDeleteTrack: (trackId: string) => void;
 }
 
-export function TrackConfigPanel({ track, drivers, onUpdateTrack, onDeleteTrack }: TrackConfigPanelProps) {
+export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDeleteTrack }: TrackConfigPanelProps) {
   const commit = useCallback((fields: Record<string, unknown>) => {
     onUpdateTrack(track.id, fields);
   }, [track.id, onUpdateTrack]);
@@ -45,6 +46,17 @@ export function TrackConfigPanel({ track, drivers, onUpdateTrack, onDeleteTrack 
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
       onClick={(e) => e.stopPropagation()}>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        {errors.length > 0 && (
+          <div className="bg-red-500/8 border border-red-500/30 px-2.5 py-1.5 space-y-1">
+            {errors.map((msg, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-[10px] text-red-300/90 font-mono">
+                <AlertTriangle size={10} className="text-red-400 shrink-0 mt-[1px]" />
+                <span>{msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* ID (readonly) * */}
         <div>
           <label className="field-label">Track ID <span className="text-tagma-error">*</span></label>

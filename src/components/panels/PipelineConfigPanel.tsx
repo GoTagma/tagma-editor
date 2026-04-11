@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { X } from 'lucide-react';
+import { X, AlertTriangle } from 'lucide-react';
 import type { RawPipelineConfig, HooksConfig, HookCommand } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { viewportH } from '../../utils/zoom';
@@ -7,6 +7,7 @@ import { viewportH } from '../../utils/zoom';
 interface PipelineConfigPanelProps {
   config: RawPipelineConfig;
   drivers: string[];
+  errors: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
   onClose: () => void;
 }
@@ -18,7 +19,7 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
 
 const GATE_HOOKS: ReadonlySet<string> = new Set(['pipeline_start', 'task_start']);
 
-export function PipelineConfigPanel({ config, drivers, onUpdate, onClose }: PipelineConfigPanelProps) {
+export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose }: PipelineConfigPanelProps) {
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
   const hooks = config.hooks ?? {};
@@ -46,6 +47,17 @@ export function PipelineConfigPanel({ config, drivers, onUpdate, onClose }: Pipe
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {errors.length > 0 && (
+            <div className="bg-red-500/8 border border-red-500/30 px-2.5 py-1.5 space-y-1">
+              {errors.map((msg, i) => (
+                <div key={i} className="flex items-start gap-1.5 text-[10px] text-red-300/90 font-mono">
+                  <AlertTriangle size={10} className="text-red-400 shrink-0 mt-[1px]" />
+                  <span>{msg}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Driver & Timeout */}
           <div className="flex gap-4">
             <div className="flex-1">

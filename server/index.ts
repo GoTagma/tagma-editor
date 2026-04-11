@@ -146,8 +146,6 @@ function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>) {
 }
 
 function getState() {
-  // Auto-reconcile continue_from before returning state
-  config = reconcileContinueFrom(config);
   let validationErrors: ValidationError[] = [];
   let dag: RawDag = { nodes: new Map(), edges: [] };
   try { validationErrors = validateRaw(config); } catch {}
@@ -721,6 +719,9 @@ app.post('/api/dependencies', (req, res) => {
   if (!existing.includes(depRef)) {
     const updated = { ...task, depends_on: [...existing, depRef] } as RawTaskConfig;
     config = upsertTask(config, toTrackId, updated);
+    // Auto-default continue_from on a newly connected prompt→prompt edge.
+    // Users can still override the field in the config panel afterwards.
+    config = reconcileContinueFrom(config);
   }
   res.json(getState());
 });
@@ -733,8 +734,13 @@ app.delete('/api/dependencies', (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const filtered = (task.depends_on ?? []).filter((d) => d !== depRef);
   const { depends_on: _, ...rest } = task;
-  const updated = filtered.length > 0 ? { ...rest, depends_on: filtered } : rest;
-  config = upsertTask(config, trackId, updated as RawTaskConfig);
+  let updated = (filtered.length > 0 ? { ...rest, depends_on: filtered } : rest) as RawTaskConfig;
+  // Clear continue_from if it pointed at the removed dep (dangling cleanup).
+  if (updated.continue_from === depRef) {
+    const { continue_from: _cf, ...noCf } = updated;
+    updated = noCf as RawTaskConfig;
+  }
+  config = upsertTask(config, trackId, updated);
   res.json(getState());
 });
 

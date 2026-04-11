@@ -1,8 +1,18 @@
 import { useState, useCallback } from 'react';
-import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react';
+import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import type { RawTaskConfig, RawPipelineConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { usePipelineStore } from '../../store/pipeline-store';
 import { MiddlewareEditor } from './MiddlewareEditor';
+
+const KNOWN_TRIGGER_TYPES = new Set(['manual', 'file']);
+const KNOWN_COMPLETION_TYPES = new Set(['exit_code', 'file_exists', 'output_check']);
+
+/** Merge builtin + registry plugin list into a unique, sorted option list. */
+function mergeTypeOptions(builtin: string[], registry: string[]): string[] {
+  const set = new Set<string>([...builtin, ...registry]);
+  return Array.from(set);
+}
 
 interface TaskConfigPanelProps {
   task: RawTaskConfig;
@@ -11,6 +21,7 @@ interface TaskConfigPanelProps {
   pipelineConfig: RawPipelineConfig;
   dependencies: string[];
   drivers: string[];
+  errors: string[];
   onUpdateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
   onRemoveDependency: (trackId: string, taskId: string, depRef: string) => void;
@@ -31,11 +42,15 @@ function inheritedPermissions(trackId: string, config: RawPipelineConfig) {
 }
 
 export function TaskConfigPanel({
-  task, trackId, qualifiedId, pipelineConfig, dependencies, drivers,
+  task, trackId, qualifiedId, pipelineConfig, dependencies, drivers, errors,
   onUpdateTask, onDeleteTask, onRemoveDependency,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const registry = usePipelineStore((s) => s.registry);
+  const triggerOptions = mergeTypeOptions(['manual', 'file'], registry.triggers);
+  const completionOptions = mergeTypeOptions(['exit_code', 'file_exists', 'output_check'], registry.completions);
 
   const commitField = useCallback((patch: Partial<RawTaskConfig>) => {
     onUpdateTask(trackId, task.id, patch);
@@ -104,10 +119,40 @@ export function TaskConfigPanel({
     commitField({ completion: next });
   }, [task.completion, commitField]);
 
+  const handleContinueFromChange = useCallback((v: string) => {
+    commitField({ continue_from: v || undefined });
+  }, [commitField]);
+
+  // Resolve depends_on refs to prompt tasks (candidates for continue_from).
+  const promptDepRefs = (() => {
+    const refs: string[] = [];
+    for (const depRef of dependencies) {
+      const qid = depRef.includes('.') ? depRef : `${trackId}.${depRef}`;
+      const [trId, tId] = qid.split('.');
+      const depTrack = pipelineConfig.tracks.find((t) => t.id === trId);
+      const depTask = depTrack?.tasks.find((t) => t.id === tId);
+      if (depTask && !!depTask.prompt && !depTask.command && !depTask.use) {
+        refs.push(depRef);
+      }
+    }
+    return refs;
+  })();
+
   return (
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
       onClick={(e) => e.stopPropagation()}>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        {errors.length > 0 && (
+          <div className="bg-red-500/8 border border-red-500/30 px-2.5 py-1.5 space-y-1">
+            {errors.map((msg, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-[10px] text-red-300/90 font-mono">
+                <AlertTriangle size={10} className="text-red-400 shrink-0 mt-[1px]" />
+                <span>{msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* ID (readonly) * */}
         <div>
           <label className="field-label">Task ID <span className="text-tagma-error">*</span></label>
@@ -237,6 +282,25 @@ export function TaskConfigPanel({
           </div>
         )}
 
+        {/* Continue From — only meaningful for prompt tasks that have prompt dependencies */}
+        {mode === 'prompt' && promptDepRefs.length > 0 && (
+          <div>
+            <label className="field-label">
+              Continue From
+              <span className="text-[10px] text-tagma-muted font-normal ml-1">(resume conversation from a prompt dep)</span>
+            </label>
+            <select className="field-input" value={task.continue_from ?? ''} onChange={(e) => handleContinueFromChange(e.target.value)}>
+              <option value="">none</option>
+              {promptDepRefs.map((ref) => (
+                <option key={ref} value={ref}>{ref}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-tagma-muted mt-1">
+              Auto-set to the latest prompt dep when connected; change or clear as needed.
+            </p>
+          </div>
+        )}
+
         {/* ── Advanced Section ── */}
         <div className="border-t border-tagma-border pt-2">
           <button onClick={() => setShowAdvanced(!showAdvanced)}
@@ -250,11 +314,15 @@ export function TaskConfigPanel({
           <>
             {/* Trigger */}
             <div>
-              <label className="field-label">Trigger</label>
+              <label className="field-label">
+                Trigger
+                <span className="text-[10px] text-tagma-muted font-normal ml-1">(from plugin registry)</span>
+              </label>
               <select className="field-input" value={task.trigger?.type ?? ''} onChange={(e) => handleTriggerTypeChange(e.target.value)}>
                 <option value="">none</option>
-                <option value="manual">manual (approval gate)</option>
-                <option value="file">file (file watcher)</option>
+                {triggerOptions.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
               </select>
             </div>
 
@@ -286,14 +354,32 @@ export function TaskConfigPanel({
               </div>
             )}
 
+            {/* Unknown plugin trigger — fall back to a generic KV editor so custom
+                trigger plugins can still be configured from the editor. */}
+            {task.trigger && !KNOWN_TRIGGER_TYPES.has(task.trigger.type) && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <p className="text-[10px] text-tagma-muted">Custom trigger fields (from plugin "{task.trigger.type}"):</p>
+                <KeyValueEditor
+                  value={Object.fromEntries(Object.entries(task.trigger).filter(([k]) => k !== 'type')) as Record<string, unknown>}
+                  onChange={(kv) => {
+                    const t = task.trigger?.type ?? '';
+                    commitField({ trigger: { type: t, ...kv } as TriggerConfig });
+                  }}
+                />
+              </div>
+            )}
+
             {/* Completion */}
             <div>
-              <label className="field-label">Completion Check</label>
+              <label className="field-label">
+                Completion Check
+                <span className="text-[10px] text-tagma-muted font-normal ml-1">(from plugin registry)</span>
+              </label>
               <select className="field-input" value={task.completion?.type ?? ''} onChange={(e) => handleCompletionTypeChange(e.target.value)}>
                 <option value="">none</option>
-                <option value="exit_code">exit_code</option>
-                <option value="file_exists">file_exists</option>
-                <option value="output_check">output_check</option>
+                {completionOptions.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
               </select>
             </div>
 
@@ -338,6 +424,20 @@ export function TaskConfigPanel({
               <div className="pl-3 border-l-2 border-tagma-border space-y-2">
                 <TriggerField label="Check Command *" value={task.completion.check} onChange={(v) => handleCompletionField('check', v)} placeholder="shell command (exit 0 = pass)" />
                 <TriggerField label="Timeout" value={task.completion.timeout} onChange={(v) => handleCompletionField('timeout', v)} placeholder="30s (default)" />
+              </div>
+            )}
+
+            {/* Unknown plugin completion — fall back to generic KV editor. */}
+            {task.completion && !KNOWN_COMPLETION_TYPES.has(task.completion.type) && (
+              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                <p className="text-[10px] text-tagma-muted">Custom completion fields (from plugin "{task.completion.type}"):</p>
+                <KeyValueEditor
+                  value={Object.fromEntries(Object.entries(task.completion).filter(([k]) => k !== 'type')) as Record<string, unknown>}
+                  onChange={(kv) => {
+                    const t = task.completion?.type ?? '';
+                    commitField({ completion: { type: t, ...kv } as CompletionConfig });
+                  }}
+                />
               </div>
             )}
 
