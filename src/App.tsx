@@ -452,17 +452,6 @@ export function App() {
     }
   }, [workDir, saveFileAs, refreshWorkspaceYamls]);
 
-  if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center bg-tagma-bg">
-        <div className="flex items-center gap-2 text-tagma-muted">
-          <Loader2 size={16} className="animate-spin" />
-          <span className="text-xs font-mono">Loading...</span>
-        </div>
-      </div>
-    );
-  }
-
   // Back-from-run handler: while the run is live we just minimize the
   // view (SSE stays alive, run keeps executing server-side). Once the
   // run has reached a terminal state, Back actually tears it all down.
@@ -565,6 +554,17 @@ export function App() {
     runTasks.size, runTaskCounts.success, runTaskCounts.failed, runTaskCounts.timeout, runTaskCounts.skipped,
     runPendingApprovals.size, showRun, handleRunStopOrDismiss,
   ]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center bg-tagma-bg">
+        <div className="flex items-center gap-2 text-tagma-muted">
+          <Loader2 size={16} className="animate-spin" />
+          <span className="text-xs font-mono">Loading...</span>
+        </div>
+      </div>
+    );
+  }
 
   // Run mode
   if (runActive) {
