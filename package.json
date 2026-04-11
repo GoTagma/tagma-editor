@@ -9,10 +9,10 @@
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "bun --watch server/index.ts",
     "dev:client": "vite",
     "build": "vite build",
-    "start": "tsx server/index.ts",
+    "start": "bun server/index.ts",
     "preview": "vite preview",
     "test": "node --import tsx --test tests/*.test.ts"
   },

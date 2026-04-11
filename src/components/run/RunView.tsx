@@ -3,7 +3,7 @@
 // TaskConfigPanel with readOnly props so the Run screen stays visually
 // consistent with the editor.
 
-import { useMemo, useCallback, useState, useEffect } from 'react';
+import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
 import { TaskCard } from '../board/TaskCard';
@@ -85,6 +85,19 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Scroll sync between the track-header column and the task canvas.
+  // Same pattern as BoardCanvas: the header column is `overflow-hidden`
+  // (so it doesn't get its own scrollbar) but we still push scrollTop
+  // into it from the task canvas's onScroll so the two columns stay
+  // aligned while the canvas scrolls vertically.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const syncScroll = useCallback(() => {
+    if (headerRef.current && contentRef.current) {
+      headerRef.current.scrollTop = contentRef.current.scrollTop;
+    }
+  }, []);
+
   // First pending approval (FIFO by Map iteration order).
   const firstApproval = useMemo(() => {
     const it = pendingApprovals.values().next();
@@ -142,6 +155,21 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   }, [taskPositions]);
 
   const canvasHeight = config.tracks.length * TRACK_H;
+
+  // Per-track parallel warning flag. Editor BoardCanvas computes this
+  // from dagEdges; we do the same so the Run view's TrackLane shows the
+  // same warning icon the editor shows for tracks whose sibling tasks
+  // aren't chained by explicit depends_on (meaning they run in parallel).
+  const parallelWarnings = useMemo(() => {
+    const out = new Map<string, boolean>();
+    for (const track of config.tracks) {
+      const taskCount = track.tasks.length;
+      if (taskCount <= 1) { out.set(track.id, false); continue; }
+      const depCount = dagEdges.filter((e) => e.from.startsWith(track.id + '.') && e.to.startsWith(track.id + '.')).length;
+      out.set(track.id, depCount < taskCount - 1);
+    }
+    return out;
+  }, [config.tracks, dagEdges]);
 
   const edges = useMemo(() => {
     return dagEdges.map((edge) => {
@@ -239,8 +267,9 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
 
   return (
     <div className="h-full flex flex-col bg-tagma-bg relative">
-      {/* Header */}
-      <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0">
+      {/* Header — height matches the editor Toolbar (h-11) so switching
+          between the two views doesn't shift the canvas by 4px. */}
+      <header className="h-11 bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-tagma-muted hover:text-tagma-text transition-colors px-2 py-1">
           <ArrowLeft size={12} />
           <span>Back to Editor</span>
@@ -338,42 +367,59 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         ) : (
           <>
             <div className="flex-1 flex overflow-hidden relative">
-              {/* Track headers (reuses TrackLane for metadata parity with editor) */}
-              <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: HEADER_W }}>
+              {/* Track headers (reuses TrackLane for metadata parity with
+                  editor). Container styling mirrors BoardCanvas exactly:
+                  same bg tint, same border weight, same row wrapper. */}
+              <div
+                ref={headerRef}
+                className="shrink-0 border-r border-tagma-border overflow-hidden bg-tagma-surface/50"
+                style={{ width: HEADER_W }}
+              >
                 {config.tracks.map((track, i) => {
                   const taskCount = track.tasks.length;
                   const isSelected = selectedTrackId === track.id;
+                  const hasParallel = parallelWarnings.get(track.id) ?? false;
                   return (
                     <div
                       key={track.id}
-                      className={`border-b border-tagma-border/40 cursor-pointer transition-colors ${
+                      className={`relative border-b border-tagma-border/60 overflow-hidden cursor-pointer transition-colors ${
                         isSelected ? 'bg-tagma-accent/6' : ''
-                      } ${i % 2 === 1 ? 'track-row-odd' : ''}`}
-                      style={{ height: TRACK_H }}
+                      } ${i % 2 === 0 ? 'track-row-even' : 'track-row-odd'}`}
+                      style={{ height: TRACK_H, width: HEADER_W, boxSizing: 'border-box' }}
                       onClick={(e) => {
                         e.stopPropagation();
                         selectTrack(track.id);
                       }}
                     >
-                      <TrackLane
-                        track={track}
-                        taskCount={taskCount}
-                        hasParallelWarning={false}
-                      />
+                      <div className="h-full flex">
+                        <div className="flex-1 min-w-0 flex items-center">
+                          <TrackLane
+                            track={track}
+                            taskCount={taskCount}
+                            hasParallelWarning={hasParallel}
+                          />
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
               </div>
 
               {/* Task canvas */}
-              <div id={RUN_SCROLL_ID} className="flex-1 overflow-auto">
-                <div className="relative timeline-grid" style={{ width: canvasWidth, height: canvasHeight }}
+              <div
+                ref={contentRef}
+                id={RUN_SCROLL_ID}
+                className="flex-1 overflow-auto timeline-grid"
+                onScroll={syncScroll}
+              >
+                <div className="relative" style={{ width: canvasWidth, height: canvasHeight }}
                   onClick={() => selectTask(null)}>
-                  {/* Track row backgrounds */}
+                  {/* Track row backgrounds — even/odd classes match the
+                      editor so the zebra striping is identical. */}
                   {config.tracks.map((track, i) => (
                     <div
                       key={track.id}
-                      className={`absolute left-0 right-0 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
+                      className={`absolute left-0 right-0 border-b border-tagma-border/40 ${i % 2 === 0 ? 'track-row-even' : 'track-row-odd'}`}
                       style={{ top: i * TRACK_H, height: TRACK_H }}
                     />
                   ))}
