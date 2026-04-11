@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
+import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
 import { Map as MapIcon, X } from 'lucide-react';
 import { usePipelineStore } from '../../store/pipeline-store';
 import { getZoom } from '../../utils/zoom';
@@ -24,6 +24,8 @@ export function Minimap() {
 
   const [visible, setVisible] = useState(true);
   const [scrollTick, setScrollTick] = useState(0);
+  const [contentW, setContentW] = useState(1);
+  const [contentH, setContentH] = useState(1);
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [wrapW, setWrapW] = useState(248);
@@ -44,17 +46,16 @@ export function Minimap() {
   }, []);
 
   // Use the real canvas scroll extents so task positions, viewport rect, and
-  // scroll state always map consistently into minimap coordinates.
-  const { contentW, contentH } = useMemo(() => {
-    void scrollTick;
-    void tracks;
-    void positions;
+  // scroll state always map consistently into minimap coordinates. Sampling
+  // happens in useLayoutEffect (after DOM commit) so that scrollWidth reflects
+  // the latest layout — reading it inside useMemo sees stale values.
+  useLayoutEffect(() => {
     const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
-    if (!el) return { contentW: 1, contentH: 1 };
-    return {
-      contentW: Math.max(el.scrollWidth, 1),
-      contentH: Math.max(el.scrollHeight, 1),
-    };
+    if (!el) return;
+    const cw = Math.max(el.scrollWidth, 1);
+    const ch = Math.max(el.scrollHeight, 1);
+    setContentW((prev) => (prev === cw ? prev : cw));
+    setContentH((prev) => (prev === ch ? prev : ch));
   }, [scrollTick, tracks, positions]);
 
   // Scale to fit content inside map with padding.
@@ -69,26 +70,31 @@ export function Minimap() {
     return { scale: s, offsetX: oX, offsetY: oY };
   }, [contentW, contentH]);
 
-  // Subscribe to canvas scroll so the viewport rect stays live.
+  // Subscribe to canvas scroll + size changes so the minimap stays live.
   useEffect(() => {
-    const el = document.getElementById(SCROLL_ELEMENT_ID);
+    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
     if (!el) return;
     let raf = 0;
-    const onScroll = () => {
+    const tick = () => {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         setScrollTick((n) => (n + 1) & 0xffff);
       });
     };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    // Also re-tick when window resizes (viewport width changes).
-    window.addEventListener('resize', onScroll);
-    // Initial tick so the first paint already has the viewport.
-    onScroll();
+    el.addEventListener('scroll', tick, { passive: true });
+    window.addEventListener('resize', tick);
+    // Watch the scroll container AND its inner content div so dragged tasks
+    // that extend the canvas width/height trigger a resample.
+    const ro = new ResizeObserver(tick);
+    ro.observe(el);
+    const inner = el.firstElementChild;
+    if (inner) ro.observe(inner);
+    tick();
     return () => {
-      el.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
+      el.removeEventListener('scroll', tick);
+      window.removeEventListener('resize', tick);
+      ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
   }, []);
