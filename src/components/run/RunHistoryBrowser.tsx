@@ -1,23 +1,87 @@
-import { useEffect, useState, useCallback } from 'react';
-import { History, RefreshCw, FileText, Loader2 } from 'lucide-react';
-import { api, type RunHistoryEntry } from '../../api/client';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import {
+  History, RefreshCw, FileText, Loader2, Check, X, Clock, SkipForward, ShieldOff,
+  Filter, Download,
+} from 'lucide-react';
+import { api } from '../../api/client';
+import type { RunHistoryEntry, RunSummary, RunSummaryTask, TaskStatus } from '../../api/client';
 
-interface RunHistoryBrowserProps {
-  compact?: boolean;
+const STATUS_ICON: Record<TaskStatus, React.ReactNode> = {
+  idle: <Clock size={9} className="text-tagma-muted/50" />,
+  waiting: <Clock size={9} className="text-tagma-muted/60" />,
+  running: <Loader2 size={9} className="text-tagma-ready" />,
+  success: <Check size={9} className="text-tagma-success" />,
+  failed: <X size={9} className="text-tagma-error" />,
+  timeout: <Clock size={9} className="text-tagma-warning" />,
+  skipped: <SkipForward size={9} className="text-tagma-muted/60" />,
+  blocked: <ShieldOff size={9} className="text-tagma-warning" />,
+};
+
+const STATUS_COLOR: Record<TaskStatus, string> = {
+  idle: 'text-tagma-muted',
+  waiting: 'text-tagma-muted',
+  running: 'text-tagma-ready',
+  success: 'text-tagma-success',
+  failed: 'text-tagma-error',
+  timeout: 'text-tagma-warning',
+  skipped: 'text-tagma-muted/70',
+  blocked: 'text-tagma-warning',
+};
+
+type FilterMode = 'all' | 'success' | 'failed';
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return `${m}m${s}s`;
+}
+
+function computeRunDuration(entry: RunHistoryEntry): string {
+  if (!entry.startedAt || !entry.finishedAt) return '—';
+  const start = new Date(entry.startedAt).getTime();
+  const end = new Date(entry.finishedAt).getTime();
+  return formatDuration(end - start);
+}
+
+function downloadSummary(summary: RunSummary): void {
+  const blob = new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${summary.runId}.summary.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /**
  * Browses `.tagma/logs/run_*` directories under the current workspace.
- * Visible when no active run is running. Clicking a row fetches the
- * pipeline.log and displays it inline.
+ * Visible when no active run is running. §3.12: the selected run loads
+ * its summary.json (per-task status + timings) and renders a grid of
+ * task results; the raw pipeline.log is still available via a toggle.
  */
-export function RunHistoryBrowser({ compact = false }: RunHistoryBrowserProps) {
+export function RunHistoryBrowser() {
   const [runs, setRuns] = useState<RunHistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [summary, setSummary] = useState<RunSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [logContent, setLogContent] = useState<string>('');
   const [logLoading, setLogLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'summary' | 'log'>('summary');
+  const [filterMode, setFilterMode] = useState<FilterMode>('all');
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -32,12 +96,26 @@ export function RunHistoryBrowser({ compact = false }: RunHistoryBrowserProps) {
     }
   }, []);
 
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  const loadRun = useCallback(async (runId: string) => {
+    setSelectedRunId(runId);
+    setSummary(null);
+    setLogContent('');
+    setSummaryError(null);
+    setViewMode('summary');
+    setSummaryLoading(true);
+    try {
+      const s = await api.getRunSummary(runId);
+      setSummary(s);
+    } catch (e: unknown) {
+      setSummaryError(e instanceof Error ? e.message : 'No summary available for this run');
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
 
   const loadLog = useCallback(async (runId: string) => {
-    setSelectedRunId(runId);
     setLogLoading(true);
     setLogContent('');
     try {
@@ -50,16 +128,32 @@ export function RunHistoryBrowser({ compact = false }: RunHistoryBrowserProps) {
     }
   }, []);
 
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes}B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-  };
+  // History-list filter: only show runs matching the selected filter mode.
+  const visibleRuns = useMemo(() => {
+    if (filterMode === 'all') return runs;
+    return runs.filter((r) => {
+      if (filterMode === 'success') return r.success === true;
+      if (filterMode === 'failed') return r.success === false;
+      return true;
+    });
+  }, [runs, filterMode]);
+
+  // Group summary tasks by track for the per-track timeline view.
+  const tasksByTrack = useMemo(() => {
+    if (!summary) return new Map<string, RunSummaryTask[]>();
+    const out = new Map<string, RunSummaryTask[]>();
+    for (const t of summary.tasks) {
+      const list = out.get(t.trackId) ?? [];
+      list.push(t);
+      out.set(t.trackId, list);
+    }
+    return out;
+  }, [summary]);
 
   return (
-    <div className={`flex ${compact ? 'flex-col' : 'flex-row'} h-full overflow-hidden`}>
-      {/* Run list */}
-      <div className={`${compact ? 'h-40' : 'w-64'} shrink-0 border-r border-tagma-border flex flex-col bg-tagma-surface overflow-hidden`}>
+    <div className="flex h-full overflow-hidden">
+      {/* ── Left pane: run list ── */}
+      <div className="w-72 shrink-0 border-r border-tagma-border flex flex-col bg-tagma-surface overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-tagma-border shrink-0">
           <History size={12} className="text-tagma-muted" />
           <span className="text-[11px] font-medium text-tagma-text flex-1">Run History</span>
@@ -73,48 +167,223 @@ export function RunHistoryBrowser({ compact = false }: RunHistoryBrowserProps) {
           </button>
         </div>
 
+        {/* Filter toolbar */}
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-tagma-border/60 shrink-0 text-[9px] font-mono">
+          <Filter size={9} className="text-tagma-muted/60" />
+          {(['all', 'success', 'failed'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setFilterMode(mode)}
+              className={`px-1.5 py-0.5 uppercase tracking-wider ${
+                filterMode === mode
+                  ? 'text-tagma-accent border border-tagma-accent/40 bg-tagma-accent/6'
+                  : 'text-tagma-muted/60 hover:text-tagma-text border border-transparent'
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+          <span className="ml-auto text-tagma-muted/40">{visibleRuns.length}</span>
+        </div>
+
         <div className="flex-1 overflow-y-auto">
           {error && (
             <div className="px-3 py-2 text-[10px] text-tagma-error font-mono">{error}</div>
           )}
-          {!loading && !error && runs.length === 0 && (
+          {!loading && !error && visibleRuns.length === 0 && (
             <div className="px-3 py-3 text-[10px] text-tagma-muted">
-              No past runs found in <span className="font-mono">.tagma/logs/</span>
+              {filterMode === 'all'
+                ? <>No past runs found in <span className="font-mono">.tagma/logs/</span></>
+                : <>No runs match filter <span className="font-mono">{filterMode}</span></>}
             </div>
           )}
-          {runs.map((run) => (
-            <button
-              type="button"
-              key={run.runId}
-              onClick={() => loadLog(run.runId)}
-              className={`
-                w-full text-left px-3 py-1.5 border-b border-tagma-border/40 hover:bg-tagma-elevated transition-colors
-                ${selectedRunId === run.runId ? 'bg-tagma-accent/8 border-l-2 border-l-tagma-accent' : ''}
-              `}
-            >
-              <div className="flex items-center gap-1.5">
-                <FileText size={10} className="text-tagma-muted shrink-0" />
-                <span className="text-[10px] font-mono text-tagma-text truncate flex-1">{run.runId}</span>
-              </div>
-              <div className="text-[9px] font-mono text-tagma-muted pl-4 mt-0.5">
-                {new Date(run.startedAt).toLocaleString()} · {formatSize(run.sizeBytes)}
-              </div>
-            </button>
-          ))}
+          {visibleRuns.map((run) => {
+            const isSelected = selectedRunId === run.runId;
+            const statusIcon = run.success == null
+              ? <Clock size={10} className="text-tagma-muted/50" />
+              : run.success
+                ? <Check size={10} className="text-tagma-success" />
+                : <X size={10} className="text-tagma-error" />;
+            return (
+              <button
+                type="button"
+                key={run.runId}
+                onClick={() => loadRun(run.runId)}
+                className={`
+                  w-full text-left px-3 py-2 border-b border-tagma-border/40 hover:bg-tagma-elevated transition-colors
+                  ${isSelected ? 'bg-tagma-accent/8 border-l-2 border-l-tagma-accent' : ''}
+                `}
+              >
+                <div className="flex items-center gap-1.5">
+                  {statusIcon}
+                  <span className="text-[10px] font-mono text-tagma-text truncate flex-1">{run.runId}</span>
+                </div>
+                {run.pipelineName && (
+                  <div className="text-[9px] text-tagma-text/70 pl-4 mt-0.5 truncate">
+                    {run.pipelineName}
+                  </div>
+                )}
+                <div className="text-[9px] font-mono text-tagma-muted pl-4 mt-0.5 flex items-center gap-1.5">
+                  <span>{new Date(run.startedAt).toLocaleString()}</span>
+                  <span className="text-tagma-muted/50">·</span>
+                  <span>{computeRunDuration(run)}</span>
+                </div>
+                {run.taskCounts && (
+                  <div className="flex items-center gap-1.5 pl-4 mt-0.5 text-[9px] font-mono">
+                    {run.taskCounts.success > 0 && <span className="text-tagma-success">{run.taskCounts.success} ok</span>}
+                    {run.taskCounts.failed > 0 && <span className="text-tagma-error">{run.taskCounts.failed} fail</span>}
+                    {run.taskCounts.timeout > 0 && <span className="text-tagma-warning">{run.taskCounts.timeout} to</span>}
+                    {run.taskCounts.skipped > 0 && <span className="text-tagma-muted/60">{run.taskCounts.skipped} skip</span>}
+                  </div>
+                )}
+                {!run.taskCounts && (
+                  <div className="text-[9px] font-mono text-tagma-muted/40 pl-4 mt-0.5">
+                    {formatSize(run.sizeBytes)} log
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Log viewer */}
+      {/* ── Right pane: summary or log ── */}
       <div className="flex-1 flex flex-col overflow-hidden bg-tagma-bg">
+        {/* Header with view toggle */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-tagma-border shrink-0">
           <FileText size={12} className="text-tagma-muted" />
           <span className="text-[11px] font-mono text-tagma-muted flex-1 truncate">
-            {selectedRunId ? `${selectedRunId}/pipeline.log` : 'Select a run to view its log'}
+            {selectedRunId ?? 'Select a run to view its details'}
           </span>
-          {logLoading && <Loader2 size={11} className="animate-spin text-tagma-muted" />}
+          {selectedRunId && (
+            <>
+              <div className="flex items-center border border-tagma-border">
+                <button
+                  type="button"
+                  className={`px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider ${
+                    viewMode === 'summary' ? 'bg-tagma-accent/10 text-tagma-accent' : 'text-tagma-muted hover:text-tagma-text'
+                  }`}
+                  onClick={() => setViewMode('summary')}
+                >
+                  Summary
+                </button>
+                <button
+                  type="button"
+                  className={`px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider border-l border-tagma-border ${
+                    viewMode === 'log' ? 'bg-tagma-accent/10 text-tagma-accent' : 'text-tagma-muted hover:text-tagma-text'
+                  }`}
+                  onClick={() => {
+                    setViewMode('log');
+                    if (!logContent && !logLoading) loadLog(selectedRunId);
+                  }}
+                >
+                  Log
+                </button>
+              </div>
+              {summary && (
+                <button
+                  type="button"
+                  onClick={() => downloadSummary(summary)}
+                  className="p-1 text-tagma-muted hover:text-tagma-text transition-colors"
+                  title="Export summary.json"
+                >
+                  <Download size={11} />
+                </button>
+              )}
+              {(summaryLoading || logLoading) && <Loader2 size={11} className="animate-spin text-tagma-muted" />}
+            </>
+          )}
         </div>
+
+        {/* Body */}
         <div className="flex-1 overflow-auto">
-          {selectedRunId && !logLoading && (
+          {!selectedRunId && (
+            <div className="px-4 py-6 text-[11px] font-mono text-tagma-muted/60">
+              Select a run from the list to see its per-task timeline.
+            </div>
+          )}
+
+          {viewMode === 'summary' && selectedRunId && (
+            <div className="px-4 py-3">
+              {summaryError && (
+                <div className="mb-3 p-2.5 bg-tagma-warning/5 border border-tagma-warning/20 text-[10px] text-tagma-warning font-mono">
+                  {summaryError}. Older runs (pre-summary.json) will only have a pipeline.log available.
+                </div>
+              )}
+              {summary && (
+                <>
+                  {/* Run header */}
+                  <div className="mb-4 pb-3 border-b border-tagma-border/40">
+                    <div className="flex items-center gap-2 mb-1">
+                      {summary.success
+                        ? <Check size={13} className="text-tagma-success" />
+                        : <X size={13} className="text-tagma-error" />}
+                      <span className="text-[13px] font-medium text-tagma-text truncate">{summary.pipelineName}</span>
+                    </div>
+                    <div className="text-[10px] font-mono text-tagma-muted flex items-center gap-2">
+                      <span>{new Date(summary.startedAt).toLocaleString()}</span>
+                      <span className="text-tagma-muted/40">→</span>
+                      <span>{new Date(summary.finishedAt).toLocaleString()}</span>
+                      <span className="text-tagma-muted/40">·</span>
+                      <span>{formatDuration(new Date(summary.finishedAt).getTime() - new Date(summary.startedAt).getTime())}</span>
+                    </div>
+                    {summary.error && (
+                      <div className="mt-2 text-[10px] font-mono text-tagma-error/90 bg-tagma-error/5 border border-tagma-error/20 px-2 py-1">
+                        {summary.error}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Per-track task list */}
+                  {Array.from(tasksByTrack.entries()).map(([trackId, tasks]) => (
+                    <div key={trackId} className="mb-4">
+                      <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 mb-1.5">
+                        {tasks[0]?.trackName ?? trackId}
+                      </div>
+                      <div className="border border-tagma-border/60 bg-tagma-bg/40">
+                        {tasks.map((task, i) => (
+                          <div
+                            key={task.taskId}
+                            className={`flex items-center gap-2 px-2.5 py-1.5 text-[10px] font-mono ${
+                              i > 0 ? 'border-t border-tagma-border/40' : ''
+                            }`}
+                          >
+                            <span className="shrink-0">{STATUS_ICON[task.status]}</span>
+                            <span className={`shrink-0 uppercase tracking-wider ${STATUS_COLOR[task.status]}`}>
+                              {task.status}
+                            </span>
+                            <span className="flex-1 min-w-0 truncate text-tagma-text">{task.taskName}</span>
+                            {task.driver && (
+                              <span className="shrink-0 text-tagma-accent/70 text-[9px]">{task.driver}</span>
+                            )}
+                            {task.modelTier && (
+                              <span className="shrink-0 text-tagma-muted text-[9px]">{task.modelTier}</span>
+                            )}
+                            {task.exitCode != null && (
+                              <span
+                                className={`shrink-0 text-[9px] ${task.exitCode === 0 ? 'text-tagma-success' : 'text-tagma-error'}`}
+                              >
+                                exit {task.exitCode}
+                              </span>
+                            )}
+                            <span className="shrink-0 text-tagma-muted tabular-nums w-[40px] text-right">
+                              {formatDuration(task.durationMs)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {!summary && !summaryLoading && !summaryError && (
+                <div className="text-[10px] font-mono text-tagma-muted/60">Loading summary...</div>
+              )}
+            </div>
+          )}
+
+          {viewMode === 'log' && selectedRunId && !logLoading && (
             <pre className="text-[10px] font-mono text-tagma-text whitespace-pre-wrap break-words px-3 py-2">
               {logContent || '(empty)'}
             </pre>

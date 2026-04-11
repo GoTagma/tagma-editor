@@ -1486,22 +1486,53 @@ let activeRunGateway: InMemoryApprovalGateway | null = null;
 let activeRunId: string | null = null;
 const sseClients = new Set<import('express').Response>();
 
+// ── Event seq + replay buffer (§1.3 / §4.5) ──
+// Every broadcast RunEvent is stamped with a monotonic `seq` field tied
+// to the current run. A bounded ring buffer holds the most recent events
+// so that SSE clients reconnecting with `Last-Event-ID: <seq>` can replay
+// everything they missed. The buffer resets at run_start.
+const RUN_EVENT_BUFFER_MAX = 1024;
+let currentRunSeq = 0;
+let runEventBuffer: Array<RunEvent & { seq: number }> = [];
+
 function broadcast(event: RunEvent) {
-  const data = JSON.stringify(event);
+  currentRunSeq += 1;
+  const stamped = { ...event, seq: currentRunSeq };
+  runEventBuffer.push(stamped);
+  if (runEventBuffer.length > RUN_EVENT_BUFFER_MAX) {
+    runEventBuffer.splice(0, runEventBuffer.length - RUN_EVENT_BUFFER_MAX);
+  }
+  const data = JSON.stringify(stamped);
   for (const client of sseClients) {
-    client.write(`event: run_event\ndata: ${data}\n\n`);
+    client.write(`id: ${currentRunSeq}\nevent: run_event\ndata: ${data}\n\n`);
   }
 }
 
-app.get('/api/run/events', (_req, res) => {
+function resetRunEventBuffer() {
+  runEventBuffer = [];
+  currentRunSeq = 0;
+}
+
+app.get('/api/run/events', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
+  // EventSource sends its last-seen event id in `Last-Event-ID` on
+  // automatic reconnect. We replay every buffered event with seq > that
+  // value so the client's task map can be brought back up to date
+  // without refetching anything.
+  const lastSeen = parseInt(String(req.header('Last-Event-ID') ?? ''), 10);
   res.write('\n');
   sseClients.add(res);
-  _req.on('close', () => sseClients.delete(res));
+  if (Number.isFinite(lastSeen) && lastSeen > 0) {
+    const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
+    for (const e of missed) {
+      res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
+    }
+  }
+  req.on('close', () => sseClients.delete(res));
 });
 
 app.post('/api/run/start', async (_req, res) => {
@@ -1550,12 +1581,38 @@ app.post('/api/run/start', async (_req, res) => {
   );
 
   const runId = `run_${Date.now().toString(36)}`;
+  const runStartedAt = new Date().toISOString();
   const abortController = new AbortController();
   const gateway = new InMemoryApprovalGateway();
+
+  // Running tally of the most recent TaskState per qualified id. Populated
+  // from the SDK's task_status_change events and flushed to summary.json
+  // at run completion so the RunHistoryBrowser can render a rich per-task
+  // timeline instead of a plaintext log (§3.12).
+  const taskSnapshots = new Map<string, RunSummaryTask>();
+  for (const t of initialTasks) {
+    taskSnapshots.set(t.taskId, {
+      taskId: t.taskId,
+      trackId: t.trackId,
+      trackName: config.tracks.find((tr) => tr.id === t.trackId)?.name ?? t.trackId,
+      taskName: t.taskName,
+      status: t.status,
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      exitCode: null,
+      driver: null,
+      modelTier: null,
+    });
+  }
 
   activeRunAbort = abortController;
   activeRunGateway = gateway;
   activeRunId = runId;
+  // Start this run's event sequence fresh — clients treat `seq` as
+  // monotonic per run, so the Last-Event-ID they cached from a previous
+  // run must not be used against this one.
+  resetRunEventBuffer();
 
   // Subscribe to approval gateway events and forward them to the SSE
   // clients. This replaces the old WebSocket-bridge-to-CLI path — the
@@ -1587,11 +1644,30 @@ app.post('/api/run/start', async (_req, res) => {
 
   // Kick off the run in the background. Event translation happens in
   // onEvent; errors and finalization flow through .then/.catch/.finally.
+  let runSuccess: boolean | null = null;
+  let runErrorMessage: string | null = null;
+
   runPipeline(pipelineConfig, cwd, {
     approvalGateway: gateway,
     signal: abortController.signal,
     onEvent: (event: PipelineEvent) => {
       if (event.type === 'task_status_change') {
+        // Update local snapshot for summary persistence.
+        const existing = taskSnapshots.get(event.taskId);
+        if (existing) {
+          const state = event.state;
+          const result = state.result;
+          taskSnapshots.set(event.taskId, {
+            ...existing,
+            status: event.status,
+            startedAt: state.startedAt ?? existing.startedAt,
+            finishedAt: state.finishedAt ?? existing.finishedAt,
+            durationMs: result?.durationMs ?? existing.durationMs,
+            exitCode: result?.exitCode ?? existing.exitCode,
+            driver: state.config.driver ?? existing.driver,
+            modelTier: state.config.model_tier ?? existing.modelTier,
+          });
+        }
         broadcast(taskStateChangeToWire(runId, event.taskId, event.status, event.state));
       }
       // pipeline_start and pipeline_end are implicit in run_start / run_end
@@ -1599,15 +1675,18 @@ app.post('/api/run/start', async (_req, res) => {
       // the .then/.catch below so we can include the actual success flag.
     },
   }).then((result: EngineResult) => {
+    runSuccess = result.success;
     broadcast({ type: 'run_end', runId, success: result.success });
   }).catch((err: unknown) => {
     // AbortError from an explicit abort() → emit run_end with success:false
     // so the UI transitions to "Aborted" rather than "Error".
     const isAbort = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+    runSuccess = false;
     if (isAbort) {
       broadcast({ type: 'run_end', runId, success: false });
     } else {
       const message = err instanceof Error ? err.message : String(err);
+      runErrorMessage = message;
       broadcast({ type: 'run_error', runId, error: message });
     }
   }).finally(() => {
@@ -1615,6 +1694,21 @@ app.post('/api/run/start', async (_req, res) => {
     // Abort any dangling approvals so consumers get a deterministic
     // timeout/aborted event rather than a silent drop.
     gateway.abortAll('run finished');
+    // Persist a rich summary.json so RunHistoryBrowser can render a
+    // per-task timeline for this run (§3.12).
+    try {
+      persistRunSummary(cwd, runId, {
+        runId,
+        pipelineName: config.name,
+        startedAt: runStartedAt,
+        finishedAt: new Date().toISOString(),
+        success: runSuccess ?? false,
+        error: runErrorMessage,
+        tasks: Array.from(taskSnapshots.values()),
+      });
+    } catch (persistErr) {
+      console.error('[run] failed to persist summary.json:', persistErr);
+    }
     if (activeRunId === runId) {
       activeRunAbort = null;
       activeRunGateway = null;
@@ -1635,6 +1729,49 @@ app.post('/api/run/abort', (_req, res) => {
   // doing so would race with the engine's own final events.
   res.json({ ok: true });
 });
+
+// ── Run summary persistence (§3.12) ──
+interface RunSummaryTask {
+  taskId: string;
+  trackId: string;
+  trackName: string;
+  taskName: string;
+  status: TaskStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  driver: string | null;
+  modelTier: string | null;
+}
+
+interface RunSummary {
+  runId: string;
+  pipelineName: string;
+  startedAt: string;
+  finishedAt: string;
+  success: boolean;
+  error: string | null;
+  tasks: RunSummaryTask[];
+}
+
+function persistRunSummary(cwd: string, runId: string, summary: RunSummary): void {
+  const logsDir = join(cwd, '.tagma', 'logs', runId);
+  if (!existsSync(logsDir)) {
+    mkdirSync(logsDir, { recursive: true });
+  }
+  writeFileSync(join(logsDir, 'summary.json'), JSON.stringify(summary, null, 2), 'utf-8');
+}
+
+function readRunSummary(cwd: string, runId: string): RunSummary | null {
+  const summaryPath = join(cwd, '.tagma', 'logs', runId, 'summary.json');
+  if (!existsSync(summaryPath)) return null;
+  try {
+    return JSON.parse(readFileSync(summaryPath, 'utf-8')) as RunSummary;
+  } catch {
+    return null;
+  }
+}
 
 // Translate an SDK ApprovalRequest into the wire shape consumed by the
 // editor's ApprovalDialog.
@@ -1722,16 +1859,30 @@ app.post('/api/run/approval/:requestId', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Run History (F8) ──
+// ── Run History (F8 / §3.12) ──
 // Lists prior run directories under `<workDir>/.tagma/logs/` sorted by
-// mtime desc, capped at 20. Each entry exposes minimal metadata the UI
-// needs to render a history list; the full pipeline.log is fetched via
-// /api/run/history/:runId.
+// mtime desc, capped at 20. Each entry surfaces the summary.json data
+// (if present) so the history browser can show per-run success/failure
+// counts without loading individual logs. The raw pipeline.log is still
+// fetchable via /api/run/history/:runId for debugging.
 interface RunHistoryEntry {
   runId: string;
   path: string;
   startedAt: string;
   sizeBytes: number;
+  pipelineName?: string;
+  success?: boolean;
+  finishedAt?: string;
+  taskCounts?: { total: number; success: number; failed: number; timeout: number; skipped: number; blocked: number; running: number; waiting: number; idle: number };
+}
+
+function computeTaskCounts(tasks: RunSummaryTask[]): NonNullable<RunHistoryEntry['taskCounts']> {
+  const counts = { total: tasks.length, success: 0, failed: 0, timeout: 0, skipped: 0, blocked: 0, running: 0, waiting: 0, idle: 0 };
+  for (const t of tasks) {
+    const k = t.status;
+    if (k in counts) (counts as any)[k] += 1;
+  }
+  return counts;
 }
 
 app.get('/api/run/history', (_req, res) => {
@@ -1750,11 +1901,16 @@ app.get('/api/run/history', (_req, res) => {
           if (!st.isDirectory()) return null;
           const logFile = join(full, 'pipeline.log');
           const logStat = existsSync(logFile) ? statSync(logFile) : null;
+          const summary = readRunSummary(cwd, name);
           return {
             runId: name,
             path: full,
-            startedAt: st.mtime.toISOString(),
+            startedAt: summary?.startedAt ?? st.mtime.toISOString(),
             sizeBytes: logStat?.size ?? 0,
+            pipelineName: summary?.pipelineName,
+            success: summary?.success,
+            finishedAt: summary?.finishedAt,
+            taskCounts: summary ? computeTaskCounts(summary.tasks) : undefined,
           };
         } catch {
           return null;
@@ -1785,6 +1941,21 @@ app.get('/api/run/history/:runId', (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Rich summary view — lets the browser render per-task status + timing
+// without parsing the pipeline.log text.
+app.get('/api/run/history/:runId/summary', (req, res) => {
+  const { runId } = req.params;
+  if (!/^run_[A-Za-z0-9_-]+$/.test(runId)) {
+    return res.status(400).json({ error: 'invalid runId' });
+  }
+  const cwd = workDir || process.cwd();
+  const summary = readRunSummary(cwd, runId);
+  if (!summary) {
+    return res.status(404).json({ error: 'summary not found' });
+  }
+  res.json(summary);
 });
 
 const PORT = parseInt(process.env.PORT ?? '3001');

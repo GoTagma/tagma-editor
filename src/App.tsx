@@ -142,17 +142,20 @@ export function App() {
     await saveFile();
   }, [requireWorkspace, saveFile]);
 
-  // Ctrl+S
+  // Ctrl+S — editor only. We block it in Run mode so a keystroke can't
+  // accidentally kick off a pipeline-store save that would write over
+  // the YAML file the engine is currently reading (§4.4).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
+        if (runActive) return;
         handleSave();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleSave]);
+  }, [handleSave, runActive]);
 
   // Attribute each validation error to its root cause (track or task)
   // If all errors in a track are track-level (no task index), mark the track.
@@ -374,17 +377,19 @@ export function App() {
     ];
   }, [yamlPath, handleNewPipeline, handleImport, handleExport, handleSave, handleSaveAs, workspaceItems]);
 
-  // Ctrl+O → Import
+  // Ctrl+O → Import (editor only; suppressed during runs so a stray
+  // keystroke can't clobber the pipeline-store while the engine is live)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
         e.preventDefault();
+        if (runActive) return;
         handleImport();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleImport]);
+  }, [handleImport, runActive]);
 
   // U4: periodic localStorage draft autosave while dirty (crash recovery).
   useAutosave();

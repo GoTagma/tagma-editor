@@ -222,6 +222,48 @@ export interface DagEdge {
   to: string;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// SDK type-drift detection (§2.3)
+//
+// The interfaces above are deliberately hand-written with mutable,
+// optional fields so zustand state updates and spread-based edits stay
+// ergonomic. @tagma/types is the source of truth, so the assertions
+// below fail to compile whenever the SDK grows a new field that hasn't
+// been mirrored here. When that happens, add the field to the matching
+// client interface.
+// ─────────────────────────────────────────────────────────────────
+import type {
+  Permissions as SdkPermissions,
+  HooksConfig as SdkHooksConfig,
+  RawPipelineConfig as SdkRawPipelineConfig,
+  RawTrackConfig as SdkRawTrackConfig,
+  RawTaskConfig as SdkRawTaskConfig,
+  TaskStatus as SdkTaskStatus,
+  ApprovalOutcome as SdkApprovalOutcome,
+  DriverCapabilities as SdkDriverCapabilities,
+  ApprovalRequest as SdkApprovalRequest,
+} from '@tagma/types';
+
+// Object drift: every key added to the SDK must be mirrored in the client.
+type _KeysMirrored<Client, Sdk> =
+  Exclude<keyof Sdk, keyof Client> extends never ? true : never;
+
+// Union drift: every variant in the SDK must be accepted by the client.
+type _UnionMirrored<ClientUnion, SdkUnion> =
+  SdkUnion extends ClientUnion ? true : never;
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+const _driftPermissions: _KeysMirrored<Permissions, SdkPermissions> = true;
+const _driftHooks: _KeysMirrored<HooksConfig, SdkHooksConfig> = true;
+const _driftRawPipeline: _KeysMirrored<RawPipelineConfig, SdkRawPipelineConfig> = true;
+const _driftRawTrack: _KeysMirrored<RawTrackConfig, SdkRawTrackConfig> = true;
+const _driftRawTask: _KeysMirrored<RawTaskConfig, SdkRawTaskConfig> = true;
+const _driftApprovalRequest: _KeysMirrored<ApprovalRequestInfo, SdkApprovalRequest> = true;
+const _driftDriverCaps: _KeysMirrored<DriverCapabilities, SdkDriverCapabilities> = true;
+const _driftTaskStatus: _UnionMirrored<TaskStatus, SdkTaskStatus> = true;
+const _driftApprovalOutcome: _UnionMirrored<ApprovalOutcome, SdkApprovalOutcome> = true;
+/* eslint-enable @typescript-eslint/no-unused-vars */
+
 /**
  * F10: Plugin schema metadata. Optional on the registry — the SDK's built-in
  * plugins do not currently expose declarative schemas, so the client falls
@@ -378,7 +420,7 @@ export interface ApprovalRequestInfo {
 export type ApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'aborted';
 
 export type RunEvent =
-  | { type: 'run_start'; runId: string; tasks: RunTaskState[] }
+  | { type: 'run_start'; runId: string; tasks: RunTaskState[]; seq?: number }
   | {
       type: 'task_update';
       runId?: string;
@@ -397,18 +439,59 @@ export type RunEvent =
       resolvedDriver?: string | null;
       resolvedModelTier?: string | null;
       resolvedPermissions?: Permissions | null;
+      seq?: number;
     }
-  | { type: 'run_end'; runId?: string; success: boolean }
-  | { type: 'run_error'; runId?: string; error: string }
-  | { type: 'log'; runId?: string; line: string }
-  | { type: 'approval_request'; runId?: string; request: ApprovalRequestInfo }
-  | { type: 'approval_resolved'; runId?: string; requestId: string; outcome: ApprovalOutcome; choice?: string };
+  | { type: 'run_end'; runId?: string; success: boolean; seq?: number }
+  | { type: 'run_error'; runId?: string; error: string; seq?: number }
+  | { type: 'log'; runId?: string; line: string; seq?: number }
+  | { type: 'approval_request'; runId?: string; request: ApprovalRequestInfo; seq?: number }
+  | { type: 'approval_resolved'; runId?: string; requestId: string; outcome: ApprovalOutcome; choice?: string; seq?: number };
+
+export interface RunHistoryTaskCounts {
+  total: number;
+  success: number;
+  failed: number;
+  timeout: number;
+  skipped: number;
+  blocked: number;
+  running: number;
+  waiting: number;
+  idle: number;
+}
 
 export interface RunHistoryEntry {
   runId: string;
   path: string;
   startedAt: string;
   sizeBytes: number;
+  pipelineName?: string;
+  success?: boolean;
+  finishedAt?: string;
+  taskCounts?: RunHistoryTaskCounts;
+}
+
+export interface RunSummaryTask {
+  taskId: string;
+  trackId: string;
+  trackName: string;
+  taskName: string;
+  status: TaskStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  driver: string | null;
+  modelTier: string | null;
+}
+
+export interface RunSummary {
+  runId: string;
+  pipelineName: string;
+  startedAt: string;
+  finishedAt: string;
+  success: boolean;
+  error: string | null;
+  tasks: RunSummaryTask[];
 }
 
 // ── External state events (C5) ──
@@ -551,12 +634,15 @@ export const api = {
   importLocalPlugin: (path: string) =>
     request<PluginActionResult>('/plugins/import-local', { method: 'POST', body: jsonBody({ path }) }),
 
-  // ── Run history (F8) ──
+  // ── Run history (F8 / §3.12) ──
   listRunHistory: () =>
     request<{ runs: RunHistoryEntry[] }>('/run/history'),
 
   getRunLog: (runId: string) =>
     request<{ runId: string; content: string }>(`/run/history/${encodeURIComponent(runId)}`),
+
+  getRunSummary: (runId: string) =>
+    request<RunSummary>(`/run/history/${encodeURIComponent(runId)}/summary`),
 
   // ── Approvals (F3) ──
   resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) =>

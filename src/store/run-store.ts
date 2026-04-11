@@ -7,22 +7,13 @@ import type {
   ApprovalRequestInfo,
   ApprovalOutcome,
 } from '../api/client';
+import { foldRunEvent, type RunFoldState } from './run-event-reducer';
 
-interface RunStoreState {
+interface RunStoreState extends RunFoldState {
   active: boolean;
-  runId: string | null;
-  status: 'idle' | 'starting' | 'running' | 'done' | 'aborted' | 'error';
-  tasks: Map<string, RunTaskState>;
-  logs: string[];
-  error: string | null;
   selectedTaskId: string | null;
   selectedTrackId: string | null;
   snapshot: RawPipelineConfig | null;
-  // Approvals (F3) — requests keyed by requestId, plus a queue for UI display.
-  pendingApprovals: Map<string, ApprovalRequestInfo>;
-  // Monotonic per-run event sequence last observed from the server.
-  // Used by the SSE layer to dedupe replays on reconnect (§1.3).
-  lastEventSeq: number;
 
   startRun: (config: RawPipelineConfig) => Promise<void>;
   abortRun: () => Promise<void>;
@@ -32,91 +23,29 @@ interface RunStoreState {
   reset: () => void;
 }
 
+function pickFoldState(s: RunStoreState): RunFoldState {
+  return {
+    runId: s.runId,
+    status: s.status,
+    tasks: s.tasks,
+    logs: s.logs,
+    error: s.error,
+    pendingApprovals: s.pendingApprovals,
+    lastEventSeq: s.lastEventSeq,
+  };
+}
+
 export const useRunStore = create<RunStoreState>((set, get) => {
   let unsubscribe: (() => void) | null = null;
 
   function handleEvent(event: RunEvent) {
-    const state = get();
-
-    // run_start always creates/resets the active run context.
-    if (event.type === 'run_start') {
-      const tasks = new Map<string, RunTaskState>();
-      for (const t of event.tasks) tasks.set(t.taskId, t);
-      set({
-        runId: event.runId,
-        status: 'running',
-        tasks,
-        error: null,
-        pendingApprovals: new Map(),
-      });
-      return;
-    }
-
-    // C7: drop any event whose runId doesn't match the active run.
-    // Events without a runId (legacy / defensive) are accepted to avoid
-    // regressions if the server hasn't been upgraded.
-    const eventRunId = (event as { runId?: string }).runId;
-    if (eventRunId && state.runId && eventRunId !== state.runId) {
-      return;
-    }
-
-    switch (event.type) {
-      case 'task_update': {
-        const tasks = new Map(state.tasks);
-        const existing = tasks.get(event.taskId);
-        if (existing) {
-          tasks.set(event.taskId, {
-            ...existing,
-            status: event.status,
-            startedAt: event.startedAt ?? existing.startedAt,
-            finishedAt: event.finishedAt ?? existing.finishedAt,
-            durationMs: event.durationMs ?? existing.durationMs,
-            exitCode: event.exitCode ?? existing.exitCode,
-            stdout: event.stdout ?? existing.stdout,
-            stderr: event.stderr ?? existing.stderr,
-            outputPath: event.outputPath ?? existing.outputPath,
-            stderrPath: event.stderrPath ?? existing.stderrPath,
-            sessionId: event.sessionId ?? existing.sessionId,
-            normalizedOutput: event.normalizedOutput ?? existing.normalizedOutput,
-            resolvedDriver: event.resolvedDriver ?? existing.resolvedDriver,
-            resolvedModelTier: event.resolvedModelTier ?? existing.resolvedModelTier,
-            resolvedPermissions: event.resolvedPermissions ?? existing.resolvedPermissions,
-          });
-        }
-        set({ tasks });
-        break;
-      }
-      case 'run_end':
-        set({ status: event.success ? 'done' : 'aborted' });
-        break;
-      case 'run_error':
-        set({ status: 'error', error: event.error });
-        break;
-      case 'log':
-        set({ logs: [...state.logs, event.line] });
-        break;
-      case 'approval_request': {
-        const pending = new Map(state.pendingApprovals);
-        pending.set(event.request.id, event.request);
-        set({ pendingApprovals: pending });
-        break;
-      }
-      case 'approval_resolved': {
-        const pending = new Map(state.pendingApprovals);
-        const wasPending = pending.has(event.requestId);
-        pending.delete(event.requestId);
-        // Surface timeout / aborted outcomes to the user via the error
-        // channel so they know an approval silently expired. Approved /
-        // rejected are user-driven so don't need a banner.
-        const patch: Partial<RunStoreState> = { pendingApprovals: pending };
-        if (wasPending && (event.outcome === 'timeout' || event.outcome === 'aborted')) {
-          patch.error = event.outcome === 'timeout'
-            ? `Approval timed out (${event.requestId})`
-            : `Approval aborted (${event.requestId})`;
-        }
-        set(patch);
-        break;
-      }
+    const current = pickFoldState(get());
+    const next = foldRunEvent(current, event);
+    // foldRunEvent returns the same reference when the event is a no-op
+    // (dropped by seq dedupe / runId mismatch) — skip the zustand set
+    // call in that case to avoid a spurious re-render.
+    if (next !== current) {
+      set(next);
     }
   }
 
@@ -124,13 +53,13 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     active: false,
     runId: null,
     status: 'idle',
-    tasks: new Map(),
+    tasks: new Map<string, RunTaskState>(),
     logs: [],
     error: null,
     selectedTaskId: null,
     selectedTrackId: null,
     snapshot: null,
-    pendingApprovals: new Map(),
+    pendingApprovals: new Map<string, ApprovalRequestInfo>(),
     lastEventSeq: 0,
 
     startRun: async (config) => {
@@ -194,8 +123,10 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         logs: [],
         error: null,
         selectedTaskId: null,
+        selectedTrackId: null,
         snapshot: null,
         pendingApprovals: new Map(),
+        lastEventSeq: 0,
       });
     },
   };

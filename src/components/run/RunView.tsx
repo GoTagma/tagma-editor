@@ -4,13 +4,15 @@
 // consistent with the editor.
 
 import { useMemo, useCallback, useState, useEffect } from 'react';
-import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search } from 'lucide-react';
+import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
 import { TaskCard } from '../board/TaskCard';
 import { TrackLane } from '../board/TrackLane';
 import { Minimap } from '../board/Minimap';
 import { ZoomControls } from '../board/ZoomControls';
 import { RunTaskPanel } from './RunTaskPanel';
+import { TrackInfoPanel } from './TrackInfoPanel';
+import { RunPluginsPanel } from './RunPluginsPanel';
 import { ApprovalDialog } from './ApprovalDialog';
 import { RunHistoryBrowser } from './RunHistoryBrowser';
 import { PipelineConfigPanel } from '../panels/PipelineConfigPanel';
@@ -61,7 +63,9 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
     tasks,
     error,
     selectedTaskId,
+    selectedTrackId,
     selectTask,
+    selectTrack,
     abortRun,
     pendingApprovals,
     resolveApproval,
@@ -77,6 +81,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   const isActive = status !== 'idle';
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showPlugins, setShowPlugins] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -200,9 +205,11 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         setSearchQuery('');
       } else if (selectedTaskId) {
         selectTask(null);
+      } else if (selectedTrackId) {
+        selectTrack(null);
       }
     }
-  }, [searchVisible, selectedTaskId, selectTask]);
+  }, [searchVisible, selectedTaskId, selectedTrackId, selectTask, selectTrack]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -280,6 +287,15 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
 
         <div className="flex-1" />
 
+        {/* Plugins (read-only) */}
+        <button
+          onClick={() => setShowPlugins(true)}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
+          title="View loaded plugins (read-only)"
+        >
+          <Package size={12} />
+        </button>
+
         {/* Pipeline settings (read-only) */}
         <button
           onClick={() => setShowPipelineSettings(true)}
@@ -326,11 +342,18 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
               <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: HEADER_W }}>
                 {config.tracks.map((track, i) => {
                   const taskCount = track.tasks.length;
+                  const isSelected = selectedTrackId === track.id;
                   return (
                     <div
                       key={track.id}
-                      className={`border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
+                      className={`border-b border-tagma-border/40 cursor-pointer transition-colors ${
+                        isSelected ? 'bg-tagma-accent/6' : ''
+                      } ${i % 2 === 1 ? 'track-row-odd' : ''}`}
                       style={{ height: TRACK_H }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectTrack(track.id);
+                      }}
                     >
                       <TrackLane
                         track={track}
@@ -402,6 +425,18 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
                 onClose={() => selectTask(null)}
               />
             )}
+
+            {!selectedTask && selectedTrackId && (() => {
+              const track = config.tracks.find((t) => t.id === selectedTrackId);
+              if (!track) return null;
+              return (
+                <TrackInfoPanel
+                  track={track}
+                  config={config}
+                  onClose={() => selectTrack(null)}
+                />
+              );
+            })()}
           </>
         )}
       </div>
@@ -425,6 +460,14 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           onUpdate={() => { /* readOnly — no-op */ }}
           onClose={() => setShowPipelineSettings(false)}
           readOnly
+        />
+      )}
+
+      {/* Plugins modal (read-only) */}
+      {showPlugins && (
+        <RunPluginsPanel
+          config={config}
+          onClose={() => setShowPlugins(false)}
         />
       )}
 
