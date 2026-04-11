@@ -43,22 +43,19 @@ export function Minimap() {
     return () => ro.disconnect();
   }, []);
 
-  // Derive content bounds from tracks + positions (matches BoardCanvas logic).
+  // Use the real canvas scroll extents so task positions, viewport rect, and
+  // scroll state always map consistently into minimap coordinates.
   const { contentW, contentH } = useMemo(() => {
-    let maxX = 0;
-    tracks.forEach((tr, i) => {
-      tr.tasks.forEach((t, idx) => {
-        const pos = positions.get(`${tr.id}.${t.id}`);
-        const x = pos ? pos.x : PAD_LEFT + idx * (TASK_W + 24);
-        if (x + TASK_W > maxX) maxX = x + TASK_W;
-        void i;
-      });
-    });
+    void scrollTick;
+    void tracks;
+    void positions;
+    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
+    if (!el) return { contentW: 1, contentH: 1 };
     return {
-      contentW: Math.max(maxX + PAD_LEFT, 1),
-      contentH: Math.max(tracks.length * TRACK_H, 1),
+      contentW: Math.max(el.scrollWidth, 1),
+      contentH: Math.max(el.scrollHeight, 1),
     };
-  }, [tracks, positions]);
+  }, [scrollTick, tracks, positions]);
 
   // Scale to fit content inside map with padding.
   const { scale, offsetX, offsetY } = useMemo(() => {
@@ -100,15 +97,13 @@ export function Minimap() {
     void scrollTick;
     const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
     if (!el) return null;
-    const vw = el.clientWidth;
-    const vh = el.clientHeight;
     return {
       x: offsetX + el.scrollLeft * scale,
       y: offsetY + el.scrollTop * scale,
-      w: Math.min(contentW, vw) * scale,
-      h: Math.min(contentH, vh) * scale,
+      w: el.clientWidth * scale,
+      h: el.clientHeight * scale,
     };
-  }, [scrollTick, offsetX, offsetY, scale, contentW, contentH]);
+  }, [scrollTick, offsetX, offsetY, scale]);
 
   const panToMapPoint = useCallback((mapX: number, mapY: number) => {
     const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
