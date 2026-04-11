@@ -381,7 +381,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
           {plugin.installed ? (
             <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">installed</span>
           ) : (
-            <span className="text-[9px] px-1 py-px bg-red-500/10 text-red-400/80 border border-red-500/20">not installed</span>
+            <span className="text-[9px] px-1 py-px bg-tagma-error/10 text-tagma-error/80 border border-tagma-error/20">not installed</span>
           )}
           {plugin.loaded && (
             <span className="text-[9px] px-1 py-px bg-blue-500/10 text-blue-400/80 border border-blue-500/20">loaded</span>
@@ -425,7 +425,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
               <button
                 onClick={() => onUninstall(plugin.name)}
                 disabled={disabled}
-                className="p-1 text-red-400 hover:text-red-300 transition-colors disabled:opacity-40"
+                className="p-1 text-tagma-error hover:text-tagma-error/80 transition-colors disabled:opacity-40"
                 title="Uninstall"
               >
                 <Trash2 size={12} />
@@ -444,7 +444,7 @@ function StatusMessage({ state, onDismiss, onRetry }: { state: ActionState; onDi
   const isError = state.type === 'error';
   const Icon = isError ? AlertCircle : Check;
   const colorClass = isError
-    ? 'bg-red-500/10 border-red-500/30 text-red-400'
+    ? 'bg-tagma-error/10 border-tagma-error/30 text-tagma-error'
     : 'bg-green-500/10 border-green-500/30 text-green-400';
 
   return (
@@ -461,7 +461,7 @@ function StatusMessage({ state, onDismiss, onRetry }: { state: ActionState; onDi
           {isError ? (
             <>
               <div className="mt-0.5 text-tagma-muted">{errorHint(state.kind)}</div>
-              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-red-500/20 text-red-300 text-[9px] font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-tagma-error/20 text-tagma-error text-[9px] font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
                 {state.message}
               </pre>
             </>
@@ -475,7 +475,7 @@ function StatusMessage({ state, onDismiss, onRetry }: { state: ActionState; onDi
         <div className="flex justify-end mt-1">
           <button
             onClick={onRetry}
-            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-red-500/20 border border-red-500/30 text-red-300 hover:bg-red-500/30 transition-colors"
+            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-tagma-error/20 border border-tagma-error/30 text-tagma-error hover:bg-tagma-error/30 transition-colors"
             title="Retry"
           >
             <RotateCcw size={10} /> Retry

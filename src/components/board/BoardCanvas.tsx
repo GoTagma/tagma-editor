@@ -722,7 +722,9 @@ export function BoardCanvas({
             const topY = vIdx * TRACK_H + 4;
             const h = TRACK_H - 8;
             const left = zone.minX - 6;
-            const width = (zone.maxX + TASK_W + 6) - left;
+            const LABEL_TAB_W = 56;
+            const tasksRight = (zone.maxX + TASK_W + 6) - left;
+            const width = tasksRight + LABEL_TAB_W;
             return (
               <div
                 key={`pz-${zone.trackId}-${idx}`}
@@ -735,7 +737,8 @@ export function BoardCanvas({
                 }}
               >
                 <span
-                  className="absolute top-[1px] right-[3px] text-[7px] font-mono uppercase tracking-wider text-tagma-muted/60 select-none"
+                  className="absolute flex items-center justify-center text-[9px] font-mono uppercase tracking-wider text-tagma-muted/70 select-none"
+                  style={{ left: tasksRight, top: 0, width: LABEL_TAB_W, height: h }}
                 >
                   parallel
                 </span>
@@ -784,7 +787,7 @@ export function BoardCanvas({
                 <polygon points="0 0, 7 2.5, 0 5" fill="#c4b5fd" />
               </marker>
               <marker id="ah-cycle" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
-                <polygon points="0 0, 7 2.5, 0 5" fill="#ef4444" />
+                <polygon points="0 0, 7 2.5, 0 5" fill="#f87171" />
               </marker>
             </defs>
 
@@ -847,7 +850,7 @@ export function BoardCanvas({
                     onClick={(e) => { e.stopPropagation(); setSelEdge(selected ? null : ek); setHovEdge(null); }} />
                   <path d={d} fill="none"
                     stroke={inCycle
-                      ? '#ef4444'
+                      ? '#f87171'
                       : highlighted
                       ? (isContinue ? '#c4b5fd' : '#d4845a')
                       : (isContinue ? 'rgba(167, 139, 250, 0.5)' : 'rgba(100, 100, 100, 0.4)')}

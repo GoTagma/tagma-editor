@@ -20,7 +20,7 @@ const TIER_CLS: Record<string, string> = {
 
 const FAIL_CFG: Record<string, { icon: React.ReactNode; cls: string; tip: string }> = {
   skip_downstream: { icon: <SkipForward size={8} />, cls: 'text-tagma-muted/40', tip: 'Skip downstream on failure' },
-  stop_all: { icon: <ShieldAlert size={8} />, cls: 'text-red-400/60', tip: 'Stop all on failure' },
+  stop_all: { icon: <ShieldAlert size={8} />, cls: 'text-tagma-error/60', tip: 'Stop all on failure' },
   ignore: { icon: <Ban size={8} />, cls: 'text-tagma-muted/40', tip: 'Ignore failures' },
 };
 
@@ -68,12 +68,12 @@ function TrackTooltip({ track, anchorRect }: { track: RawTrackConfig; anchorRect
 
 function ErrorTooltipPanel({ messages, anchorRect }: { messages: string[]; anchorRect: DOMRect }) {
   return (
-    <FloatingPanel anchorRect={anchorRect} width={260} borderClass="border-red-500/40">
+    <FloatingPanel anchorRect={anchorRect} width={260} borderClass="border-tagma-error/40">
       <div className="px-3 py-1.5">
         {messages.map((msg, i) => (
           <div key={i} className="flex items-start gap-1.5 py-[2px] text-[9px] font-mono">
-            <AlertTriangle size={8} className="text-red-400 shrink-0 mt-[2px]" />
-            <span className="text-red-300/90">{msg}</span>
+            <AlertTriangle size={8} className="text-tagma-error shrink-0 mt-[2px]" />
+            <span className="text-tagma-error/90">{msg}</span>
           </div>
         ))}
       </div>
@@ -159,7 +159,7 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
           style={{ backgroundColor: track.color || 'transparent' }}
         />
         <span
-          className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : (track.color ? '' : 'text-tagma-text')}`}
+          className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-tagma-error' : (track.color ? '' : 'text-tagma-text')}`}
           style={!hasError && track.color ? { color: track.color } : undefined}
         >
           {track.name}
@@ -172,7 +172,7 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
           title={hasError ? undefined : (hasParallelWarning ? 'Tasks without edges run in parallel' : undefined)}
         >
           {hasError
-            ? <AlertTriangle size={9} className="text-red-400" />
+            ? <AlertTriangle size={9} className="text-tagma-error" />
             : hasParallelWarning
               ? <AlertTriangle size={9} className="text-tagma-warning" />
               : null}
@@ -204,7 +204,7 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
                 <span key={k} className={`text-[7px] font-mono font-bold w-[10px] text-center leading-[14px]
                   ${k === 'read' && perms.read ? 'text-emerald-400' : ''}
                   ${k === 'write' && perms.write ? 'text-amber-400' : ''}
-                  ${k === 'execute' && perms.execute ? 'text-red-400' : ''}
+                  ${k === 'execute' && perms.execute ? 'text-tagma-error' : ''}
                   ${!perms[k] ? 'text-tagma-muted/20' : ''}
                 `}>
                   {k[0].toUpperCase()}

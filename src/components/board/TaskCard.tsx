@@ -86,7 +86,7 @@ function ErrorTooltip({ messages, anchorRect }: { messages: string[]; anchorRect
   return createPortal(
     <div
       ref={ref}
-      className="fixed pointer-events-none bg-[#1a1a1e] border border-red-500/40 shadow-lg rounded-[3px]"
+      className="fixed pointer-events-none bg-[#1a1a1e] border border-tagma-error/40 shadow-lg rounded-[3px]"
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
         width: 260, maxHeight: viewportH() - 16,
@@ -98,8 +98,8 @@ function ErrorTooltip({ messages, anchorRect }: { messages: string[]; anchorRect
       <div className="px-3 py-1.5">
         {messages.map((msg, i) => (
           <div key={i} className="flex items-start gap-1.5 py-[2px] text-[9px] font-mono">
-            <AlertTriangle size={8} className="text-red-400 shrink-0 mt-[2px]" />
-            <span className="text-red-300/90">{msg}</span>
+            <AlertTriangle size={8} className="text-tagma-error shrink-0 mt-[2px]" />
+            <span className="text-tagma-error/90">{msg}</span>
           </div>
         ))}
       </div>
@@ -206,14 +206,14 @@ export function TaskCard({
 
   const borderColor = isDragging
     ? 'border-tagma-accent'
-    : isInvalid ? 'border-red-500/60'
+    : isInvalid ? 'border-tagma-error/60'
     : isSelected ? 'border-tagma-accent'
     : isEdgeTarget ? 'border-tagma-accent/60'
     : 'border-tagma-border/70';
 
   const bgColor = isDragging
     ? 'bg-tagma-accent/10'
-    : isInvalid ? 'bg-red-500/8'
+    : isInvalid ? 'bg-tagma-error/8'
     : isSelected ? 'bg-tagma-accent/6'
     : isEdgeTarget ? 'bg-tagma-accent/4'
     : 'bg-tagma-elevated hover:bg-tagma-elevated/80';
@@ -266,7 +266,7 @@ export function TaskCard({
           hover:border-tagma-accent hover:bg-tagma-accent/20 transition-all duration-75"
         onPointerDown={(e) => { if (e.button === 0) { e.stopPropagation(); onHandlePointerDown(task.id, e); } }}
       />
-      {isSelected && <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-red-500' : 'bg-tagma-accent'}`} />}
+      {isSelected && <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-tagma-error' : 'bg-tagma-accent'}`} />}
 
       {/* ─── Row 1: Type icon · Name · Status badges ─── */}
       <div className="flex items-center h-[24px] gap-[6px] pointer-events-none min-w-0 overflow-hidden">
@@ -303,7 +303,7 @@ export function TaskCard({
           style={{ cursor: isInvalid ? 'pointer' : 'default' }}
           title={isInvalid ? 'Jump to this task' : undefined}
         >
-          {isInvalid && <AlertTriangle size={8} className="text-red-400" />}
+          {isInvalid && <AlertTriangle size={8} className="text-tagma-error" />}
         </span>
       </div>
 
@@ -328,7 +328,7 @@ export function TaskCard({
                 <span key={k} className={`text-[7px] font-mono font-bold w-[10px] text-center leading-[14px]
                   ${k === 'read' && perms.read ? 'text-emerald-400' : ''}
                   ${k === 'write' && perms.write ? 'text-amber-400' : ''}
-                  ${k === 'execute' && perms.execute ? 'text-red-400' : ''}
+                  ${k === 'execute' && perms.execute ? 'text-tagma-error' : ''}
                   ${!perms[k] ? 'text-tagma-muted/20' : ''}
                 `}>
                   {k[0].toUpperCase()}

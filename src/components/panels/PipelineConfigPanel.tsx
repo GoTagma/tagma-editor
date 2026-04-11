@@ -48,10 +48,10 @@ export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {errors.length > 0 && (
-            <div className="bg-red-500/8 border border-red-500/30 px-2.5 py-1.5 space-y-1">
+            <div className="bg-tagma-error/8 border border-tagma-error/30 px-2.5 py-1.5 space-y-1">
               {errors.map((msg, i) => (
-                <div key={i} className="flex items-start gap-1.5 text-[10px] text-red-300/90 font-mono">
-                  <AlertTriangle size={10} className="text-red-400 shrink-0 mt-[1px]" />
+                <div key={i} className="flex items-start gap-1.5 text-[10px] text-tagma-error/90 font-mono">
+                  <AlertTriangle size={10} className="text-tagma-error shrink-0 mt-[1px]" />
                   <span>{msg}</span>
                 </div>
               ))}
