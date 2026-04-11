@@ -300,11 +300,21 @@ export function TaskCard({
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         if (readOnly) {
+          // Swallow the pointerdown so no parent pan / drag handler fires,
+          // but don't call onClickRun here — we handle that in onClick so
+          // the click bubbling chain up to the canvas body (which would
+          // otherwise clear selection on background-click) is stopped by
+          // onClick's stopPropagation, not by a side-effect of pointerdown
+          // that leaves the click free to deselect us again.
           e.stopPropagation();
-          onClickRun?.(task.id);
           return;
         }
         onPointerDown?.(task.id, e);
+      }}
+      onClick={(e) => {
+        if (!readOnly) return;
+        e.stopPropagation();
+        onClickRun?.(task.id);
       }}
       onPointerUp={() => { if (!readOnly) onTargetPointerUp?.(task.id); }}
       onContextMenu={(e) => { if (!readOnly && onContextMenu) onContextMenu(task.id, e); }}
