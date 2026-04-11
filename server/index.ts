@@ -360,10 +360,12 @@ app.get('/api/templates', (_req, res) => {
 });
 
 // Single-template lookup for deeper form generation (one task at a time).
-app.get('/api/templates/:ref(*)', (req, res) => {
+app.get('/api/templates/*ref', (req, res) => {
   if (!workDir) return res.status(400).json({ error: 'no workspace opened' });
   try {
-    const manifest = loadTemplateManifest(req.params.ref, workDir);
+    const refParam = req.params.ref;
+    const ref = Array.isArray(refParam) ? refParam.join('/') : String(refParam ?? '');
+    const manifest = loadTemplateManifest(ref, workDir);
     if (!manifest) return res.status(404).json({ error: 'template not found' });
     res.json({ template: manifest });
   } catch (e: unknown) {
