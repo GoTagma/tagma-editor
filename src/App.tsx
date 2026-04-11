@@ -45,7 +45,7 @@ export function App() {
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
   const [confirmInfo, setConfirmInfo] = useState<ConfirmInfo | null>(null);
-  const [workspaceYamls, setWorkspaceYamls] = useState<{ name: string; path: string }[]>([]);
+  const [workspaceYamls, setWorkspaceYamls] = useState<{ name: string; path: string; pipelineName: string | null }[]>([]);
   const [saveAsInput, setSaveAsInput] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchVisible, setSearchVisible] = useState(false);
@@ -59,20 +59,15 @@ export function App() {
 
   useEffect(() => { init(); }, []);
 
-  const refreshWorkspaceYamls = useCallback(async (): Promise<{ name: string; path: string }[]> => {
+  const refreshWorkspaceYamls = useCallback(async (): Promise<{ name: string; path: string; pipelineName: string | null }[]> => {
     if (!workDir) {
       setWorkspaceYamls([]);
       return [];
     }
     try {
-      const sep = workDir.includes('\\') ? '\\' : '/';
-      const tagmaPath = `${workDir}${sep}.tagma`;
-      const result = await api.listDir(tagmaPath);
-      const yamls = result.entries
-        .filter((e) => e.type === 'file' && /\.ya?ml$/i.test(e.name))
-        .map((e) => ({ name: e.name, path: e.path }));
-      setWorkspaceYamls(yamls);
-      return yamls;
+      const result = await api.listWorkspaceYamls();
+      setWorkspaceYamls(result.entries);
+      return result.entries;
     } catch {
       setWorkspaceYamls([]);
       return [];
@@ -324,6 +319,7 @@ export function App() {
   const menus = useMemo(() => {
     type ActionItem = {
       label: string;
+      subLabel?: string;
       shortcut?: string;
       disabled?: boolean;
       onAction: () => void;
@@ -336,6 +332,7 @@ export function App() {
       ? [{ label: '(No YAML files in .tagma)', disabled: true, onAction: () => {} }]
       : workspaceYamls.map((y) => ({
           label: y.name === activeYamlName ? `● ${y.name}` : `   ${y.name}`,
+          subLabel: y.pipelineName ?? undefined,
           onAction: () => handleOpenWorkspaceFile(y.path),
           onDelete: () => handleDeleteWorkspaceFile(y.path),
           deleteTitle: `Remove ${y.name} and its .layout.json`,

@@ -2,23 +2,23 @@
 // SchemaForm.tsx — F10: Plugin schema → form generator.
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// SDK discovery note (Group 8): `tagma-sdk/plugins/types/src/index.ts` does
-// NOT expose any `schema` field on TriggerPlugin / CompletionPlugin /
-// MiddlewarePlugin. Built-in plugins (`src/triggers/*`, `src/completions/*`,
-// `src/middlewares/*`) only throw descriptive errors at runtime — there is no
-// declarative schema metadata. See the review doc §F10 for rationale.
+// The SDK now exposes declarative `schema?: PluginSchema` metadata on
+// TriggerPlugin / CompletionPlugin / MiddlewarePlugin (tagma-sdk
+// plugins/types/src/index.ts). The editor's server reads each plugin's
+// schema and forwards it through `/api/registry` as `triggerSchemas` /
+// `completionSchemas` / `middlewareSchemas` keyed by plugin type.
 //
-// As a fallback we hand-wrote schema descriptors for the known built-in
-// plugins in `BUILTIN_PLUGIN_SCHEMAS` below. Third-party plugins without a
-// schema silently fall back to the KV editor in the caller. When/if the SDK
-// adds a `schema?: PluginSchema` field to its plugin interfaces, extend the
-// server `/api/registry` response to include it and merge into the lookup
-// below (additive; keep hand-written schemas as a safety net for legacy
-// plugins that haven't migrated).
+// `getBuiltinSchema` below first consults the live registry from the store
+// and, if the plugin type isn't declared there (legacy/third-party plugins
+// without a schema), falls back to the hand-written table at the bottom of
+// this file. The fallback exists so the editor keeps working offline and
+// against older SDK releases that predate the schema field.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback } from 'react';
 import { useLocalField } from '../../hooks/use-local-field';
+import { usePipelineStore } from '../../store/pipeline-store';
+import type { PluginSchemaDescriptor } from '../../api/client';
 
 // ── Schema types ────────────────────────────────────────────────────────────
 
@@ -113,11 +113,49 @@ export const BUILTIN_MIDDLEWARE_SCHEMAS: Record<string, PluginSchema> = {
   },
 };
 
-/** Look up a schema for the given plugin kind + type, or `null` if unknown. */
+/**
+ * Convert a wire-format PluginSchemaDescriptor (from `/api/registry`) into
+ * the editor's internal PluginSchema shape. Unknown field types pass through
+ * verbatim; callers downstream handle the fallback rendering.
+ */
+function fromWireDescriptor(wire: PluginSchemaDescriptor): PluginSchema | null {
+  if (!wire.fields || !Array.isArray(wire.fields)) return null;
+  const fields: SchemaField[] = wire.fields.map((f) => ({
+    key: f.key,
+    type: (f.type as SchemaFieldType),
+    required: f.required,
+    description: f.description,
+    default: f.default,
+    enum: f.enum,
+    min: f.min,
+    max: f.max,
+    placeholder: (f as { placeholder?: string }).placeholder,
+  }));
+  return { fields };
+}
+
+/**
+ * Look up a schema for the given plugin kind + type, or `null` if unknown.
+ * Prefers schemas exposed by the server's plugin registry (live, reflects
+ * whatever the SDK declares), falling back to the hand-written table below
+ * for offline use and legacy SDK versions that predate `PluginSchema`.
+ */
 export function getBuiltinSchema(
   kind: 'trigger' | 'completion' | 'middleware',
   type: string,
 ): PluginSchema | null {
+  // 1. Prefer live server-provided schema from the pipeline store registry.
+  const registry = usePipelineStore.getState().registry;
+  const registryMap =
+    kind === 'trigger' ? registry.triggerSchemas :
+    kind === 'completion' ? registry.completionSchemas :
+    registry.middlewareSchemas;
+  if (registryMap && registryMap[type]) {
+    const fromWire = fromWireDescriptor(registryMap[type]);
+    if (fromWire) return fromWire;
+  }
+
+  // 2. Fall back to the hand-written table for offline/legacy support.
   const table =
     kind === 'trigger' ? BUILTIN_TRIGGER_SCHEMAS :
     kind === 'completion' ? BUILTIN_COMPLETION_SCHEMAS :

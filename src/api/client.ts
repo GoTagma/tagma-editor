@@ -246,6 +246,31 @@ export interface PluginSchemaDescriptor {
   readonly [key: string]: unknown;
 }
 
+/**
+ * F1: Template parameter definition (mirrors SDK's TemplateParamDef).
+ */
+export interface TemplateParamDef {
+  readonly type?: 'string' | 'path' | 'enum' | 'number';
+  readonly default?: unknown;
+  readonly description?: string;
+  readonly enum?: readonly string[];
+  readonly min?: number;
+  readonly max?: number;
+}
+
+/**
+ * F1: A template manifest discovered from `@tagma/template-*` packages in the
+ * current workspace's node_modules. `ref` is the value users drop into
+ * `task.use`; `params` drives the generated parameter form.
+ */
+export interface TemplateManifest {
+  readonly ref: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly params?: Record<string, TemplateParamDef>;
+  readonly tasks?: readonly unknown[];
+}
+
 export interface PluginRegistry {
   drivers: string[];
   triggers: string[];
@@ -257,13 +282,18 @@ export interface PluginRegistry {
    */
   driverCapabilities?: Record<string, DriverCapabilities>;
   /**
-   * F10 (optional): schema descriptors keyed by plugin type, grouped by
-   * category. Server may return this if the SDK exposes schemas; otherwise
-   * the client uses hand-written fallbacks for known built-ins.
+   * F10: schema descriptors keyed by plugin type, grouped by category.
+   * The server reads these from each plugin's declarative `schema` field
+   * (SDK `PluginSchema`); client falls back to hand-written data for
+   * plugins that don't expose a schema.
    */
   triggerSchemas?: Record<string, PluginSchemaDescriptor>;
   completionSchemas?: Record<string, PluginSchemaDescriptor>;
   middlewareSchemas?: Record<string, PluginSchemaDescriptor>;
+  /**
+   * F1: installed template manifests discovered from the current workspace.
+   */
+  templates?: TemplateManifest[];
 }
 
 export interface PluginInfo {
@@ -407,6 +437,11 @@ export const api = {
 
   listDir: (path?: string) =>
     request<FsListResult>(`/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
+  listWorkspaceYamls: () =>
+    request<{ entries: { name: string; path: string; pipelineName: string | null }[] }>(
+      '/workspace/yamls',
+    ),
 
   listRoots: () =>
     request<{ roots: string[] }>('/fs/roots'),

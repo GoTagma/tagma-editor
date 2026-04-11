@@ -3,6 +3,7 @@ import { ChevronDown, Trash2 } from 'lucide-react';
 
 interface MenuAction {
   label: string;
+  subLabel?: string;
   shortcut?: string;
   disabled?: boolean;
   onAction: () => void;
@@ -113,7 +114,14 @@ export function MenuBar({ menus }: MenuBarProps) {
                       onClick={() => { if (!item.disabled) { item.onAction(); close(); } }}
                       className="flex-1 flex items-center justify-between px-3 py-1.5 text-left text-inherit disabled:cursor-not-allowed disabled:text-inherit"
                     >
-                      <span>{item.label}</span>
+                      <span className="flex items-baseline gap-1.5 min-w-0">
+                        <span className="truncate">{item.label}</span>
+                        {item.subLabel && (
+                          <span className={`text-[10px] truncate ${item.disabled ? 'text-inherit' : 'text-tagma-muted/50'}`}>
+                            {item.subLabel}
+                          </span>
+                        )}
+                      </span>
                       {item.shortcut && (
                         <span className={`text-[9px] font-mono ml-6 tracking-wider ${item.disabled ? 'text-inherit' : 'text-tagma-muted/60'}`}>{item.shortcut}</span>
                       )}

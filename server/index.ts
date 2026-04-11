@@ -25,8 +25,19 @@ import {
   hasHandler,
   getHandler,
   registerPlugin,
+  discoverTemplates,
+  loadTemplateManifest,
 } from '@tagma/sdk';
-import type { DriverPlugin, DriverCapabilities } from '@tagma/types';
+import type { TemplateManifest } from '@tagma/sdk';
+import type {
+  DriverPlugin,
+  DriverCapabilities,
+  TriggerPlugin,
+  CompletionPlugin,
+  MiddlewarePlugin,
+  PluginSchema as SdkPluginSchema,
+  PluginParamDef,
+} from '@tagma/types';
 import {
   startWatching as startFileWatching,
   stopWatching as stopFileWatching,
@@ -209,6 +220,45 @@ function getDriverCapabilities(): Record<string, DriverCapabilities> {
   return out;
 }
 
+/**
+ * Convert SDK's record-shaped PluginSchema → the client's array-shaped wire
+ * descriptor. The array form lets the client preserve declared field order in
+ * the form generator. Unknown param types are passed through verbatim.
+ */
+function serializeSdkSchema(schema: SdkPluginSchema | undefined):
+  | { description?: string; fields: Array<{ key: string } & PluginParamDef> }
+  | undefined {
+  if (!schema || !schema.fields) return undefined;
+  const fields: Array<{ key: string } & PluginParamDef> = [];
+  for (const [key, def] of Object.entries(schema.fields)) {
+    fields.push({ key, ...def });
+  }
+  return { description: schema.description, fields };
+}
+
+/**
+ * Pull per-plugin schema metadata out of the registry for one category (F10).
+ * Plugins that don't declare a schema are silently omitted.
+ */
+function getPluginSchemas(
+  kind: 'triggers' | 'completions' | 'middlewares',
+): Record<string, ReturnType<typeof serializeSdkSchema>> {
+  const out: Record<string, ReturnType<typeof serializeSdkSchema>> = {};
+  for (const name of listRegistered(kind)) {
+    try {
+      const plugin =
+        kind === 'triggers'
+          ? getHandler<TriggerPlugin>('triggers', name)
+          : kind === 'completions'
+            ? getHandler<CompletionPlugin>('completions', name)
+            : getHandler<MiddlewarePlugin>('middlewares', name);
+      const wire = serializeSdkSchema(plugin.schema);
+      if (wire) out[name] = wire;
+    } catch { /* ignore broken plugin */ }
+  }
+  return out;
+}
+
 // ── Mutation middleware: revision bump + If-Match check (C6) ──
 //
 // Applied via `app.use` BEFORE any mutation routes are registered (see order
@@ -293,7 +343,32 @@ app.get('/api/registry', (_req, res) => {
     completions: listRegistered('completions'),
     middlewares: listRegistered('middlewares'),
     driverCapabilities: getDriverCapabilities(),
+    triggerSchemas: getPluginSchemas('triggers'),
+    completionSchemas: getPluginSchemas('completions'),
+    middlewareSchemas: getPluginSchemas('middlewares'),
+    templates: getTemplatesSnapshot(),
   });
+});
+
+// ── F1: Templates ──
+// Discovery endpoint — returns the list of `@tagma/template-*` packages
+// installed in the current workspace along with each manifest's name,
+// description, and parameter definitions. The UI template browser in
+// TaskConfigPanel populates from here.
+app.get('/api/templates', (_req, res) => {
+  res.json({ templates: getTemplatesSnapshot() });
+});
+
+// Single-template lookup for deeper form generation (one task at a time).
+app.get('/api/templates/:ref(*)', (req, res) => {
+  if (!workDir) return res.status(400).json({ error: 'no workspace opened' });
+  try {
+    const manifest = loadTemplateManifest(req.params.ref, workDir);
+    if (!manifest) return res.status(404).json({ error: 'template not found' });
+    res.json({ template: manifest });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // ── External file-change SSE (C5) ──
@@ -581,7 +656,26 @@ function getRegistrySnapshot() {
     triggers: listRegistered('triggers'),
     completions: listRegistered('completions'),
     middlewares: listRegistered('middlewares'),
+    driverCapabilities: getDriverCapabilities(),
+    triggerSchemas: getPluginSchemas('triggers'),
+    completionSchemas: getPluginSchemas('completions'),
+    middlewareSchemas: getPluginSchemas('middlewares'),
+    templates: getTemplatesSnapshot(),
   };
+}
+
+/**
+ * Discover installed `@tagma/template-*` packages under the current workDir
+ * and return their manifests. Returns an empty array when no workDir is set
+ * or no template packages are installed.
+ */
+function getTemplatesSnapshot(): TemplateManifest[] {
+  if (!workDir) return [];
+  try {
+    return discoverTemplates(workDir);
+  } catch {
+    return [];
+  }
 }
 
 /** Dynamically import a plugin from the workDir's node_modules */
@@ -1009,6 +1103,29 @@ app.get('/api/fs/list', (req, res) => {
   }
 });
 
+app.get('/api/workspace/yamls', (_req, res) => {
+  if (!workDir) return res.json({ entries: [] });
+  const tagmaDir = resolve(workDir, '.tagma');
+  if (!existsSync(tagmaDir)) return res.json({ entries: [] });
+  try {
+    const entries = readdirSync(tagmaDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && /\.ya?ml$/i.test(e.name))
+      .map((e) => {
+        const absPath = resolve(tagmaDir, e.name);
+        let pipelineName: string | null = null;
+        try {
+          const doc = yaml.load(readFileSync(absPath, 'utf-8')) as any;
+          if (doc && typeof doc.name === 'string') pipelineName = doc.name;
+        } catch {}
+        return { name: e.name, path: absPath, pipelineName };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ entries });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message ?? 'Failed to list workspace yamls' });
+  }
+});
+
 app.get('/api/fs/roots', (_req, res) => {
   // On Windows, list drive letters; on Unix, just "/"
   if (process.platform === 'win32') {
@@ -1309,6 +1426,12 @@ const sseClients = new Set<import('express').Response>();
 // Pending approval requests keyed by requestId. Populated when the SDK/CLI emits
 // an approval_request event; resolved when the editor POSTs a decision.
 const pendingApprovals = new Map<string, { runId: string; taskId: string }>();
+// F3: WebSocket connection to the running CLI's approval endpoint. The SDK's
+// `attachWebSocketApprovalAdapter` opens a ws server on a port logged to the
+// CLI stdout; we parse that line, connect as a client, and bridge messages:
+//   editor UI → POST /api/run/approval/:id → ws.send({type:'resolve',...})
+//   CLI → ws message {type:'approval_requested',...} → broadcast SSE to UI
+let approvalSocket: WebSocket | null = null;
 
 function broadcast(event: RunEvent) {
   const data = JSON.stringify(event);
@@ -1359,8 +1482,10 @@ app.post('/api/run/start', (_req, res) => {
   const cliPath = resolve(import.meta.dirname ?? '.', '../../tagma-cli/src/index.ts');
   const cwd = workDir || process.cwd();
 
-  // Spawn bun with the CLI
-  const child = spawn('bun', ['run', cliPath, tmpYaml, '--cwd', cwd], {
+  // Spawn bun with the CLI. `--ws-port 0` asks the SDK's WebSocket approval
+  // adapter to bind to a random free port and log it to stdout so we can
+  // connect as a client and bridge approval messages both ways (F3).
+  const child = spawn('bun', ['run', cliPath, tmpYaml, '--cwd', cwd, '--ws-port', '0'], {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
@@ -1375,6 +1500,16 @@ app.post('/api/run/start', (_req, res) => {
   broadcast({ type: 'run_start', runId, tasks: initialTasks });
 
   function parseLine(line: string) {
+    // F3: first watch for the SDK's approval WebSocket banner line so we can
+    // open a client bridge and forward approval decisions both directions.
+    const wsMatch = line.match(/Approval WebSocket listening on ws:\/\/([^:\s]+):(\d+)/);
+    if (wsMatch && !approvalSocket) {
+      const host = wsMatch[1];
+      const port = parseInt(wsMatch[2], 10);
+      openApprovalBridge(host, port, runId);
+      return;
+    }
+
     // Engine log format: "HH:MM:SS.mmm [task:<qid>] <message>"
     // info goes to stdout, error goes to stderr (with "ERROR: " prefix in msg)
     const taskMatch = line.match(/\[task:([^\]]+)\]\s+(.*)/);
@@ -1422,6 +1557,7 @@ app.post('/api/run/start', (_req, res) => {
     broadcast({ type: 'run_end', runId, success: code === 0 });
     runProcess = null;
     if (activeRunId === runId) activeRunId = null;
+    closeApprovalBridge();
     // Clean up temp files
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
@@ -1430,6 +1566,7 @@ app.post('/api/run/start', (_req, res) => {
     broadcast({ type: 'run_error', runId, error: err.message });
     runProcess = null;
     if (activeRunId === runId) activeRunId = null;
+    closeApprovalBridge();
   });
 
   res.json({ ok: true, runId });
@@ -1443,29 +1580,160 @@ app.post('/api/run/abort', (_req, res) => {
   runProcess.kill('SIGTERM');
   runProcess = null;
   activeRunId = null;
+  closeApprovalBridge();
   broadcast({ type: 'run_end', runId, success: false });
   res.json({ ok: true });
 });
 
+// ── F3: Approval WebSocket bridge ──
+//
+// Opens a WebSocket client to the SDK's approval endpoint (spawned by the CLI
+// with `--ws-port 0` and announced via a stdout banner). Forwards approval
+// events from SDK → editor SSE and editor decisions → SDK via the socket.
+function openApprovalBridge(host: string, port: number, runId: string): void {
+  closeApprovalBridge();
+  const url = `ws://${host}:${port}`;
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url);
+  } catch (err) {
+    console.error('[approval-bridge] failed to open WebSocket:', err);
+    return;
+  }
+
+  ws.addEventListener('open', () => {
+    // No-op — the SDK immediately sends a `pending` snapshot which we handle below.
+  });
+
+  ws.addEventListener('message', (ev: MessageEvent) => {
+    let msg: unknown;
+    try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)); }
+    catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+    const m = msg as Record<string, unknown>;
+
+    if (m.type === 'pending' && Array.isArray(m.requests)) {
+      for (const r of m.requests as Array<Record<string, unknown>>) {
+        if (typeof r.id !== 'string') continue;
+        pendingApprovals.set(r.id, {
+          runId,
+          taskId: typeof r.taskId === 'string' ? r.taskId : '',
+        });
+        broadcast({
+          type: 'approval_request',
+          runId,
+          request: normalizeApprovalRequest(r),
+        });
+      }
+      return;
+    }
+
+    if (m.type === 'approval_requested' && m.request && typeof m.request === 'object') {
+      const r = m.request as Record<string, unknown>;
+      if (typeof r.id !== 'string') return;
+      pendingApprovals.set(r.id, {
+        runId,
+        taskId: typeof r.taskId === 'string' ? r.taskId : '',
+      });
+      broadcast({
+        type: 'approval_request',
+        runId,
+        request: normalizeApprovalRequest(r),
+      });
+      return;
+    }
+
+    if ((m.type === 'approval_resolved' || m.type === 'approval_expired' || m.type === 'approval_aborted')
+      && m.request && typeof m.request === 'object') {
+      const r = m.request as Record<string, unknown>;
+      const requestId = typeof r.id === 'string' ? r.id : '';
+      if (!requestId) return;
+      pendingApprovals.delete(requestId);
+      const decision = (m as { decision?: Record<string, unknown> }).decision;
+      const outcome = (decision && typeof decision.outcome === 'string'
+        ? decision.outcome
+        : m.type === 'approval_expired' ? 'timeout' : 'aborted') as
+        'approved' | 'rejected' | 'timeout' | 'aborted';
+      broadcast({
+        type: 'approval_resolved',
+        runId,
+        requestId,
+        outcome,
+        choice: decision && typeof decision.choice === 'string' ? decision.choice : undefined,
+      });
+    }
+  });
+
+  ws.addEventListener('error', (err) => {
+    console.error('[approval-bridge] socket error:', err);
+  });
+
+  ws.addEventListener('close', () => {
+    if (approvalSocket === ws) approvalSocket = null;
+  });
+
+  approvalSocket = ws;
+}
+
+function closeApprovalBridge(): void {
+  if (approvalSocket) {
+    try { approvalSocket.close(); } catch { /* ignore */ }
+    approvalSocket = null;
+  }
+  pendingApprovals.clear();
+}
+
+function normalizeApprovalRequest(r: Record<string, unknown>): {
+  id: string; taskId: string; trackId?: string; message: string; options: string[];
+  createdAt: string; timeoutMs: number; metadata?: Record<string, unknown>;
+} {
+  return {
+    id: String(r.id ?? ''),
+    taskId: String(r.taskId ?? ''),
+    trackId: typeof r.trackId === 'string' ? r.trackId : undefined,
+    message: String(r.message ?? ''),
+    options: Array.isArray(r.options) ? (r.options as unknown[]).map(String) : [],
+    createdAt: String(r.createdAt ?? ''),
+    timeoutMs: typeof r.timeoutMs === 'number' ? r.timeoutMs : 0,
+    metadata: r.metadata && typeof r.metadata === 'object'
+      ? (r.metadata as Record<string, unknown>)
+      : undefined,
+  };
+}
+
 // ── Approval (F3) ──
-// POST a decision for a pending approval request. This endpoint is wired
-// optimistically: it always broadcasts an `approval_resolved` SSE event so
-// the UI can close dialogs. The actual SDK-side ApprovalGateway.resolve()
-// wiring requires the CLI to expose a control channel; this is tracked as a
-// TODO until the CLI gains a JSON control protocol.
+// POST a decision for a pending approval request. The decision is forwarded
+// to the running CLI via the WebSocket bridge opened in openApprovalBridge()
+// (which the SDK's attachWebSocketApprovalAdapter serves). The SDK emits an
+// `approval_resolved` back through the bridge which triggers an SSE
+// broadcast to all editor clients — so we do NOT pre-emptively broadcast
+// here to avoid double-fire.
 app.post('/api/run/approval/:requestId', (req, res) => {
   const { requestId } = req.params;
-  const { outcome, choice } = req.body ?? {};
+  const { outcome, choice, reason, actor } = req.body ?? {};
   if (outcome !== 'approved' && outcome !== 'rejected') {
     return res.status(400).json({ error: 'outcome must be approved|rejected' });
   }
-  const pending = pendingApprovals.get(requestId);
-  const runId = pending?.runId ?? activeRunId ?? 'unknown';
-  pendingApprovals.delete(requestId);
-  // TODO: forward the decision to the running CLI via a control channel
-  // (stdin JSON protocol or a UDS). Today we only broadcast back to the UI.
-  broadcast({ type: 'approval_resolved', runId, requestId, outcome, choice });
-  res.json({ ok: true, stubbed: true });
+  if (!approvalSocket || approvalSocket.readyState !== WebSocket.OPEN) {
+    return res.status(503).json({
+      error: 'approval bridge not connected — CLI not running or not yet ready',
+    });
+  }
+  try {
+    approvalSocket.send(JSON.stringify({
+      type: 'resolve',
+      approvalId: requestId,
+      outcome,
+      choice,
+      reason,
+      actor: actor ?? 'editor',
+    }));
+  } catch (err: unknown) {
+    return res.status(500).json({
+      error: `failed to forward decision: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+  res.json({ ok: true });
 });
 
 // ── Run History (F8) ──

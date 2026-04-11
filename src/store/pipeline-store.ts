@@ -1,6 +1,17 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, RevisionConflictError } from '../api/client';
 import type { ServerState, RawPipelineConfig, RawTrackConfig, RawTaskConfig, ValidationError, DagEdge, PluginRegistry } from '../api/client';
+
+/**
+ * User-facing toast shown when a mutation is rejected with HTTP 409 because
+ * the client's observed revision is stale. The store reconciles by adopting
+ * `currentState` from the error payload and surfacing this message so the
+ * user knows their edit was dropped and the UI now reflects the latest
+ * authoritative server truth. We intentionally do NOT auto-retry the
+ * mutation — the new base state may invalidate it.
+ */
+const REVISION_CONFLICT_MESSAGE =
+  'Your change was rejected — another client updated the pipeline first. Reloaded to the latest version; please retry if needed.';
 
 export interface TaskPosition { x: number; }
 
@@ -168,6 +179,21 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       await api.saveLayout(obj);
       set({ layoutDirty: false });
     } catch (e) {
+      if (e instanceof RevisionConflictError) {
+        // C6: same reconciliation strategy as fire() — adopt the server's
+        // authoritative state, drop history, and surface the conflict toast.
+        // We do NOT rethrow here: callers (e.g. saveFile) treat a resolved
+        // conflict as a terminal state, not a transient failure to retry.
+        applyState(e.currentState);
+        set({
+          isDirty: false,
+          layoutDirty: false,
+          past: [],
+          future: [],
+          errorMessage: REVISION_CONFLICT_MESSAGE,
+        });
+        return;
+      }
       set({ errorMessage: 'Failed to save layout: ' + errorToMessage(e) });
       throw e;
     }
@@ -267,8 +293,36 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       (e) => {
         // Still honor epoch ordering for error reporting — if a later request
         // was dispatched after ours, it will apply its own result and we
-        // should not clobber that with a stale rollback.
+        // should not clobber that with a stale rollback. The same guard
+        // applies to revision-conflict reconciliation below: a newer in-flight
+        // request's response (success or conflict) should win over ours.
         if (myEpoch !== fireEpoch) return;
+
+        if (e instanceof RevisionConflictError) {
+          // C6: server rejected our mutation because our cached revision was
+          // stale. Adopt the authoritative `currentState` returned in the
+          // payload — do NOT restore the pre-mutation snapshot, because the
+          // server's state is NEWER than our snapshot and is the correct
+          // baseline to continue from. A brief UI flicker (optimistic state
+          // → reconciled state) is acceptable and documented.
+          //
+          // We also clear `past`/`future` because the prior undo stack was
+          // relative to a now-stale base config; replaying those entries
+          // against the new baseline would produce confusing results. This
+          // is deliberately aggressive — undo history is per-session UX, not
+          // a source of truth, so dropping it on reconciliation is safer
+          // than letting a stale stack silently corrupt future edits.
+          applyState(e.currentState);
+          set({
+            isDirty: false,
+            layoutDirty: false,
+            past: [],
+            future: [],
+            errorMessage: REVISION_CONFLICT_MESSAGE,
+          });
+          return;
+        }
+
         if (opts?.snapshot) restoreSnapshot(opts.snapshot);
         const prefix = opts?.errorPrefix ?? 'Operation failed';
         set({ errorMessage: `${prefix}: ${errorToMessage(e)}` });
