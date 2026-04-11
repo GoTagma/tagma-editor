@@ -102,7 +102,8 @@ function trackAtY(tracks: readonly RawTrackConfig[], cursorY: number): string | 
 function stepPath(s: Pos, t: Pos) {
   const sx = s.x + TASK_W, sy = s.y + TASK_H / 2;
   const tx = t.x, ty = t.y + TASK_H / 2;
-  return `M${sx} ${sy} H${(sx + tx) / 2} V${ty} H${tx}`;
+  const c = Math.max(40, Math.abs(tx - sx) * 0.5);
+  return `M${sx} ${sy} C${sx + c} ${sy}, ${tx - c} ${ty}, ${tx} ${ty}`;
 }
 
 function toContent(e: { clientX: number; clientY: number }, el: HTMLDivElement) {
@@ -901,8 +902,8 @@ export function BoardCanvas({
               const ex = tp ? tp.x : edgeDrag.mx;
               const ey = tp ? tp.y + TASK_H / 2 : edgeDrag.my;
               if (tp) {
-                const mx2 = (sx + ex) / 2;
-                return <path d={`M${sx} ${sy} H${mx2} V${ey} H${ex}`} fill="none" stroke="#d4845a" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.7} />;
+                const c = Math.max(40, Math.abs(ex - sx) * 0.5);
+                return <path d={`M${sx} ${sy} C${sx + c} ${sy}, ${ex - c} ${ey}, ${ex} ${ey}`} fill="none" stroke="#d4845a" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.7} />;
               }
               return <line x1={sx} y1={sy} x2={ex} y2={ey} stroke="#d4845a" strokeWidth={1} strokeDasharray="4 4" opacity={0.4} />;
             })()}
