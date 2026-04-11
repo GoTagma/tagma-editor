@@ -10,7 +10,7 @@ import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { api } from './api/client';
 import {
   Loader2, AlertCircle, CheckCircle2, X as XIcon,
-  Check, Square, ShieldCheck, LayoutGrid,
+  Check, Square, ShieldCheck,
 } from 'lucide-react';
 
 import { RunView } from './components/run/RunView';
@@ -483,10 +483,88 @@ export function App() {
     return counts;
   }, [runTasks]);
 
-  // Is the run "minimized" — i.e. alive somewhere but the view is not
-  // currently rendered? This drives the editor-side floating indicator.
+  // Is the run "minimized" — alive somewhere but the RunView is not
+  // currently rendered? This drives the Toolbar slot that replaces the
+  // Run button while a run is in flight or freshly terminated.
   const runIsMinimized = !runActive && runStatus !== 'idle';
   const runIsLive = runStatus === 'starting' || runStatus === 'running';
+
+  // Abort-or-dismiss for the Toolbar slot. Aborting a live run goes
+  // through a confirm dialog because it's irreversible; dismissing a
+  // terminal run is a single click.
+  const handleRunStopOrDismiss = useCallback(() => {
+    if (runIsLive) {
+      setConfirmInfo({
+        title: 'Abort run?',
+        details: [
+          'The pipeline is still executing on the server.',
+          'Aborting signals the engine to stop and discards any in-flight tasks.',
+          'Only after this is done can you start a new run.',
+        ],
+        confirmLabel: 'Abort run',
+        danger: true,
+        onConfirm: () => {
+          api.abortRun().catch(() => { /* best effort */ });
+          resetRun();
+        },
+      });
+    } else {
+      resetRun();
+    }
+  }, [runIsLive, resetRun]);
+
+  // Toolbar slot: replaces the Run button while a run is minimized.
+  // Keeps the "one run at a time" contract explicit — the only way to
+  // start another run is to abort/dismiss the current one first, which
+  // prevents accidental multi-instance runs (the server would 409
+  // anyway, but this makes it clear in the UI).
+  const runStatusSlot = useMemo(() => {
+    if (!runIsMinimized) return null;
+    const label =
+      runIsLive ? (runTasks.size > 0
+        ? `Running ${runTaskCounts.success + runTaskCounts.failed + runTaskCounts.timeout + runTaskCounts.skipped}/${runTasks.size}`
+        : 'Running')
+      : runStatus === 'done' ? 'View run'
+      : runStatus === 'aborted' ? 'Run aborted'
+      : 'Run error';
+    const borderClass =
+      runIsLive ? 'border-tagma-ready/50 hover:bg-tagma-ready/5 text-tagma-ready'
+      : runStatus === 'done' ? 'border-tagma-success/50 hover:bg-tagma-success/5 text-tagma-success'
+      : 'border-tagma-error/50 hover:bg-tagma-error/5 text-tagma-error';
+    return (
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={showRun}
+          className={`flex items-center gap-1.5 px-2.5 h-[22px] border text-[10px] font-mono rounded transition-colors ${borderClass}`}
+          title="Return to Run view"
+        >
+          {runIsLive && <Loader2 size={10} className="animate-spin" />}
+          {runStatus === 'done' && <Check size={10} />}
+          {(runStatus === 'aborted' || runStatus === 'error') && <XIcon size={10} />}
+          <span>{label}</span>
+          {runPendingApprovals.size > 0 && (
+            <span className="flex items-center gap-0.5 text-tagma-warning animate-pulse-slow">
+              <ShieldCheck size={9} />
+              {runPendingApprovals.size}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleRunStopOrDismiss}
+          className="flex items-center justify-center h-[22px] w-[22px] border border-tagma-border/60 text-tagma-muted hover:text-tagma-text hover:border-tagma-muted/80 rounded transition-colors"
+          title={runIsLive ? 'Abort run' : 'Dismiss'}
+        >
+          {runIsLive ? <Square size={9} /> : <XIcon size={10} />}
+        </button>
+      </div>
+    );
+  }, [
+    runIsMinimized, runIsLive, runStatus,
+    runTasks.size, runTaskCounts.success, runTaskCounts.failed, runTaskCounts.timeout, runTaskCounts.skipped,
+    runPendingApprovals.size, showRun, handleRunStopOrDismiss,
+  ]);
 
   // Run mode
   if (runActive) {
@@ -542,6 +620,7 @@ export function App() {
           pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
           menus={menus} workspaceItems={workspaceItems}
           onUpdateName={setPipelineName} onRun={handleRun}
+          runStatusSlot={runStatusSlot}
         />
 
       </div>
@@ -794,86 +873,6 @@ export function App() {
       )}
 
       <ErrorToast />
-
-      {/* Minimized-run indicator (§run-minimize).
-          Appears when a run is still alive — or just terminated — but
-          the RunView is not on-screen. Clicking it reopens the view,
-          and the X button resets the run-store when the run is in a
-          terminal state. While the run is live the X aborts first. */}
-      {runIsMinimized && (
-        <div className="fixed bottom-4 right-4 z-[130] animate-fade-in">
-          <div
-            className={`flex items-center gap-2 pl-3 pr-1 py-1.5 border shadow-panel cursor-pointer select-none bg-tagma-surface transition-colors
-              ${runStatus === 'running' || runStatus === 'starting'
-                ? 'border-tagma-ready/50 hover:bg-tagma-ready/5'
-                : runStatus === 'done'
-                  ? 'border-tagma-success/50 hover:bg-tagma-success/5'
-                  : 'border-tagma-error/50 hover:bg-tagma-error/5'}
-            `}
-            onClick={showRun}
-            title="Return to Run view"
-          >
-            {/* Status icon */}
-            {runIsLive && <Loader2 size={12} className="text-tagma-ready animate-spin shrink-0" />}
-            {runStatus === 'done' && <Check size={12} className="text-tagma-success shrink-0" />}
-            {(runStatus === 'aborted' || runStatus === 'error') && <XIcon size={12} className="text-tagma-error shrink-0" />}
-
-            <div className="flex items-center gap-2 text-[10px] font-mono">
-              <LayoutGrid size={11} className="text-tagma-accent" />
-              <span className={`
-                ${runIsLive ? 'text-tagma-ready' : ''}
-                ${runStatus === 'done' ? 'text-tagma-success' : ''}
-                ${runStatus === 'aborted' || runStatus === 'error' ? 'text-tagma-error' : ''}
-              `}>
-                {runIsLive ? 'Run in progress' :
-                  runStatus === 'done' ? 'Run completed' :
-                  runStatus === 'aborted' ? 'Run aborted' :
-                  'Run error'}
-              </span>
-              {runTasks.size > 0 && (
-                <span className="flex items-center gap-1 text-[9px] text-tagma-muted">
-                  {runTaskCounts.success > 0 && <span className="text-tagma-success">{runTaskCounts.success}✓</span>}
-                  {runTaskCounts.failed > 0 && <span className="text-tagma-error">{runTaskCounts.failed}✗</span>}
-                  {runTaskCounts.running > 0 && <span className="text-tagma-ready">{runTaskCounts.running}⟳</span>}
-                  {runTaskCounts.waiting > 0 && <span className="text-tagma-muted">{runTaskCounts.waiting}…</span>}
-                </span>
-              )}
-              {runPendingApprovals.size > 0 && (
-                <span className="flex items-center gap-0.5 text-[9px] text-tagma-warning animate-pulse-slow">
-                  <ShieldCheck size={10} />
-                  {runPendingApprovals.size}
-                </span>
-              )}
-            </div>
-
-            {/* Abort (live) or Close (terminal) */}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (runIsLive) {
-                  setConfirmInfo({
-                    title: 'Abort run?',
-                    details: [
-                      'The pipeline is still executing on the server.',
-                      'Aborting will signal the engine to stop and discard any in-flight tasks.',
-                    ],
-                    confirmLabel: 'Abort run',
-                    danger: true,
-                    onConfirm: () => { api.abortRun().catch(() => { /* best effort */ }); resetRun(); },
-                  });
-                } else {
-                  resetRun();
-                }
-              }}
-              className="p-1 text-tagma-muted hover:text-tagma-text transition-colors"
-              title={runIsLive ? 'Abort run' : 'Dismiss'}
-            >
-              {runIsLive ? <Square size={10} /> : <XIcon size={11} />}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Confirm dialog */}
       {confirmInfo && (

@@ -14,11 +14,18 @@ interface ToolbarProps {
   workspaceItems: DropdownItem[];
   onUpdateName: (name: string) => void;
   onRun: () => void;
+  /**
+   * Optional slot rendered in place of the primary Run button. The
+   * Run view uses this while a run is minimized so the user gets a
+   * clearly-labelled re-enter / abort control instead of a Run button
+   * that would either 409 or silently reopen the existing run.
+   */
+  runStatusSlot?: React.ReactNode;
 }
 
 export function Toolbar({
   pipelineName, yamlPath, workDir, isDirty, errorCount, menus, workspaceItems,
-  onUpdateName, onRun,
+  onUpdateName, onRun, runStatusSlot,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -156,10 +163,12 @@ export function Toolbar({
 
         {workDir && <div className="w-px h-4 bg-tagma-border/60 shrink-0" />}
 
-        <button onClick={onRun} className="btn-primary group shrink-0 rounded">
-          <Play size={11} className="group-hover:scale-110 transition-transform" />
-          <span>Run</span>
-        </button>
+        {runStatusSlot ?? (
+          <button onClick={onRun} className="btn-primary group shrink-0 rounded">
+            <Play size={11} className="group-hover:scale-110 transition-transform" />
+            <span>Run</span>
+          </button>
+        )}
       </div>
     </header>
   );
