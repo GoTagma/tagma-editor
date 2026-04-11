@@ -89,9 +89,8 @@ export function Minimap() {
     void scrollTick;
     const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
     if (!el) return null;
-    const z = getZoom();
-    const vw = el.clientWidth / z;
-    const vh = el.clientHeight / z;
+    const vw = el.clientWidth;
+    const vh = el.clientHeight;
     return {
       x: offsetX + el.scrollLeft * scale,
       y: offsetY + el.scrollTop * scale,
@@ -103,11 +102,10 @@ export function Minimap() {
   const panToMapPoint = useCallback((mapX: number, mapY: number) => {
     const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
     if (!el) return;
-    const z = getZoom();
     const cx = (mapX - offsetX) / scale;
     const cy = (mapY - offsetY) / scale;
-    const vw = el.clientWidth / z;
-    const vh = el.clientHeight / z;
+    const vw = el.clientWidth;
+    const vh = el.clientHeight;
     el.scrollLeft = Math.max(0, cx - vw / 2);
     el.scrollTop = Math.max(0, cy - vh / 2);
   }, [offsetX, offsetY, scale]);
