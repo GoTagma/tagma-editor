@@ -157,7 +157,14 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     },
 
     moveTrackTo: (trackId, toIndex) => {
-      // Optimistically reorder tracks locally before API round-trip
+      // Optimistically reorder tracks locally before API round-trip.
+      // ValidationError paths are JSONPath with numeric indices (e.g.
+      // "tracks[1].tasks[0].prompt"); if we only reorder config.tracks but
+      // leave validationErrors untouched, the index-based attribution in
+      // App.tsx will briefly point errors at the wrong tracks, causing
+      // warning icons to flash on adjacent rows until the server re-validates.
+      // Remap each error's track index through the same permutation so the
+      // attribution stays correct within the same render.
       set((s) => {
         const tracks = s.config.tracks;
         const fromIndex = tracks.findIndex((t) => t.id === trackId);
@@ -166,7 +173,24 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const moved = tracks[fromIndex];
         const newTracks = [...without];
         newTracks.splice(Math.min(toIndex, newTracks.length), 0, moved);
-        return { config: { ...s.config, tracks: newTracks } };
+
+        const newIdxById = new Map<string, number>();
+        newTracks.forEach((t, i) => newIdxById.set(t.id, i));
+        const oldToNew = new Map<number, number>();
+        tracks.forEach((t, oldIdx) => {
+          const n = newIdxById.get(t.id);
+          if (n !== undefined) oldToNew.set(oldIdx, n);
+        });
+
+        const validationErrors = s.validationErrors.map((err) => {
+          const m = err.path.match(/^tracks\[(\d+)\](.*)$/);
+          if (!m) return err;
+          const newIdx = oldToNew.get(parseInt(m[1], 10));
+          if (newIdx === undefined) return err;
+          return { ...err, path: `tracks[${newIdx}]${m[2]}` };
+        });
+
+        return { config: { ...s.config, tracks: newTracks }, validationErrors };
       });
       fire(() => api.reorderTrack(trackId, toIndex));
     },
@@ -199,11 +223,47 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     transferTaskToTrack: (fromTrackId, taskId, toTrackId) => {
       const qidOld = `${fromTrackId}.${taskId}`;
       const qidNew = `${toTrackId}.${taskId}`;
+      // Optimistically move the task between tracks and remap positions + dag
+      // edges so the canvas reflects the new location on the same frame the
+      // pointer is released. Without this, config/dagEdges still reference the
+      // old qid until the server responds, causing connection lines to snap
+      // back to a default grid slot before jumping to the correct position.
       set((s) => {
+        let moved: RawTaskConfig | undefined;
+        const withoutTask = s.config.tracks.map((t) => {
+          if (t.id !== fromTrackId) return t;
+          const remaining: RawTaskConfig[] = [];
+          for (const k of t.tasks) {
+            if (k.id === taskId) moved = k;
+            else remaining.push(k);
+          }
+          return { ...t, tasks: remaining };
+        });
+        if (!moved) return s;
+        const newTracks = withoutTask.map((t) =>
+          t.id === toTrackId ? { ...t, tasks: [...t.tasks, moved!] } : t,
+        );
+
+        // Rename position key unless the new qid was already set (e.g. by a
+        // preceding setTaskPosition call from the drop handler).
         const positions = new Map(s.positions);
-        const pos = positions.get(qidOld);
-        if (pos) { positions.delete(qidOld); positions.set(qidNew, pos); }
-        return { positions, selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId };
+        const oldPos = positions.get(qidOld);
+        if (!positions.has(qidNew) && oldPos) positions.set(qidNew, oldPos);
+        positions.delete(qidOld);
+
+        // Rewrite any dag edge endpoint that pointed at the old qid.
+        const dagEdges = s.dagEdges.map((e) => ({
+          from: e.from === qidOld ? qidNew : e.from,
+          to: e.to === qidOld ? qidNew : e.to,
+        }));
+
+        return {
+          config: { ...s.config, tracks: newTracks },
+          positions,
+          dagEdges,
+          selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId,
+          isDirty: true,
+        };
       });
 
       fire(() => api.transferTask(fromTrackId, taskId, toTrackId));
