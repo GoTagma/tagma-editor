@@ -2,7 +2,7 @@ import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } fr
 import { Map as MapIcon, X } from 'lucide-react';
 import { usePipelineStore } from '../../store/pipeline-store';
 import { getZoom } from '../../utils/zoom';
-import { TASK_W, TASK_H, TRACK_H, BOARD_SCROLL_ID } from './layout-constants';
+import { TASK_W, TASK_H, TRACK_H, TASK_GAP, PAD_LEFT, BOARD_SCROLL_ID } from './layout-constants';
 import type { RawPipelineConfig } from '../../api/client';
 import type { TaskPosition } from '../../store/pipeline-store';
 
@@ -157,18 +157,18 @@ export function Minimap({ scrollElementId = BOARD_SCROLL_ID, config: configProp,
     const out: { x: number; y: number; w: number; h: number; fill: string }[] = [];
     tracks.forEach((track, i) => {
       const fill = track.color || '#64748b';
-      for (const task of track.tasks) {
+      track.tasks.forEach((task, taskIdx) => {
         const qid = `${track.id}.${task.id}`;
-        const pos = positions.get(qid);
-        if (!pos) continue;
+        const stored = positions.get(qid);
+        const x = stored ? stored.x : PAD_LEFT + taskIdx * (TASK_W + TASK_GAP);
         out.push({
-          x: offsetX + pos.x * scale,
+          x: offsetX + x * scale,
           y: offsetY + (i * TRACK_H + (TRACK_H - TASK_H) / 2) * scale,
           w: Math.max(1, TASK_W * scale),
           h: Math.max(1, TASK_H * scale),
           fill,
         });
-      }
+      });
     });
     return out;
   }, [tracks, positions, scale, offsetX, offsetY]);
