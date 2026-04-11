@@ -26,7 +26,7 @@ const FAIL_CFG: Record<string, { icon: React.ReactNode; cls: string; tip: string
 
 function Chip({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <span className={`inline-flex items-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-[14px] ${className}`}>
+    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
       {children}
     </span>
   );
@@ -135,8 +135,6 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
   const hasError = errorMessages && errorMessages.length > 0;
   const perms = track.permissions;
   const fail = track.on_failure ? FAIL_CFG[track.on_failure] : null;
-  const hasMeta = !!track.driver || !!track.model_tier || !!perms || !!fail
-    || (track.middlewares && track.middlewares.length > 0) || !!track.agent_profile;
 
   const [hovered, setHovered] = useState(false);
   const laneRef = useRef<HTMLDivElement>(null);
@@ -185,19 +183,23 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
         </span>
       </div>
 
-      {/* ─── Row 2 (18px): Driver chip · Tier chip · R W X · Failure · MW · Profile ─── */}
-      {hasMeta && (
-        <div className="flex items-center h-[18px] gap-[4px] min-w-0 overflow-hidden">
+      {/* ─── Row 2 (16px): Driver chip · Tier chip · R W X · Failure · MW · Profile ───
+          Wrapped in a subtle rail so meta elements are perceived as living
+          inside a shared container — eliminates cross-track alignment
+          nitpicks even if individual chip widths differ. The rail is
+          always rendered (even when the track has no meta) so every row
+          in the header sidebar has identical vertical structure. */}
+      <div className="flex items-center h-[16px] gap-[4px] min-w-0 overflow-hidden rounded-[2px] bg-black/20 px-[4px]">
           {track.driver && (
-            <Chip className="bg-tagma-accent/8 text-tagma-accent/60">{track.driver}</Chip>
+            <Chip className="bg-tagma-accent/12 text-tagma-accent/70">{track.driver}</Chip>
           )}
           {track.model_tier && (
-            <Chip className={`font-bold ${TIER_CLS[track.model_tier] ?? 'bg-tagma-muted/8 text-tagma-muted/70'}`}>
+            <Chip className={`font-bold ${TIER_CLS[track.model_tier] ?? 'bg-tagma-muted/12 text-tagma-muted/80'}`}>
               {TIER_TEXT[track.model_tier] ?? track.model_tier}
             </Chip>
           )}
           {perms && (
-            <span className="flex items-center h-[14px] gap-[1px]">
+            <span className="inline-flex items-center h-[14px] gap-[1px]">
               {(['read', 'write', 'execute'] as const).map((k) => (
                 <span key={k} className={`text-[7px] font-mono font-bold w-[10px] text-center leading-[14px]
                   ${k === 'read' && perms.read ? 'text-emerald-400' : ''}
@@ -216,15 +218,14 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
             </span>
           )}
           {track.middlewares && track.middlewares.length > 0 && (
-            <Chip className="bg-purple-500/8 text-purple-400/50">mw:{track.middlewares.length}</Chip>
+            <Chip className="bg-purple-500/12 text-purple-400/60">mw:{track.middlewares.length}</Chip>
           )}
           {track.agent_profile && (
-            <span className="text-[7.5px] font-mono text-tagma-muted/35 truncate max-w-[44px] leading-[18px]" title={`Profile: ${track.agent_profile}`}>
+            <span className="inline-flex items-center h-[14px] text-[7.5px] font-mono text-tagma-muted/50 truncate max-w-[44px] leading-[14px]" title={`Profile: ${track.agent_profile}`}>
               {track.agent_profile}
             </span>
           )}
-        </div>
-      )}
+      </div>
 
       {/* ─── Hover tooltip ─── */}
       {hovered && laneRef.current && (

@@ -40,7 +40,7 @@ function resolveField<K extends 'driver' | 'model_tier'>(
 /* ── Tiny pill chip for meta items ── */
 function Chip({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <span className={`inline-flex items-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-none ${className}`}>
+    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
       {children}
     </span>
   );
@@ -203,16 +203,22 @@ export function TaskCard({
     : isEdgeTarget ? 'bg-tagma-accent/4'
     : 'bg-tagma-elevated hover:bg-tagma-elevated/80';
 
-  // Status indicators (compact)
+  // Status indicators — each wrapped in a fixed 10x10 slot so badges
+  // land on the same horizontal grid regardless of which icons appear.
+  const BadgeSlot = ({ children }: { children: React.ReactNode }) => (
+    <span className="inline-flex items-center justify-center w-[10px] h-[10px] shrink-0">
+      {children}
+    </span>
+  );
   const badges: React.ReactNode[] = [];
   if (task.trigger) {
     const I = task.trigger.type === 'file' ? FileSearch : Lock;
-    badges.push(<I key="trg" size={7} className="text-amber-400/80" />);
+    badges.push(<BadgeSlot key="trg"><I size={7} className="text-amber-400/80" /></BadgeSlot>);
   }
-  if (task.timeout) badges.push(<Clock key="to" size={7} className="text-sky-400/70" />);
-  if (task.completion) badges.push(<CheckCircle2 key="ck" size={7} className="text-emerald-400/70" />);
-  if (task.middlewares?.length) badges.push(<Layers key="mw" size={7} className="text-purple-400/70" />);
-  if (task.output) badges.push(<FileOutput key="out" size={7} className="text-tagma-muted/50" />);
+  if (task.timeout) badges.push(<BadgeSlot key="to"><Clock size={7} className="text-sky-400/70" /></BadgeSlot>);
+  if (task.completion) badges.push(<BadgeSlot key="ck"><CheckCircle2 size={7} className="text-emerald-400/70" /></BadgeSlot>);
+  if (task.middlewares?.length) badges.push(<BadgeSlot key="mw"><Layers size={7} className="text-purple-400/70" /></BadgeSlot>);
+  if (task.output) badges.push(<BadgeSlot key="out"><FileOutput size={7} className="text-tagma-muted/50" /></BadgeSlot>);
 
   return (
     <div
@@ -267,20 +273,22 @@ export function TaskCard({
             {badges}
           </span>
         )}
-        {isInvalid && <AlertTriangle size={8} className="text-red-400 shrink-0" />}
+        <span className="inline-flex items-center justify-center w-[10px] h-[10px] shrink-0">
+          {isInvalid && <AlertTriangle size={8} className="text-red-400" />}
+        </span>
       </div>
 
       {/* ─── Row 2: Driver chip · Tier chip · Permissions (prompt/template only) ─── */}
       {!isCommand && (
-        <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden">
+        <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden rounded-[2px] bg-black/20 px-[3px]">
           {driver && (
-            <Chip className="bg-tagma-accent/8 text-tagma-accent/70">{driver}</Chip>
+            <Chip className="bg-tagma-accent/12 text-tagma-accent/80">{driver}</Chip>
           )}
           {tier && (
             <Chip className={`font-bold ${
-              tier === 'high' ? 'bg-blue-500/10 text-blue-400/80'
-              : tier === 'low' ? 'bg-emerald-500/10 text-emerald-400/80'
-              : 'bg-tagma-muted/8 text-tagma-muted/70'
+              tier === 'high' ? 'bg-blue-500/15 text-blue-400/90'
+              : tier === 'low' ? 'bg-emerald-500/15 text-emerald-400/90'
+              : 'bg-tagma-muted/12 text-tagma-muted/80'
             }`}>
               {tier === 'high' ? 'HIGH' : tier === 'medium' ? 'MED' : tier === 'low' ? 'LOW' : tier}
             </Chip>
