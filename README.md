@@ -1,76 +1,81 @@
 # tagma-editor
 
-A visual editor for Tagma, built with React + Vite + Express.
+A visual editor for Tagma, built with React + Vite + Express, running on **Bun**.
 
 ## Requirements
 
-- **Node.js** >= 22
-- **npm** >= 11
+- **Bun** >= 1.3
 
-Check your current versions:
+Check your current version:
 
 ```bash
-node -v
-npm -v
+bun --version
 ```
 
-Upgrade npm if needed:
+Install or upgrade Bun (PowerShell on Windows):
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+Or on macOS / Linux:
 
 ```bash
-npm install -g npm@latest
+curl -fsSL https://bun.sh/install | bash
 ```
 
 ## Getting Started
 
-1. Install dependencies (prefer `npm ci` for a clean install that strictly follows `package-lock.json`):
+1. Install dependencies (uses `bun.lock` for reproducible installs):
 
    ```bash
-   npm ci
+   bun install
    ```
-
-   > On Windows you may hit `EPERM: operation not permitted, unlink ...esbuild.exe`. This usually means the file is locked by another process (a running dev server, your IDE, or antivirus). Close those processes, remove `node_modules`, and try again:
-   >
-   > ```bash
-   > rmdir /s /q node_modules
-   > npm ci
-   > ```
 
 2. Start the development environment (runs the Vite dev server and the Express backend in parallel):
 
    ```bash
-   npm run dev
+   bun run dev
    ```
 
 3. Build the production bundle:
 
    ```bash
-   npm run build
+   bun run build
    ```
 
 4. Run the backend in production mode:
 
    ```bash
-   npm start
+   bun start
    ```
 
 5. Preview the built frontend locally:
 
    ```bash
-   npm run preview
+   bun run preview
+   ```
+
+6. Run the test suite:
+
+   ```bash
+   bun test
    ```
 
 ## Available Scripts
 
 | Script | Description |
 |--------|-------------|
-| `npm run dev` | Run frontend and backend dev servers in parallel |
-| `npm run dev:server` | Run backend only (`tsx watch server/index.ts`) |
-| `npm run dev:client` | Run frontend only (`vite`) |
-| `npm run build` | Build the frontend for production |
-| `npm start` | Start the backend in production mode |
-| `npm run preview` | Preview the production build locally |
+| `bun run dev` | Run frontend and backend dev servers in parallel |
+| `bun run dev:server` | Run backend only (`bun --watch server/index.ts`) |
+| `bun run dev:client` | Run frontend only (`vite`) |
+| `bun run build` | Build the frontend for production |
+| `bun start` | Start the backend in production mode |
+| `bun run preview` | Preview the production build locally |
+| `bun test` | Run the test suite |
 
 ## Notes
 
+- The entire stack (editor server, SDK, CLI, sandbox) runs on Bun. Do not use `npm` or `node` — scripts assume Bun and the server source imports `Bun.*` globals.
 - Task positions are persisted to a sibling `.layout.json` file next to the YAML file, saved on `Ctrl+S`.
 - Command-type task cards automatically hide AI-specific fields.

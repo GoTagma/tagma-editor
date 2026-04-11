@@ -1,9 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'fs';
 import { resolve, dirname, basename, sep, join } from 'path';
-import { execSync } from 'child_process';
 import { tmpdir } from 'os';
+import * as tar from 'tar';
 import yaml from 'js-yaml';
 import {
   createEmptyPipeline,
@@ -474,25 +474,7 @@ function beginWatching(path: string, content: string): void {
 
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 
-/** Build npm proxy flags from system env vars (http_proxy / https_proxy) */
-function npmProxyFlags(): string {
-  const flags: string[] = [];
-  const httpProxy = process.env.http_proxy || process.env.HTTP_PROXY;
-  const httpsProxy = process.env.https_proxy || process.env.HTTPS_PROXY;
-  if (httpProxy) flags.push(`--proxy ${httpProxy}`);
-  if (httpsProxy) flags.push(`--https-proxy ${httpsProxy}`);
-  return flags.join(' ');
-}
-
-/** Check whether npm CLI is available on this machine */
-function hasNpmCli(): boolean {
-  try {
-    execSync('npm --version', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return true;
-  } catch { return false; }
-}
-
-// ── Built-in npm registry installer (no npm CLI required) ──
+// ── Built-in npm registry installer (tarball download, no CLI needed) ──
 
 /** Encode a package name for the npm registry URL */
 function registryUrl(name: string): string {
@@ -503,7 +485,7 @@ function registryUrl(name: string): string {
   return `${NPM_REGISTRY}/${encodeURIComponent(name)}`;
 }
 
-/** Fetch package metadata from npm registry (uses Node.js built-in fetch) */
+/** Fetch package metadata from the npm registry (uses Bun's built-in fetch) */
 async function registryMeta(name: string): Promise<{ version: string; description: string | null; tarball: string }> {
   const res = await fetch(registryUrl(name), {
     headers: { Accept: 'application/json' },
@@ -543,12 +525,10 @@ async function directRegistryInstall(name: string): Promise<void> {
     const destDir = resolve(workDir, 'node_modules', ...parts);
     mkdirSync(destDir, { recursive: true });
 
-    // Extract (tar is built-in on Windows 10+, macOS, Linux)
-    execSync(`tar -xzf "${tgzPath}" -C "${destDir}" --strip-components=1`, {
-      timeout: 30000,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // Extract via pure-JS `tar` so install works on every platform without
+    // needing a `tar` binary on PATH. (Git Bash's GNU tar chokes on Windows
+    // drive letters, and we don't want to depend on the user's environment.)
+    await tar.x({ file: tgzPath, cwd: destDir, strip: 1 });
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -563,28 +543,77 @@ async function directRegistryInstall(name: string): Promise<void> {
 }
 
 /**
- * Install a package: try built-in registry fetch first, fall back to npm CLI.
- * This lets users without npm/bun install @tagma/* plugins directly.
+ * Install a package from the npm registry. Fully self-contained: downloads the
+ * tarball with Bun's built-in fetch and extracts it with the bundled `tar`
+ * package. No external CLI — registry installs work in any environment where
+ * the editor runs, including compiled standalone binaries.
  */
 async function installPackage(name: string): Promise<void> {
   ensureWorkDirPackageJson();
+  await directRegistryInstall(name);
+}
+
+/**
+ * Install a plugin from a local path (directory or .tgz file) via pure
+ * filesystem ops — no package manager CLI required. Returns the package name
+ * that was installed.
+ */
+async function installFromLocalPath(absPath: string): Promise<string> {
+  ensureWorkDirPackageJson();
+  const stat = statSync(absPath);
+
+  // Stage the package contents in a temp dir (for tarballs) or point at the
+  // directory directly. `sourceDir` always contains a top-level package.json.
+  let sourceDir: string;
+  let cleanupTmp: string | null = null;
+
+  if (stat.isDirectory()) {
+    sourceDir = absPath;
+  } else {
+    cleanupTmp = mkdtempSync(join(tmpdir(), 'tagma-local-'));
+    await tar.x({ file: absPath, cwd: cleanupTmp, strip: 1 });
+    sourceDir = cleanupTmp;
+  }
+
   try {
-    await directRegistryInstall(name);
-  } catch (directErr: any) {
-    if (hasNpmCli()) {
-      execSync(`npm install ${name} --legacy-peer-deps ${npmProxyFlags()}`, {
-        cwd: workDir, timeout: 120000, encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return;
+    const srcPkgPath = resolve(sourceDir, 'package.json');
+    if (!existsSync(srcPkgPath)) {
+      throw new Error('Source does not contain a package.json');
     }
-    throw new Error(`${directErr.message}${directErr.cause ? '' : ' (npm CLI not available as fallback)'}`);
+    const srcPkg = JSON.parse(readFileSync(srcPkgPath, 'utf-8'));
+    const pkgName: string | undefined = srcPkg.name;
+    if (!pkgName) {
+      throw new Error('Source package.json has no "name" field');
+    }
+
+    // Copy into the workspace's node_modules.
+    const parts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+    const destDir = resolve(workDir, 'node_modules', ...parts);
+    // Remove any previous copy so we get a clean overwrite.
+    if (existsSync(destDir)) {
+      rmSync(destDir, { recursive: true, force: true });
+    }
+    mkdirSync(destDir, { recursive: true });
+    cpSync(sourceDir, destDir, { recursive: true });
+
+    // Record the dependency in the workspace package.json using a file: spec.
+    const pkgPath = resolve(workDir, 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    pkg.dependencies = pkg.dependencies ?? {};
+    pkg.dependencies[pkgName] = `file:${absPath}`;
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf-8');
+
+    return pkgName;
+  } finally {
+    if (cleanupTmp) {
+      rmSync(cleanupTmp, { recursive: true, force: true });
+    }
   }
 }
 
 /**
  * Uninstall a package: remove from node_modules + package.json.
- * No npm CLI required.
+ * Done via direct filesystem ops — no package manager CLI required.
  */
 function uninstallPackage(name: string): void {
   // Remove from node_modules
@@ -618,7 +647,7 @@ function uninstallPackage(name: string): void {
 /** Set of plugin package names that have been dynamically loaded into the registry this session */
 const loadedPlugins = new Set<string>();
 
-/** Ensure workDir has a package.json so npm install works there */
+/** Ensure workDir has a package.json so the installer has somewhere to record dependencies. */
 function ensureWorkDirPackageJson(): void {
   const pkgPath = resolve(workDir, 'package.json');
   if (!existsSync(pkgPath)) {
@@ -805,7 +834,7 @@ app.post('/api/plugins/install', async (req, res) => {
   }
 });
 
-/** Uninstall a plugin from workDir (no npm CLI required) */
+/** Uninstall a plugin from workDir via direct filesystem ops (no package manager required) */
 app.post('/api/plugins/uninstall', (_req, res) => {
   const { name } = _req.body;
   if (!name || typeof name !== 'string') {
@@ -842,50 +871,8 @@ app.post('/api/plugins/import-local', async (req, res) => {
     return res.status(400).json({ error: `Path does not exist: ${absPath}` });
   }
 
-  // Read package name from local package.json (for directories)
-  let pkgName: string | undefined;
-  const stat = statSync(absPath);
-  if (stat.isDirectory()) {
-    const localPkg = resolve(absPath, 'package.json');
-    if (!existsSync(localPkg)) {
-      return res.status(400).json({ error: 'Directory does not contain a package.json' });
-    }
-    pkgName = JSON.parse(readFileSync(localPkg, 'utf-8')).name;
-  }
-
   try {
-    ensureWorkDirPackageJson();
-    execSync(`npm install "${absPath}" --legacy-peer-deps ${npmProxyFlags()}`, {
-      cwd: workDir,
-      timeout: 120000,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    // For tarballs, discover the package name from what npm actually installed
-    if (!pkgName) {
-      const output = execSync('npm ls --json --depth=0 2>nul', {
-        cwd: workDir, timeout: 10000, encoding: 'utf-8',
-      });
-      const deps = JSON.parse(output).dependencies ?? {};
-      // Find the dependency whose resolved path matches
-      for (const [name, info] of Object.entries<any>(deps)) {
-        if (info.resolved && resolve(info.resolved).startsWith(absPath)) {
-          pkgName = name;
-          break;
-        }
-      }
-      // Fallback: the most recently added dep
-      if (!pkgName) {
-        const names = Object.keys(deps);
-        pkgName = names[names.length - 1];
-      }
-    }
-
-    if (!pkgName) {
-      return res.status(500).json({ error: 'Could not determine package name after install' });
-    }
-
+    const pkgName = await installFromLocalPath(absPath);
     addToPluginManifest(pkgName);
 
     // Load into SDK registry
@@ -1178,11 +1165,12 @@ app.post('/api/fs/reveal', (req, res) => {
   try {
     const dir = statSync(absPath).isDirectory() ? absPath : dirname(absPath);
     if (process.platform === 'win32') {
-      execSync(`explorer /select,"${absPath}"`);
+      // explorer.exe returns exit 1 even on success — don't check result.
+      Bun.spawnSync(['explorer', `/select,${absPath}`]);
     } else if (process.platform === 'darwin') {
-      execSync(`open -R "${absPath}"`);
+      Bun.spawnSync(['open', '-R', absPath]);
     } else {
-      execSync(`xdg-open "${dir}"`);
+      Bun.spawnSync(['xdg-open', dir]);
     }
     res.json({ ok: true });
   } catch (e: any) {

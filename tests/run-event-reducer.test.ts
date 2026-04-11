@@ -7,8 +7,8 @@
 //   C7           runId mismatch dropped
 //
 // Run with:
-//   node --import tsx --test tests/run-event-reducer.test.ts
-// (or `npm test` once a test script is wired in package.json).
+//   bun test tests/run-event-reducer.test.ts
+// (or `bun test` to run the whole suite).
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';

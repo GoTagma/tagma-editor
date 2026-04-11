@@ -1,8 +1,14 @@
 node_modules/
 dist/
+dist-server/
 .env
 .env.*
 !.env.example
 *.log
 .tagma
 .claude
+
+# Legacy npm/yarn/pnpm lockfiles — this project uses bun.lock.
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
