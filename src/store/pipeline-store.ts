@@ -224,9 +224,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       set((s) => {
         const positions = new Map(s.positions);
         positions.set(qualifiedId, { x });
-        return { positions };
+        return { positions, isDirty: true };
       });
-
     },
 
     setWorkDir: async (wd) => {
