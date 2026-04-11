@@ -21,8 +21,8 @@
 //   that every existing mutation handler would have to touch.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { watch, type FSWatcher, readFileSync, statSync, existsSync } from 'fs';
-import { createHash } from 'crypto';
+import { watch, type FSWatcher, readFileSync, statSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 export type ExternalChangeEvent =
   | { type: 'external-change'; path: string; content: string }

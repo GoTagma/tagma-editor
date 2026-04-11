@@ -8,8 +8,7 @@
 // This is "E2E" in the sense that it exercises every reducer path a
 // real run would hit, end-to-end, without any integration surface.
 
-import { test } from 'node:test';
-import { strict as assert } from 'node:assert';
+import { test, expect } from 'bun:test';
 
 import { foldRunEvent, initialRunFoldState, type RunFoldState } from '../src/store/run-event-reducer';
 import type { RunEvent, RunTaskState, ApprovalRequestInfo } from '../src/api/client';
@@ -138,32 +137,32 @@ test('full run flow: start → task transitions → approval → stdout visible 
   const state = replay(events);
 
   // Pipeline reached the "done" terminal state.
-  assert.equal(state.status, 'done');
-  assert.equal(state.runId, 'run_1');
-  assert.equal(state.error, null);
-  assert.equal(state.pendingApprovals.size, 0);
-  assert.equal(state.lastEventSeq, 10);
+  expect(state.status).toBe('done');
+  expect(state.runId).toBe('run_1');
+  expect(state.error).toBeNull();
+  expect(state.pendingApprovals.size).toBe(0);
+  expect(state.lastEventSeq).toBe(10);
 
   // All three tasks have the expected runtime state.
   const t1 = state.tasks.get('track_a.task_1')!;
-  assert.equal(t1.status, 'success');
-  assert.equal(t1.durationMs, 20000);
-  assert.equal(t1.exitCode, 0);
-  assert.equal(t1.stdout, 'planning complete\n- step A\n- step B');
-  // The P0 bug fix: stdout makes it through.
-  assert.ok(t1.stdout.length > 0, 'stdout must be visible after completion (§1.1)');
-  assert.equal(t1.outputPath, '/logs/run_1/task_1.out.txt');
-  assert.equal(t1.sessionId, 'sess_plan_1');
-  assert.equal(t1.resolvedDriver, 'claude-code');
-  assert.equal(t1.resolvedModelTier, 'medium');
+  expect(t1.status).toBe('success');
+  expect(t1.durationMs).toBe(20000);
+  expect(t1.exitCode).toBe(0);
+  expect(t1.stdout).toBe('planning complete\n- step A\n- step B');
+  // The P0 bug fix: stdout must be visible after completion (§1.1).
+  expect(t1.stdout.length).toBeGreaterThan(0);
+  expect(t1.outputPath).toBe('/logs/run_1/task_1.out.txt');
+  expect(t1.sessionId).toBe('sess_plan_1');
+  expect(t1.resolvedDriver).toBe('claude-code');
+  expect(t1.resolvedModelTier).toBe('medium');
 
   const t2 = state.tasks.get('track_a.task_2')!;
-  assert.equal(t2.status, 'success');
-  assert.equal(t2.stdout, 'review passed');
+  expect(t2.status).toBe('success');
+  expect(t2.stdout).toBe('review passed');
 
   const t3 = state.tasks.get('track_a.task_3')!;
-  assert.equal(t3.status, 'success');
-  assert.equal(t3.stdout, 'deployed!');
+  expect(t3.status).toBe('success');
+  expect(t3.stdout).toBe('deployed!');
 });
 
 test('run flow: failure path with stderr visible and status=aborted', () => {
@@ -207,14 +206,14 @@ test('run flow: failure path with stderr visible and status=aborted', () => {
   ];
 
   const state = replay(events);
-  assert.equal(state.status, 'aborted');
+  expect(state.status).toBe('aborted');
   const t1 = state.tasks.get('track_a.task_1')!;
-  assert.equal(t1.status, 'failed');
-  assert.equal(t1.exitCode, 1);
-  assert.equal(t1.stderr, 'ERROR: missing dependency');
-  assert.equal(t1.stderrPath, '/logs/run_fail/task_1.err.txt');
-  assert.equal(state.tasks.get('track_a.task_2')!.status, 'skipped');
-  assert.equal(state.tasks.get('track_a.task_3')!.status, 'skipped');
+  expect(t1.status).toBe('failed');
+  expect(t1.exitCode).toBe(1);
+  expect(t1.stderr).toBe('ERROR: missing dependency');
+  expect(t1.stderrPath).toBe('/logs/run_fail/task_1.err.txt');
+  expect(state.tasks.get('track_a.task_2')!.status).toBe('skipped');
+  expect(state.tasks.get('track_a.task_3')!.status).toBe('skipped');
 });
 
 test('run flow: reconnect mid-run replays buffered events idempotently', () => {
@@ -234,17 +233,17 @@ test('run flow: reconnect mid-run replays buffered events idempotently', () => {
 
   // Apply 1..5 normally.
   let state = replay([runStart, ev2, ev3, ev4, ev5]);
-  assert.equal(state.lastEventSeq, 5);
-  assert.equal(state.tasks.get('track_a.task_1')!.status, 'success');
+  expect(state.lastEventSeq).toBe(5);
+  expect(state.tasks.get('track_a.task_1')!.status).toBe('success');
 
   // Simulated reconnect: server replays 3..5 because client's
-  // Last-Event-ID was 2. Events 3..5 should be no-ops (dropped by
-  // dedupe) because state.lastEventSeq is already 5.
+  // Last-Event-ID was 2. Events 3..5 must be no-ops (dropped by dedupe)
+  // because state.lastEventSeq is already 5 — same reference returned.
   const beforeReplay = state;
   state = foldRunEvent(state, ev3);
   state = foldRunEvent(state, ev4);
   state = foldRunEvent(state, ev5);
-  assert.equal(state, beforeReplay, 'replayed events must be no-ops when already folded');
+  expect(state).toBe(beforeReplay);
 
   // A fresh event with seq 6 still advances normally.
   const ev6: RunEvent = {
@@ -252,8 +251,8 @@ test('run flow: reconnect mid-run replays buffered events idempotently', () => {
     status: 'success', stdout: 'last task done', seq: 6,
   };
   const afterReplay = foldRunEvent(state, ev6);
-  assert.notEqual(afterReplay, state);
-  assert.equal(afterReplay.lastEventSeq, 6);
-  assert.equal(afterReplay.tasks.get('track_a.task_3')!.status, 'success');
-  assert.equal(afterReplay.tasks.get('track_a.task_3')!.stdout, 'last task done');
+  expect(afterReplay).not.toBe(state);
+  expect(afterReplay.lastEventSeq).toBe(6);
+  expect(afterReplay.tasks.get('track_a.task_3')!.status).toBe('success');
+  expect(afterReplay.tasks.get('track_a.task_3')!.stdout).toBe('last task done');
 });

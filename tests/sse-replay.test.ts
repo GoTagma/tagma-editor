@@ -15,8 +15,7 @@
 // /api/run/events handler is broken, and the client's dedupe in
 // run-event-reducer.ts has to compensate for something it shouldn't.
 
-import { test } from 'node:test';
-import { strict as assert } from 'node:assert';
+import { test, expect } from 'bun:test';
 
 interface StampedEvent {
   seq: number;
@@ -67,23 +66,23 @@ test('broadcast assigns monotonic seq numbers starting at 1', () => {
   const e1 = buf.broadcast('run_start', { runId: 'run_x' });
   const e2 = buf.broadcast('task_update', { taskId: 'a.1', status: 'running' });
   const e3 = buf.broadcast('task_update', { taskId: 'a.1', status: 'success' });
-  assert.equal(e1.seq, 1);
-  assert.equal(e2.seq, 2);
-  assert.equal(e3.seq, 3);
-  assert.equal(buf.seq, 3);
+  expect(e1.seq).toBe(1);
+  expect(e2.seq).toBe(2);
+  expect(e3.seq).toBe(3);
+  expect(buf.seq).toBe(3);
 });
 
 test('buffer is bounded: oldest events drop when capacity exceeded', () => {
   const buf = new RunEventBuffer(4);
   for (let i = 0; i < 10; i++) buf.broadcast('task_update', { i });
-  assert.equal(buf.size, 4);
+  expect(buf.size).toBe(4);
 
   // The four surviving events should be the last four broadcast.
   // replayAfter(0) gives us everything currently in the buffer.
   const remaining = buf.replayAfter(0);
-  assert.equal(remaining.length, 4);
-  assert.equal(remaining[0].seq, 7);
-  assert.equal(remaining[3].seq, 10);
+  expect(remaining.length).toBe(4);
+  expect(remaining[0].seq).toBe(7);
+  expect(remaining[3].seq).toBe(10);
 });
 
 test('Last-Event-ID replay returns only events after the supplied seq', () => {
@@ -95,9 +94,9 @@ test('Last-Event-ID replay returns only events after the supplied seq', () => {
 
   // Client reconnects after seeing seq 2.
   const replay = buf.replayAfter(2);
-  assert.equal(replay.length, 2);
-  assert.equal(replay[0].seq, 3);
-  assert.equal(replay[1].seq, 4);
+  expect(replay.length).toBe(2);
+  expect(replay[0].seq).toBe(3);
+  expect(replay[1].seq).toBe(4);
 });
 
 test('Last-Event-ID replay returns empty when client is already current', () => {
@@ -106,7 +105,7 @@ test('Last-Event-ID replay returns empty when client is already current', () => 
   buf.broadcast('task_update', { taskId: 'a.1' });
 
   const replay = buf.replayAfter(2);
-  assert.equal(replay.length, 0);
+  expect(replay.length).toBe(0);
 });
 
 test('Last-Event-ID from a previous run is harmless after reset', () => {
@@ -120,7 +119,7 @@ test('Last-Event-ID from a previous run is harmless after reset', () => {
 
   // New run starts — reset clears the buffer and restarts seq from 1.
   buf.reset();
-  assert.equal(buf.seq, 0);
+  expect(buf.seq).toBe(0);
   buf.broadcast('run_start', { runId: 'run_2' }); // seq 1
   buf.broadcast('task_update', { taskId: 'a.1' }); // seq 2
 
@@ -134,16 +133,16 @@ test('Last-Event-ID from a previous run is harmless after reset', () => {
   // lives in the new buffer as seq 1). That's fine because the client's
   // run_start handler unconditionally resets lastEventSeq.
   const replay = buf.replayAfter(staleLastSeen);
-  assert.equal(replay.length, 0);
+  expect(replay.length).toBe(0);
 
   // After any fresh broadcast (seq advances), the next reconnect with
   // the client's NEW lastSeen (which run_start would have set to 1)
   // replays normally.
   buf.broadcast('task_update', { taskId: 'a.2' }); // seq 3
   const replayAfterRunStart = buf.replayAfter(1);
-  assert.equal(replayAfterRunStart.length, 2);
-  assert.equal(replayAfterRunStart[0].seq, 2);
-  assert.equal(replayAfterRunStart[1].seq, 3);
+  expect(replayAfterRunStart.length).toBe(2);
+  expect(replayAfterRunStart[0].seq).toBe(2);
+  expect(replayAfterRunStart[1].seq).toBe(3);
 });
 
 test('rapid burst of broadcasts preserves order in the replay', () => {
@@ -153,9 +152,9 @@ test('rapid burst of broadcasts preserves order in the replay', () => {
     buf.broadcast('task_update', { taskId: `a.${i}`, order: i });
   }
   const replay = buf.replayAfter(0);
-  assert.equal(replay.length, 51);
+  expect(replay.length).toBe(51);
   // Verify seq monotonicity
   for (let i = 0; i < replay.length; i++) {
-    assert.equal(replay[i].seq, i + 1);
+    expect(replay[i].seq).toBe(i + 1);
   }
 });

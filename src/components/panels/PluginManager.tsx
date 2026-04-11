@@ -22,7 +22,7 @@ type ActionState = { type: 'idle' }
   | { type: 'success'; plugin: string; message: string };
 
 /**
- * Classify an npm / server install error message into a coarse bucket so we
+ * Classify a server install error message into a coarse bucket so we
  * can render a short human hint alongside the raw message. The server already
  * returns the full `Install failed: <stderr>` string — we just pattern-match
  * on well-known substrings.
@@ -217,8 +217,9 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
             <p>
               <span className="text-blue-400 font-medium">Install</span> — writes the package
               name into <code className="font-mono">pipeline.plugins[]</code> in your YAML and
-              runs <code className="font-mono">npm install</code> on the workspace. Persisted;
-              survives reloads and is restored on the next <code>open</code>.
+              downloads the tarball from the npm registry into the workspace&apos;s
+              <code className="font-mono"> node_modules</code>. Persisted; survives reloads
+              and is restored on the next <code>open</code>.
             </p>
             <p>
               <span className="text-blue-400 font-medium">Load</span> — imports an
@@ -406,7 +407,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
                 onClick={() => onInstall(plugin.name)}
                 disabled={disabled}
                 className="p-1 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
-                title="Install — writes to YAML (pipeline.plugins[]) and runs npm install"
+                title="Install — writes to YAML (pipeline.plugins[]) and downloads from the npm registry"
               >
                 <Download size={12} />
               </button>

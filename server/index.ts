@@ -1,8 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'fs';
-import { resolve, dirname, basename, sep, join } from 'path';
-import { tmpdir } from 'os';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { resolve, dirname, basename, sep, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import * as tar from 'tar';
 import yaml from 'js-yaml';
 import {
