@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle, Terminal, MessageSquare, Lock, FileSearch,
   Clock, CheckCircle2, Layers, FileOutput, Package,
+  Loader2, Check, X as XIcon, SkipForward, ShieldOff,
 } from 'lucide-react';
-import type { RawTaskConfig, RawPipelineConfig } from '../../api/client';
+import type { RawTaskConfig, RawPipelineConfig, TaskStatus } from '../../api/client';
 import { getZoom, viewportW, viewportH } from '../../utils/zoom';
 
 interface TaskCardProps {
@@ -21,10 +22,45 @@ interface TaskCardProps {
   isDragging: boolean;
   isTrackDragging: boolean;
   isEdgeTarget: boolean;
-  onPointerDown: (taskId: string, e: React.PointerEvent) => void;
-  onHandlePointerDown: (taskId: string, e: React.PointerEvent) => void;
-  onTargetPointerUp: (taskId: string) => void;
+  onPointerDown?: (taskId: string, e: React.PointerEvent) => void;
+  onHandlePointerDown?: (taskId: string, e: React.PointerEvent) => void;
+  onTargetPointerUp?: (taskId: string) => void;
   onContextMenu?: (taskId: string, e: React.MouseEvent) => void;
+  /**
+   * Read-only mode: disables drag/edge handles and pointer interactions so
+   * the same component can be rendered inside the Run view (where the
+   * pipeline is being executed, not edited).
+   */
+  readOnly?: boolean;
+  /**
+   * Runtime status to overlay on top of the card (Run view). When provided,
+   * the card renders a status bar + optional duration label reflecting the
+   * live task state from the SDK event stream.
+   */
+  runtimeStatus?: TaskStatus;
+  runtimeDurationMs?: number | null;
+  /**
+   * Click handler used by Run view. Only fired when `readOnly` is true;
+   * in edit mode the primary interaction is drag, so clicks are routed
+   * through `onPointerDown` instead.
+   */
+  onClickRun?: (taskId: string) => void;
+}
+
+const RUNTIME_CFG: Record<TaskStatus, { bar: string; bg: string; icon: typeof Check; iconColor: string; label: string }> = {
+  idle:    { bar: '',                   bg: '',                     icon: Clock,       iconColor: '',                     label: '' },
+  waiting: { bar: 'bg-tagma-muted/50',  bg: '',                     icon: Clock,       iconColor: 'text-tagma-muted/60',  label: 'waiting' },
+  running: { bar: 'bg-tagma-ready',     bg: 'bg-tagma-ready/8',     icon: Loader2,     iconColor: 'text-tagma-ready',     label: 'running' },
+  success: { bar: 'bg-tagma-success',   bg: 'bg-tagma-success/8',   icon: Check,       iconColor: 'text-tagma-success',   label: 'done' },
+  failed:  { bar: 'bg-tagma-error',     bg: 'bg-tagma-error/8',     icon: XIcon,       iconColor: 'text-tagma-error',     label: 'failed' },
+  timeout: { bar: 'bg-tagma-warning',   bg: 'bg-tagma-warning/8',   icon: Clock,       iconColor: 'text-tagma-warning',   label: 'timeout' },
+  skipped: { bar: 'bg-tagma-muted/40',  bg: '',                     icon: SkipForward, iconColor: 'text-tagma-muted/50',  label: 'skipped' },
+  blocked: { bar: 'bg-tagma-warning',   bg: 'bg-tagma-warning/8',   icon: ShieldOff,   iconColor: 'text-tagma-warning',   label: 'blocked' },
+};
+
+function formatRuntimeDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function resolveField<K extends 'driver' | 'model_tier'>(
@@ -193,6 +229,7 @@ export function TaskCard({
   task, trackId, pipelineConfig, x, y, w, h,
   isSelected, isInvalid, errorMessages, isDragging, isTrackDragging, isEdgeTarget,
   onPointerDown, onHandlePointerDown, onTargetPointerUp, onContextMenu,
+  readOnly = false, runtimeStatus, runtimeDurationMs, onClickRun,
 }: TaskCardProps) {
   const [hovered, setHovered] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -203,6 +240,13 @@ export function TaskCard({
   const tier = resolveField(task, trackId, pipelineConfig, 'model_tier');
   const track = pipelineConfig.tracks.find((t) => t.id === trackId);
   const perms = task.permissions ?? track?.permissions;
+
+  // Resolve runtime status bar / background (only populated in Run mode when
+  // runtimeStatus is provided). In edit mode this stays empty so the existing
+  // look is unchanged.
+  const runtimeCfg = runtimeStatus ? RUNTIME_CFG[runtimeStatus] : null;
+  const isSkipped = runtimeStatus === 'skipped';
+  const RuntimeIcon = runtimeCfg?.icon ?? null;
 
   const borderColor = isDragging
     ? 'border-tagma-accent'
@@ -216,7 +260,7 @@ export function TaskCard({
     : isInvalid ? 'bg-tagma-error/8'
     : isSelected ? 'bg-tagma-accent/6'
     : isEdgeTarget ? 'bg-tagma-accent/4'
-    : 'bg-tagma-elevated hover:bg-tagma-elevated/80';
+    : (runtimeCfg?.bg ? runtimeCfg.bg : 'bg-tagma-elevated hover:bg-tagma-elevated/80');
 
   // Status indicators — each wrapped in a fixed 10x10 slot so badges
   // land on the same horizontal grid regardless of which icons appear.
@@ -235,6 +279,10 @@ export function TaskCard({
   if (task.middlewares?.length) badges.push(<BadgeSlot key="mw"><Layers size={7} className="text-purple-400/70" /></BadgeSlot>);
   if (task.output) badges.push(<BadgeSlot key="out"><FileOutput size={7} className="text-tagma-muted/50" /></BadgeSlot>);
 
+  const cursorClass = readOnly
+    ? 'cursor-pointer'
+    : (isDragging ? 'cursor-grabbing' : 'cursor-grab active:cursor-grabbing');
+
   return (
     <div
       ref={cardRef}
@@ -242,33 +290,52 @@ export function TaskCard({
       className={`
         absolute border select-none flex flex-col justify-center px-2.5 rounded-[2px]
         ${borderColor} ${bgColor}
-        ${isDragging ? 'z-30 shadow-glow-accent cursor-grabbing' : 'cursor-grab active:cursor-grabbing'}
+        ${isDragging ? 'z-30 shadow-glow-accent' : ''}
+        ${cursorClass}
       `}
       style={{
         left: x, top: y, width: w, height: h,
         transition: (isDragging || isTrackDragging) ? 'none' : 'left 100ms ease-out, top 100ms ease-out',
       }}
-      onPointerDown={(e) => { if (e.button === 0) onPointerDown(task.id, e); }}
-      onPointerUp={() => onTargetPointerUp(task.id)}
-      onContextMenu={(e) => { if (onContextMenu) onContextMenu(task.id, e); }}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        if (readOnly) {
+          e.stopPropagation();
+          onClickRun?.(task.id);
+          return;
+        }
+        onPointerDown?.(task.id, e);
+      }}
+      onPointerUp={() => { if (!readOnly) onTargetPointerUp?.(task.id); }}
+      onContextMenu={(e) => { if (!readOnly && onContextMenu) onContextMenu(task.id, e); }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Connection handles */}
-      <div className={`
-        absolute -left-[4px] top-1/2 -translate-y-1/2 w-[8px] h-[8px]
-        border bg-tagma-bg transition-all duration-75
-        ${isEdgeTarget ? 'border-tagma-accent bg-tagma-accent scale-125' : 'border-tagma-border hover:border-tagma-accent'}
-      `} />
-      <div
-        className="absolute -right-[4px] top-1/2 -translate-y-1/2 w-[8px] h-[8px]
-          border border-tagma-border bg-tagma-bg cursor-crosshair
-          hover:border-tagma-accent hover:bg-tagma-accent/20 transition-all duration-75"
-        onPointerDown={(e) => { if (e.button === 0) { e.stopPropagation(); onHandlePointerDown(task.id, e); } }}
-      />
-      {isSelected && <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-tagma-error' : 'bg-tagma-accent'}`} />}
+      {/* Connection handles — hidden in read-only mode since they are
+          purely for drag-to-link interactions. */}
+      {!readOnly && (
+        <>
+          <div className={`
+            absolute -left-[4px] top-1/2 -translate-y-1/2 w-[8px] h-[8px]
+            border bg-tagma-bg transition-all duration-75
+            ${isEdgeTarget ? 'border-tagma-accent bg-tagma-accent scale-125' : 'border-tagma-border hover:border-tagma-accent'}
+          `} />
+          <div
+            className="absolute -right-[4px] top-1/2 -translate-y-1/2 w-[8px] h-[8px]
+              border border-tagma-border bg-tagma-bg cursor-crosshair
+              hover:border-tagma-accent hover:bg-tagma-accent/20 transition-all duration-75"
+            onPointerDown={(e) => { if (e.button === 0) { e.stopPropagation(); onHandlePointerDown?.(task.id, e); } }}
+          />
+        </>
+      )}
+      {/* Left indicator bar: selection (edit mode) or runtime status (run mode). */}
+      {isSelected
+        ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-tagma-error' : 'bg-tagma-accent'}`} />
+        : runtimeCfg?.bar
+          ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${runtimeCfg.bar}`} />
+          : null}
 
-      {/* ─── Row 1: Type icon · Name · Status badges ─── */}
+      {/* ─── Row 1: Type icon · Name · Status badges · Runtime status ─── */}
       <div className="flex items-center h-[24px] gap-[6px] pointer-events-none min-w-0 overflow-hidden">
         <span className={`inline-flex items-center justify-center w-[16px] h-[16px] rounded-[2px] shrink-0
           ${isTemplate ? 'bg-purple-500/10' : isCommand ? 'bg-sky-500/10' : 'bg-tagma-muted/8'}`}>
@@ -279,13 +346,30 @@ export function TaskCard({
               : <MessageSquare size={9} className="text-tagma-muted/60" />}
         </span>
 
-        <span className="text-[10px] font-medium text-tagma-text truncate flex-1 leading-[24px]">
+        <span className={`text-[10px] font-medium truncate flex-1 leading-[24px] ${isSkipped ? 'text-tagma-muted/50 line-through' : 'text-tagma-text'}`}>
           {task.name || task.id}
         </span>
 
         {badges.length > 0 && (
           <span className="flex items-center gap-[3px] shrink-0">
             {badges}
+          </span>
+        )}
+
+        {/* Runtime status icon + duration (Run mode only). Mutually exclusive
+            with the error indicator below — a task that validated cleanly
+            won't be invalid while running, and an invalid task never runs. */}
+        {runtimeCfg && RuntimeIcon && runtimeCfg.label && (
+          <span className="flex items-center gap-[3px] shrink-0" title={runtimeCfg.label}>
+            <RuntimeIcon
+              size={9}
+              className={`${runtimeCfg.iconColor} ${runtimeStatus === 'running' ? 'animate-spin' : ''}`}
+            />
+            {runtimeDurationMs != null && (
+              <span className={`text-[8px] font-mono tabular-nums ${runtimeCfg.iconColor}`}>
+                {formatRuntimeDuration(runtimeDurationMs)}
+              </span>
+            )}
           </span>
         )}
         <span

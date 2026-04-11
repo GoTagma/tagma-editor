@@ -16,13 +16,18 @@ interface RunStoreState {
   logs: string[];
   error: string | null;
   selectedTaskId: string | null;
+  selectedTrackId: string | null;
   snapshot: RawPipelineConfig | null;
   // Approvals (F3) — requests keyed by requestId, plus a queue for UI display.
   pendingApprovals: Map<string, ApprovalRequestInfo>;
+  // Monotonic per-run event sequence last observed from the server.
+  // Used by the SSE layer to dedupe replays on reconnect (§1.3).
+  lastEventSeq: number;
 
   startRun: (config: RawPipelineConfig) => Promise<void>;
   abortRun: () => Promise<void>;
   selectTask: (taskId: string | null) => void;
+  selectTrack: (trackId: string | null) => void;
   resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) => Promise<void>;
   reset: () => void;
 }
@@ -69,6 +74,13 @@ export const useRunStore = create<RunStoreState>((set, get) => {
             exitCode: event.exitCode ?? existing.exitCode,
             stdout: event.stdout ?? existing.stdout,
             stderr: event.stderr ?? existing.stderr,
+            outputPath: event.outputPath ?? existing.outputPath,
+            stderrPath: event.stderrPath ?? existing.stderrPath,
+            sessionId: event.sessionId ?? existing.sessionId,
+            normalizedOutput: event.normalizedOutput ?? existing.normalizedOutput,
+            resolvedDriver: event.resolvedDriver ?? existing.resolvedDriver,
+            resolvedModelTier: event.resolvedModelTier ?? existing.resolvedModelTier,
+            resolvedPermissions: event.resolvedPermissions ?? existing.resolvedPermissions,
           });
         }
         set({ tasks });
@@ -91,8 +103,18 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       }
       case 'approval_resolved': {
         const pending = new Map(state.pendingApprovals);
+        const wasPending = pending.has(event.requestId);
         pending.delete(event.requestId);
-        set({ pendingApprovals: pending });
+        // Surface timeout / aborted outcomes to the user via the error
+        // channel so they know an approval silently expired. Approved /
+        // rejected are user-driven so don't need a banner.
+        const patch: Partial<RunStoreState> = { pendingApprovals: pending };
+        if (wasPending && (event.outcome === 'timeout' || event.outcome === 'aborted')) {
+          patch.error = event.outcome === 'timeout'
+            ? `Approval timed out (${event.requestId})`
+            : `Approval aborted (${event.requestId})`;
+        }
+        set(patch);
         break;
       }
     }
@@ -106,8 +128,10 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     logs: [],
     error: null,
     selectedTaskId: null,
+    selectedTrackId: null,
     snapshot: null,
     pendingApprovals: new Map(),
+    lastEventSeq: 0,
 
     startRun: async (config) => {
       set({
@@ -117,8 +141,10 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         logs: [],
         error: null,
         selectedTaskId: null,
+        selectedTrackId: null,
         snapshot: config,
         pendingApprovals: new Map(),
+        lastEventSeq: 0,
       });
       // Subscribe to SSE events before starting
       unsubscribe = api.subscribeRunEvents(handleEvent);
@@ -139,7 +165,9 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       set({ status: 'aborted' });
     },
 
-    selectTask: (taskId) => set({ selectedTaskId: taskId }),
+    selectTask: (taskId) => set({ selectedTaskId: taskId, selectedTrackId: null }),
+
+    selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
 
     resolveApproval: async (requestId, outcome, choice) => {
       // Optimistically remove from queue; if the server fails we can

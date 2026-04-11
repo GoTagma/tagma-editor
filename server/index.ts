@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { resolve, dirname, basename, sep, join } from 'path';
-import { execSync, spawn, type ChildProcess } from 'child_process';
+import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import yaml from 'js-yaml';
 import {
@@ -22,13 +22,20 @@ import {
   bootstrapBuiltins,
   listRegistered,
   loadPlugins,
+  loadPipeline,
+  runPipeline,
+  InMemoryApprovalGateway,
   hasHandler,
   getHandler,
   registerPlugin,
   discoverTemplates,
   loadTemplateManifest,
 } from '@tagma/sdk';
-import type { TemplateManifest } from '@tagma/sdk';
+import type {
+  TemplateManifest,
+  PipelineEvent,
+  EngineResult,
+} from '@tagma/sdk';
 import type {
   DriverPlugin,
   DriverCapabilities,
@@ -37,6 +44,11 @@ import type {
   MiddlewarePlugin,
   PluginSchema as SdkPluginSchema,
   PluginParamDef,
+  TaskState,
+  TaskStatus,
+  ApprovalRequest,
+  ApprovalEvent,
+  Permissions,
 } from '@tagma/types';
 import {
   startWatching as startFileWatching,
@@ -1417,27 +1429,62 @@ app.post('/api/demo', (_req, res) => {
 
 // ═══ Pipeline Run ═══
 
+interface RunInitialTask {
+  taskId: string;
+  trackId: string;
+  taskName: string;
+  status: TaskStatus;
+  startedAt: null;
+  finishedAt: null;
+  durationMs: null;
+  exitCode: null;
+  stdout: string;
+  stderr: string;
+  outputPath: null;
+  stderrPath: null;
+  sessionId: null;
+  normalizedOutput: null;
+  resolvedDriver: null;
+  resolvedModelTier: null;
+  resolvedPermissions: null;
+}
+
 type RunEvent =
-  | { type: 'run_start'; runId: string; tasks: { taskId: string; trackId: string; taskName: string; status: string; startedAt: null; finishedAt: null; durationMs: null; exitCode: null; stdout: string; stderr: string }[] }
-  | { type: 'task_update'; runId: string; taskId: string; status: string; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | { type: 'run_start'; runId: string; tasks: RunInitialTask[] }
+  | {
+      type: 'task_update';
+      runId: string;
+      taskId: string;
+      status: TaskStatus;
+      startedAt?: string;
+      finishedAt?: string;
+      durationMs?: number;
+      exitCode?: number;
+      stdout?: string;
+      stderr?: string;
+      outputPath?: string | null;
+      stderrPath?: string | null;
+      sessionId?: string | null;
+      normalizedOutput?: string | null;
+      resolvedDriver?: string | null;
+      resolvedModelTier?: string | null;
+      resolvedPermissions?: Permissions | null;
+    }
   | { type: 'run_end'; runId: string; success: boolean }
   | { type: 'run_error'; runId: string; error: string }
   | { type: 'log'; runId: string; line: string }
   | { type: 'approval_request'; runId: string; request: { id: string; taskId: string; trackId?: string; message: string; options: string[]; createdAt: string; timeoutMs: number; metadata?: Record<string, unknown> } }
   | { type: 'approval_resolved'; runId: string; requestId: string; outcome: 'approved' | 'rejected' | 'timeout' | 'aborted'; choice?: string };
 
-let runProcess: ChildProcess | null = null;
+// ── In-process pipeline run state ──
+// We embed the SDK directly instead of spawning `tagma-cli` as a subprocess
+// and regex-parsing its stdout. The server becomes the authoritative host
+// for the pipeline so the full TaskState (including TaskResult with stdout,
+// stderr, outputPath, sessionId, etc.) is available on every event.
+let activeRunAbort: AbortController | null = null;
+let activeRunGateway: InMemoryApprovalGateway | null = null;
 let activeRunId: string | null = null;
 const sseClients = new Set<import('express').Response>();
-// Pending approval requests keyed by requestId. Populated when the SDK/CLI emits
-// an approval_request event; resolved when the editor POSTs a decision.
-const pendingApprovals = new Map<string, { runId: string; taskId: string }>();
-// F3: WebSocket connection to the running CLI's approval endpoint. The SDK's
-// `attachWebSocketApprovalAdapter` opens a ws server on a port logged to the
-// CLI stdout; we parse that line, connect as a client, and bridge messages:
-//   editor UI → POST /api/run/approval/:id → ws.send({type:'resolve',...})
-//   CLI → ws message {type:'approval_requested',...} → broadcast SSE to UI
-let approvalSocket: WebSocket | null = null;
 
 function broadcast(event: RunEvent) {
   const data = JSON.stringify(event);
@@ -1457,286 +1504,219 @@ app.get('/api/run/events', (_req, res) => {
   _req.on('close', () => sseClients.delete(res));
 });
 
-app.post('/api/run/start', (_req, res) => {
-  if (runProcess) {
+app.post('/api/run/start', async (_req, res) => {
+  if (activeRunAbort) {
     return res.status(409).json({ error: 'A run is already in progress' });
   }
 
-  // Save current config to a temp YAML file
+  // Serialize the in-memory editor config to YAML and hand it to the SDK.
+  // The round-trip is intentional: it exercises the same load path the CLI
+  // uses (parse + template expansion + inheritance resolution) so the run
+  // sees exactly what YAML-driven consumers would see.
   const content = serializePipeline(config);
-  const tmpDir = mkdtempSync(join(tmpdir(), 'tagma-run-'));
-  const tmpYaml = join(tmpDir, 'pipeline.yaml');
-  writeFileSync(tmpYaml, content, 'utf-8');
+  const cwd = workDir || process.cwd();
 
-  // Build initial task list from current config
-  const initialTasks = config.tracks.flatMap((track) =>
+  let pipelineConfig;
+  try {
+    pipelineConfig = await loadPipeline(content, cwd);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(400).json({ error: `Configuration error: ${message}` });
+  }
+
+  // Build initial task list from the raw (editor-side) config. This keeps
+  // the qualified taskIds aligned with the pipeline DAG that the SDK
+  // produces internally (`{trackId}.{taskId}`).
+  const initialTasks: RunInitialTask[] = config.tracks.flatMap((track) =>
     track.tasks.map((task) => ({
       taskId: `${track.id}.${task.id}`,
       trackId: track.id,
       taskName: task.name || task.id,
-      status: 'waiting' as const,
+      status: 'waiting',
       startedAt: null,
       finishedAt: null,
       durationMs: null,
       exitCode: null,
       stdout: '',
       stderr: '',
-    }))
+      outputPath: null,
+      stderrPath: null,
+      sessionId: null,
+      normalizedOutput: null,
+      resolvedDriver: null,
+      resolvedModelTier: null,
+      resolvedPermissions: null,
+    })),
   );
 
-  // Determine the CLI path
-  const cliPath = resolve(import.meta.dirname ?? '.', '../../tagma-cli/src/index.ts');
-  const cwd = workDir || process.cwd();
-
-  // Spawn bun with the CLI. `--ws-port 0` asks the SDK's WebSocket approval
-  // adapter to bind to a random free port and log it to stdout so we can
-  // connect as a client and bridge approval messages both ways (F3).
-  const child = spawn('bun', ['run', cliPath, tmpYaml, '--cwd', cwd, '--ws-port', '0'], {
-    cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
-  });
-
-  runProcess = child;
-
-  // Generate a run ID
   const runId = `run_${Date.now().toString(36)}`;
+  const abortController = new AbortController();
+  const gateway = new InMemoryApprovalGateway();
+
+  activeRunAbort = abortController;
+  activeRunGateway = gateway;
   activeRunId = runId;
+
+  // Subscribe to approval gateway events and forward them to the SSE
+  // clients. This replaces the old WebSocket-bridge-to-CLI path — the
+  // gateway lives in-process now so there's no IPC hop.
+  const unsubscribeApprovals = gateway.subscribe((event: ApprovalEvent) => {
+    if (event.type === 'requested') {
+      broadcast({
+        type: 'approval_request',
+        runId,
+        request: approvalRequestToWire(event.request),
+      });
+      return;
+    }
+    if (event.type === 'resolved' || event.type === 'expired' || event.type === 'aborted') {
+      const outcome = event.type === 'resolved'
+        ? event.decision.outcome
+        : event.type === 'expired' ? 'timeout' : 'aborted';
+      broadcast({
+        type: 'approval_resolved',
+        runId,
+        requestId: event.request.id,
+        outcome: outcome as 'approved' | 'rejected' | 'timeout' | 'aborted',
+        choice: event.type === 'resolved' ? event.decision.choice : undefined,
+      });
+    }
+  });
 
   broadcast({ type: 'run_start', runId, tasks: initialTasks });
 
-  function parseLine(line: string) {
-    // F3: first watch for the SDK's approval WebSocket banner line so we can
-    // open a client bridge and forward approval decisions both directions.
-    const wsMatch = line.match(/Approval WebSocket listening on ws:\/\/([^:\s]+):(\d+)/);
-    if (wsMatch && !approvalSocket) {
-      const host = wsMatch[1];
-      const port = parseInt(wsMatch[2], 10);
-      openApprovalBridge(host, port, runId);
-      return;
+  // Kick off the run in the background. Event translation happens in
+  // onEvent; errors and finalization flow through .then/.catch/.finally.
+  runPipeline(pipelineConfig, cwd, {
+    approvalGateway: gateway,
+    signal: abortController.signal,
+    onEvent: (event: PipelineEvent) => {
+      if (event.type === 'task_status_change') {
+        broadcast(taskStateChangeToWire(runId, event.taskId, event.status, event.state));
+      }
+      // pipeline_start and pipeline_end are implicit in run_start / run_end
+      // — we already broadcast run_start above, and run_end is emitted in
+      // the .then/.catch below so we can include the actual success flag.
+    },
+  }).then((result: EngineResult) => {
+    broadcast({ type: 'run_end', runId, success: result.success });
+  }).catch((err: unknown) => {
+    // AbortError from an explicit abort() → emit run_end with success:false
+    // so the UI transitions to "Aborted" rather than "Error".
+    const isAbort = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+    if (isAbort) {
+      broadcast({ type: 'run_end', runId, success: false });
+    } else {
+      const message = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'run_error', runId, error: message });
     }
-
-    // Engine log format: "HH:MM:SS.mmm [task:<qid>] <message>"
-    // info goes to stdout, error goes to stderr (with "ERROR: " prefix in msg)
-    const taskMatch = line.match(/\[task:([^\]]+)\]\s+(.*)/);
-    if (!taskMatch) return;
-    const [, taskId, rawMsg] = taskMatch;
-    // Strip "ERROR: " prefix from stderr lines
-    const msg = rawMsg.replace(/^ERROR:\s*/, '');
-
-    if (msg.startsWith('running')) {
-      broadcast({ type: 'task_update', runId, taskId, status: 'running', startedAt: new Date().toISOString() });
-    } else if (msg.startsWith('success')) {
-      const durMatch = msg.match(/\((\d+\.?\d*)s\)/);
-      const durationMs = durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined;
-      broadcast({ type: 'task_update', runId, taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
-    } else if (msg.match(/^(failed|timeout)/)) {
-      const exitMatch = msg.match(/exit=(-?\d+)/);
-      const durMatch = msg.match(/duration=(\d+\.?\d*)s/);
-      broadcast({
-        type: 'task_update', runId, taskId,
-        status: msg.startsWith('timeout') ? 'timeout' : 'failed',
-        finishedAt: new Date().toISOString(),
-        exitCode: exitMatch ? parseInt(exitMatch[1]) : -1,
-        durationMs: durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined,
-      });
-    } else if (msg.startsWith('skipped')) {
-      broadcast({ type: 'task_update', runId, taskId, status: 'skipped', finishedAt: new Date().toISOString() });
-    } else if (msg.startsWith('blocked')) {
-      broadcast({ type: 'task_update', runId, taskId, status: 'blocked', finishedAt: new Date().toISOString() });
+  }).finally(() => {
+    unsubscribeApprovals();
+    // Abort any dangling approvals so consumers get a deterministic
+    // timeout/aborted event rather than a silent drop.
+    gateway.abortAll('run finished');
+    if (activeRunId === runId) {
+      activeRunAbort = null;
+      activeRunGateway = null;
+      activeRunId = null;
     }
-  }
-
-  child.stdout?.on('data', (chunk: Buffer) => {
-    for (const line of chunk.toString().split('\n').filter(Boolean)) {
-      parseLine(line);
-    }
-  });
-
-  child.stderr?.on('data', (chunk: Buffer) => {
-    for (const line of chunk.toString().split('\n').filter(Boolean)) {
-      parseLine(line);
-    }
-  });
-
-  child.on('close', (code) => {
-    broadcast({ type: 'run_end', runId, success: code === 0 });
-    runProcess = null;
-    if (activeRunId === runId) activeRunId = null;
-    closeApprovalBridge();
-    // Clean up temp files
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-  });
-
-  child.on('error', (err) => {
-    broadcast({ type: 'run_error', runId, error: err.message });
-    runProcess = null;
-    if (activeRunId === runId) activeRunId = null;
-    closeApprovalBridge();
   });
 
   res.json({ ok: true, runId });
 });
 
 app.post('/api/run/abort', (_req, res) => {
-  if (!runProcess) {
+  if (!activeRunAbort) {
     return res.status(404).json({ error: 'No run in progress' });
   }
-  const runId = activeRunId ?? 'unknown';
-  runProcess.kill('SIGTERM');
-  runProcess = null;
-  activeRunId = null;
-  closeApprovalBridge();
-  broadcast({ type: 'run_end', runId, success: false });
+  activeRunAbort.abort();
+  // run_end (success: false) is emitted in the runPipeline chain's .catch
+  // once the engine actually tears down, so we do not broadcast it here —
+  // doing so would race with the engine's own final events.
   res.json({ ok: true });
 });
 
-// ── F3: Approval WebSocket bridge ──
-//
-// Opens a WebSocket client to the SDK's approval endpoint (spawned by the CLI
-// with `--ws-port 0` and announced via a stdout banner). Forwards approval
-// events from SDK → editor SSE and editor decisions → SDK via the socket.
-function openApprovalBridge(host: string, port: number, runId: string): void {
-  closeApprovalBridge();
-  const url = `ws://${host}:${port}`;
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(url);
-  } catch (err) {
-    console.error('[approval-bridge] failed to open WebSocket:', err);
-    return;
-  }
-
-  ws.addEventListener('open', () => {
-    // No-op — the SDK immediately sends a `pending` snapshot which we handle below.
-  });
-
-  ws.addEventListener('message', (ev: MessageEvent) => {
-    let msg: unknown;
-    try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)); }
-    catch { return; }
-    if (!msg || typeof msg !== 'object') return;
-    const m = msg as Record<string, unknown>;
-
-    if (m.type === 'pending' && Array.isArray(m.requests)) {
-      for (const r of m.requests as Array<Record<string, unknown>>) {
-        if (typeof r.id !== 'string') continue;
-        pendingApprovals.set(r.id, {
-          runId,
-          taskId: typeof r.taskId === 'string' ? r.taskId : '',
-        });
-        broadcast({
-          type: 'approval_request',
-          runId,
-          request: normalizeApprovalRequest(r),
-        });
-      }
-      return;
-    }
-
-    if (m.type === 'approval_requested' && m.request && typeof m.request === 'object') {
-      const r = m.request as Record<string, unknown>;
-      if (typeof r.id !== 'string') return;
-      pendingApprovals.set(r.id, {
-        runId,
-        taskId: typeof r.taskId === 'string' ? r.taskId : '',
-      });
-      broadcast({
-        type: 'approval_request',
-        runId,
-        request: normalizeApprovalRequest(r),
-      });
-      return;
-    }
-
-    if ((m.type === 'approval_resolved' || m.type === 'approval_expired' || m.type === 'approval_aborted')
-      && m.request && typeof m.request === 'object') {
-      const r = m.request as Record<string, unknown>;
-      const requestId = typeof r.id === 'string' ? r.id : '';
-      if (!requestId) return;
-      pendingApprovals.delete(requestId);
-      const decision = (m as { decision?: Record<string, unknown> }).decision;
-      const outcome = (decision && typeof decision.outcome === 'string'
-        ? decision.outcome
-        : m.type === 'approval_expired' ? 'timeout' : 'aborted') as
-        'approved' | 'rejected' | 'timeout' | 'aborted';
-      broadcast({
-        type: 'approval_resolved',
-        runId,
-        requestId,
-        outcome,
-        choice: decision && typeof decision.choice === 'string' ? decision.choice : undefined,
-      });
-    }
-  });
-
-  ws.addEventListener('error', (err) => {
-    console.error('[approval-bridge] socket error:', err);
-  });
-
-  ws.addEventListener('close', () => {
-    if (approvalSocket === ws) approvalSocket = null;
-  });
-
-  approvalSocket = ws;
-}
-
-function closeApprovalBridge(): void {
-  if (approvalSocket) {
-    try { approvalSocket.close(); } catch { /* ignore */ }
-    approvalSocket = null;
-  }
-  pendingApprovals.clear();
-}
-
-function normalizeApprovalRequest(r: Record<string, unknown>): {
-  id: string; taskId: string; trackId?: string; message: string; options: string[];
-  createdAt: string; timeoutMs: number; metadata?: Record<string, unknown>;
+// Translate an SDK ApprovalRequest into the wire shape consumed by the
+// editor's ApprovalDialog.
+function approvalRequestToWire(req: ApprovalRequest): {
+  id: string;
+  taskId: string;
+  trackId?: string;
+  message: string;
+  options: string[];
+  createdAt: string;
+  timeoutMs: number;
+  metadata?: Record<string, unknown>;
 } {
   return {
-    id: String(r.id ?? ''),
-    taskId: String(r.taskId ?? ''),
-    trackId: typeof r.trackId === 'string' ? r.trackId : undefined,
-    message: String(r.message ?? ''),
-    options: Array.isArray(r.options) ? (r.options as unknown[]).map(String) : [],
-    createdAt: String(r.createdAt ?? ''),
-    timeoutMs: typeof r.timeoutMs === 'number' ? r.timeoutMs : 0,
-    metadata: r.metadata && typeof r.metadata === 'object'
-      ? (r.metadata as Record<string, unknown>)
-      : undefined,
+    id: req.id,
+    taskId: req.taskId,
+    trackId: req.trackId,
+    message: req.message,
+    options: Array.from(req.options),
+    createdAt: req.createdAt,
+    timeoutMs: req.timeoutMs,
+    metadata: req.metadata ? { ...req.metadata } : undefined,
+  };
+}
+
+// Translate a task_status_change PipelineEvent into a RunEvent.task_update.
+// We project the full TaskState onto the wire shape, flattening TaskResult
+// fields and pulling resolved driver / tier / permissions from state.config
+// (which is the post-inheritance TaskConfig the engine actually used).
+function taskStateChangeToWire(
+  runId: string,
+  taskId: string,
+  status: TaskStatus,
+  state: TaskState,
+): RunEvent {
+  const result = state.result;
+  const cfg = state.config;
+  return {
+    type: 'task_update',
+    runId,
+    taskId,
+    status,
+    startedAt: state.startedAt ?? undefined,
+    finishedAt: state.finishedAt ?? undefined,
+    durationMs: result?.durationMs,
+    exitCode: result?.exitCode,
+    stdout: result?.stdout,
+    stderr: result?.stderr,
+    outputPath: result?.outputPath ?? null,
+    stderrPath: result?.stderrPath ?? null,
+    sessionId: result?.sessionId ?? null,
+    normalizedOutput: result?.normalizedOutput ?? null,
+    resolvedDriver: cfg.driver ?? null,
+    resolvedModelTier: cfg.model_tier ?? null,
+    resolvedPermissions: cfg.permissions ?? null,
   };
 }
 
 // ── Approval (F3) ──
-// POST a decision for a pending approval request. The decision is forwarded
-// to the running CLI via the WebSocket bridge opened in openApprovalBridge()
-// (which the SDK's attachWebSocketApprovalAdapter serves). The SDK emits an
-// `approval_resolved` back through the bridge which triggers an SSE
-// broadcast to all editor clients — so we do NOT pre-emptively broadcast
-// here to avoid double-fire.
+// POST a decision for a pending approval request. The request originates
+// from the in-process InMemoryApprovalGateway bound to the active run, so
+// we resolve it directly — no IPC bridge, no stdout parsing.
 app.post('/api/run/approval/:requestId', (req, res) => {
   const { requestId } = req.params;
   const { outcome, choice, reason, actor } = req.body ?? {};
   if (outcome !== 'approved' && outcome !== 'rejected') {
     return res.status(400).json({ error: 'outcome must be approved|rejected' });
   }
-  if (!approvalSocket || approvalSocket.readyState !== WebSocket.OPEN) {
+  if (!activeRunGateway) {
     return res.status(503).json({
-      error: 'approval bridge not connected — CLI not running or not yet ready',
+      error: 'approval gateway not available — no run in progress',
     });
   }
-  try {
-    approvalSocket.send(JSON.stringify({
-      type: 'resolve',
-      approvalId: requestId,
-      outcome,
-      choice,
-      reason,
-      actor: actor ?? 'editor',
-    }));
-  } catch (err: unknown) {
-    return res.status(500).json({
-      error: `failed to forward decision: ${err instanceof Error ? err.message : String(err)}`,
+  const ok = activeRunGateway.resolve(requestId, {
+    outcome,
+    choice,
+    reason,
+    actor: actor ?? 'editor',
+  });
+  if (!ok) {
+    return res.status(404).json({
+      error: `approval ${requestId} not pending (already resolved or expired)`,
     });
   }
   res.json({ ok: true });

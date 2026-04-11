@@ -339,6 +339,20 @@ export interface RunTaskState {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  // ── Extended fields from SDK TaskResult ──
+  // These mirror @tagma/sdk TaskResult and are populated by the server when
+  // it observes a task_status_change event with a finished TaskState. They
+  // stay null until the task actually completes.
+  outputPath: string | null;
+  stderrPath: string | null;
+  sessionId: string | null;
+  normalizedOutput: string | null;
+  // Resolved runtime config. The SDK resolves inheritance (task → track →
+  // pipeline → default) once a task starts, and the authoritative values are
+  // captured here so the Run-side panel can display what actually ran.
+  resolvedDriver: string | null;
+  resolvedModelTier: string | null;
+  resolvedPermissions: Permissions | null;
 }
 
 export interface RunState {
@@ -365,7 +379,25 @@ export type ApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'aborted';
 
 export type RunEvent =
   | { type: 'run_start'; runId: string; tasks: RunTaskState[] }
-  | { type: 'task_update'; runId?: string; taskId: string; status: TaskStatus; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | {
+      type: 'task_update';
+      runId?: string;
+      taskId: string;
+      status: TaskStatus;
+      startedAt?: string;
+      finishedAt?: string;
+      durationMs?: number;
+      exitCode?: number;
+      stdout?: string;
+      stderr?: string;
+      outputPath?: string | null;
+      stderrPath?: string | null;
+      sessionId?: string | null;
+      normalizedOutput?: string | null;
+      resolvedDriver?: string | null;
+      resolvedModelTier?: string | null;
+      resolvedPermissions?: Permissions | null;
+    }
   | { type: 'run_end'; runId?: string; success: boolean }
   | { type: 'run_error'; runId?: string; error: string }
   | { type: 'log'; runId?: string; line: string }

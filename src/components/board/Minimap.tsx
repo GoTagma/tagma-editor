@@ -2,17 +2,33 @@ import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } fr
 import { Map as MapIcon, X } from 'lucide-react';
 import { usePipelineStore } from '../../store/pipeline-store';
 import { getZoom } from '../../utils/zoom';
-
-// Layout constants must match BoardCanvas.
-const TASK_W = 176;
-const TASK_H = 52;
-const TRACK_H = 64;
-const SCROLL_ELEMENT_ID = 'board-scroll';
+import { TASK_W, TASK_H, TRACK_H, BOARD_SCROLL_ID } from './layout-constants';
+import type { RawPipelineConfig } from '../../api/client';
+import type { TaskPosition } from '../../store/pipeline-store';
 
 // Floating minimap footprint — fixed so it doesn't react to sidebar resize.
 const MAP_W = 240;
 const MAP_H = 140;
 const PAD = 4;
+
+interface MinimapProps {
+  /**
+   * DOM id of the scroll container whose extents and scroll state should be
+   * mirrored. Defaults to the editor board id so existing call sites keep
+   * working. Run mode passes its own id so the minimap can be reused.
+   */
+  scrollElementId?: string;
+  /**
+   * Optional config override. When omitted, the component reads from the
+   * pipeline store (editor mode). Run mode passes the run snapshot.
+   */
+  config?: RawPipelineConfig;
+  /**
+   * Optional positions override. When omitted, reads from the pipeline store.
+   * Run mode passes its computed task positions.
+   */
+  positions?: Map<string, TaskPosition>;
+}
 
 /**
  * Floating minimap overlaid on the canvas at bottom-right, just above the
@@ -20,9 +36,11 @@ const PAD = 4;
  * caused the content rect to stretch/shrink with sidebar width. Pinning it to
  * the canvas keeps coordinate math dependent only on the canvas itself.
  */
-export function Minimap() {
-  const config = usePipelineStore((s) => s.config);
-  const positions = usePipelineStore((s) => s.positions);
+export function Minimap({ scrollElementId = BOARD_SCROLL_ID, config: configProp, positions: positionsProp }: MinimapProps = {}) {
+  const storeConfig = usePipelineStore((s) => s.config);
+  const storePositions = usePipelineStore((s) => s.positions);
+  const config = configProp ?? storeConfig;
+  const positions = positionsProp ?? storePositions;
   const tracks = config?.tracks ?? [];
 
   const [visible, setVisible] = useState(true);
@@ -36,13 +54,13 @@ export function Minimap() {
   // happens in useLayoutEffect (after DOM commit) so that scrollWidth reflects
   // the latest layout — reading it inside useMemo sees stale values.
   useLayoutEffect(() => {
-    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
+    const el = document.getElementById(scrollElementId) as HTMLDivElement | null;
     if (!el) return;
     const cw = Math.max(el.scrollWidth, 1);
     const ch = Math.max(el.scrollHeight, 1);
     setContentW((prev) => (prev === cw ? prev : cw));
     setContentH((prev) => (prev === ch ? prev : ch));
-  }, [scrollTick, tracks, positions]);
+  }, [scrollTick, tracks, positions, scrollElementId]);
 
   // Scale to fit content inside map with padding.
   const { scale, offsetX, offsetY } = useMemo(() => {
@@ -58,7 +76,7 @@ export function Minimap() {
 
   // Subscribe to canvas scroll + size changes so the minimap stays live.
   useEffect(() => {
-    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
+    const el = document.getElementById(scrollElementId) as HTMLDivElement | null;
     if (!el) return;
     let raf = 0;
     const tick = () => {
@@ -83,11 +101,11 @@ export function Minimap() {
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
-  }, []);
+  }, [scrollElementId]);
 
   const viewport = useMemo(() => {
     void scrollTick;
-    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
+    const el = document.getElementById(scrollElementId) as HTMLDivElement | null;
     if (!el) return null;
     return {
       x: offsetX + el.scrollLeft * scale,
@@ -95,10 +113,10 @@ export function Minimap() {
       w: el.clientWidth * scale,
       h: el.clientHeight * scale,
     };
-  }, [scrollTick, offsetX, offsetY, scale]);
+  }, [scrollTick, offsetX, offsetY, scale, scrollElementId]);
 
   const panToMapPoint = useCallback((mapX: number, mapY: number) => {
-    const el = document.getElementById(SCROLL_ELEMENT_ID) as HTMLDivElement | null;
+    const el = document.getElementById(scrollElementId) as HTMLDivElement | null;
     if (!el) return;
     const cx = (mapX - offsetX) / scale;
     const cy = (mapY - offsetY) / scale;
@@ -106,7 +124,7 @@ export function Minimap() {
     const vh = el.clientHeight;
     el.scrollLeft = Math.max(0, cx - vw / 2);
     el.scrollTop = Math.max(0, cy - vh / 2);
-  }, [offsetX, offsetY, scale]);
+  }, [offsetX, offsetY, scale, scrollElementId]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;

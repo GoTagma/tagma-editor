@@ -1,8 +1,14 @@
-import { X, Clock, Check, AlertCircle, Terminal, MessageSquare, Loader2 } from 'lucide-react';
-import type { RunTaskState, TaskStatus } from '../../api/client';
+import { useMemo } from 'react';
+import {
+  X, Clock, Check, AlertCircle, Loader2, SkipForward, ShieldOff,
+  FileText, ExternalLink, Hash, Link2, FileOutput, Lock, FileSearch,
+  CheckCircle2, Layers, Terminal, MessageSquare, Package,
+} from 'lucide-react';
+import type { RunTaskState, TaskStatus, RawPipelineConfig, RawTaskConfig, RawTrackConfig, Permissions } from '../../api/client';
 
 interface RunTaskPanelProps {
   task: RunTaskState;
+  config: RawPipelineConfig;
   onClose: () => void;
 }
 
@@ -36,7 +42,80 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
-export function RunTaskPanel({ task, onClose }: RunTaskPanelProps) {
+function resolveTask(task: RunTaskState, config: RawPipelineConfig): { track: RawTrackConfig; taskConfig: RawTaskConfig } | null {
+  const [trackId, ...rest] = task.taskId.split('.');
+  const taskId = rest.join('.');
+  const track = config.tracks.find((t) => t.id === trackId);
+  if (!track) return null;
+  const taskConfig = track.tasks.find((t) => t.id === taskId);
+  if (!taskConfig) return null;
+  return { track, taskConfig };
+}
+
+function permsLabel(perms: Permissions | undefined | null): string | null {
+  if (!perms) return null;
+  const parts: string[] = [];
+  if (perms.read) parts.push('R');
+  if (perms.write) parts.push('W');
+  if (perms.execute) parts.push('X');
+  return parts.length ? parts.join('+') : null;
+}
+
+/** Compact key/value row used throughout the read-only config section. */
+function ConfigRow({ label, children, mono = true }: { label: string; children: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2 py-[2px] text-[10px]">
+      <span className="text-tagma-muted/70 w-[68px] shrink-0 font-mono tracking-tight">{label}</span>
+      <span className={`flex-1 min-w-0 break-words ${mono ? 'font-mono' : ''} text-tagma-text/80`}>
+        {children}
+      </span>
+    </div>
+  );
+}
+
+export function RunTaskPanel({ task, config, onClose }: RunTaskPanelProps) {
+  const resolved = useMemo(() => resolveTask(task, config), [task, config]);
+  const taskConfig = resolved?.taskConfig;
+  const track = resolved?.track;
+
+  const isCommand = !!taskConfig?.command;
+  const isTemplate = !!taskConfig?.use;
+
+  // Fallback-aware resolution for runtime-relevant fields: prefer the
+  // authoritative values emitted by the SDK (when present on RunTaskState),
+  // then the raw snapshot's task-level value, then the track-level value,
+  // then the pipeline default.
+  const driver = task.resolvedDriver
+    ?? taskConfig?.driver
+    ?? track?.driver
+    ?? config.driver
+    ?? null;
+  const modelTier = task.resolvedModelTier
+    ?? taskConfig?.model_tier
+    ?? track?.model_tier
+    ?? null;
+  const permissions = task.resolvedPermissions
+    ?? taskConfig?.permissions
+    ?? track?.permissions
+    ?? null;
+  const cwd = taskConfig?.cwd ?? track?.cwd ?? null;
+  const agentProfile = taskConfig?.agent_profile ?? track?.agent_profile ?? null;
+  const timeout = taskConfig?.timeout ?? null;
+
+  const promptBody = taskConfig?.prompt?.trim();
+  const commandBody = taskConfig?.command?.trim();
+
+  const handleOpenPath = (path: string | null) => {
+    if (!path) return;
+    // Fire-and-forget; server has a /api/fs/reveal endpoint that opens the
+    // path in the OS file manager. Errors are surfaced via ErrorToast.
+    fetch(`/api/fs/reveal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }).catch(() => { /* swallow — the error toast handles user-facing reports */ });
+  };
+
   return (
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right">
       <div className="panel-header">
@@ -47,74 +126,280 @@ export function RunTaskPanel({ task, onClose }: RunTaskPanelProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {/* Task ID */}
-        <div>
-          <label className="field-label">Task ID</label>
-          <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate">
-            {task.taskId}
+        {/* ─── Section 1: Runtime state ─── */}
+        <section>
+          <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 pb-1.5 border-b border-tagma-border/40">
+            Runtime
           </div>
-        </div>
-
-        {/* Status */}
-        <div>
-          <label className="field-label">Status</label>
-          <div className={`flex items-center gap-2 text-[12px] font-medium ${STATUS_COLOR[task.status]}`}>
-            {task.status === 'running' && <Loader2 size={12} className="animate-spin" />}
-            {task.status === 'success' && <Check size={12} />}
-            {task.status === 'failed' && <AlertCircle size={12} />}
-            {task.status === 'timeout' && <Clock size={12} />}
-            {STATUS_LABEL[task.status]}
-          </div>
-        </div>
-
-        {/* Timing */}
-        {task.startedAt && (
-          <div>
-            <label className="field-label">Started</label>
-            <div className="text-[11px] font-mono text-tagma-muted">{new Date(task.startedAt).toLocaleTimeString()}</div>
-          </div>
-        )}
-        {task.finishedAt && (
-          <div>
-            <label className="field-label">Finished</label>
-            <div className="text-[11px] font-mono text-tagma-muted">{new Date(task.finishedAt).toLocaleTimeString()}</div>
-          </div>
-        )}
-        {task.durationMs != null && (
-          <div>
-            <label className="field-label">Duration</label>
-            <div className="text-[11px] font-mono text-tagma-muted">{formatDuration(task.durationMs)}</div>
-          </div>
-        )}
-
-        {/* Exit code */}
-        {task.exitCode != null && (
-          <div>
-            <label className="field-label">Exit Code</label>
-            <div className={`text-[11px] font-mono ${task.exitCode === 0 ? 'text-tagma-success' : 'text-tagma-error'}`}>
-              {task.exitCode}
+          <div className="pt-2.5 space-y-3">
+            {/* Task ID */}
+            <div>
+              <label className="field-label">Task ID</label>
+              <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate">
+                {task.taskId}
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Stdout */}
-        {task.stdout && (
-          <div>
-            <label className="field-label">Output</label>
-            <pre className="text-[10px] font-mono text-tagma-text bg-tagma-bg border border-tagma-border px-2.5 py-2 overflow-auto max-h-[300px] whitespace-pre-wrap break-words">
-              {task.stdout}
-            </pre>
-          </div>
-        )}
+            {/* Status */}
+            <div>
+              <label className="field-label">Status</label>
+              <div className={`flex items-center gap-2 text-[12px] font-medium ${STATUS_COLOR[task.status]}`}>
+                {task.status === 'running' && <Loader2 size={12} className="animate-spin" />}
+                {task.status === 'success' && <Check size={12} />}
+                {task.status === 'failed' && <AlertCircle size={12} />}
+                {task.status === 'timeout' && <Clock size={12} />}
+                {task.status === 'skipped' && <SkipForward size={12} />}
+                {task.status === 'blocked' && <ShieldOff size={12} />}
+                {STATUS_LABEL[task.status]}
+              </div>
+            </div>
 
-        {/* Stderr */}
-        {task.stderr && (
-          <div>
-            <label className="field-label">Errors</label>
-            <pre className="text-[10px] font-mono text-tagma-error/80 bg-tagma-error/5 border border-tagma-error/20 px-2.5 py-2 overflow-auto max-h-[200px] whitespace-pre-wrap break-words">
-              {task.stderr}
-            </pre>
+            {/* Timing */}
+            {task.startedAt && (
+              <div>
+                <label className="field-label">Started</label>
+                <div className="text-[11px] font-mono text-tagma-muted">{new Date(task.startedAt).toLocaleTimeString()}</div>
+              </div>
+            )}
+            {task.finishedAt && (
+              <div>
+                <label className="field-label">Finished</label>
+                <div className="text-[11px] font-mono text-tagma-muted">{new Date(task.finishedAt).toLocaleTimeString()}</div>
+              </div>
+            )}
+            {task.durationMs != null && (
+              <div>
+                <label className="field-label">Duration</label>
+                <div className="text-[11px] font-mono text-tagma-muted">{formatDuration(task.durationMs)}</div>
+              </div>
+            )}
+
+            {/* Exit code */}
+            {task.exitCode != null && (
+              <div>
+                <label className="field-label">Exit Code</label>
+                <div className={`text-[11px] font-mono ${task.exitCode === 0 ? 'text-tagma-success' : 'text-tagma-error'}`}>
+                  {task.exitCode}
+                </div>
+              </div>
+            )}
+
+            {/* Session id (for drivers that support session resume) */}
+            {task.sessionId && (
+              <div>
+                <label className="field-label flex items-center gap-1">
+                  <Hash size={9} /> Session
+                </label>
+                <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 truncate" title={task.sessionId}>
+                  {task.sessionId}
+                </div>
+              </div>
+            )}
+
+            {/* Log file paths */}
+            {task.outputPath && (
+              <div>
+                <label className="field-label flex items-center gap-1">
+                  <FileText size={9} /> Output file
+                </label>
+                <button
+                  type="button"
+                  onClick={() => handleOpenPath(task.outputPath)}
+                  className="w-full flex items-center gap-1.5 text-[11px] font-mono text-tagma-muted hover:text-tagma-text bg-tagma-bg border border-tagma-border hover:border-tagma-accent px-2.5 py-1.5 truncate transition-colors"
+                >
+                  <ExternalLink size={9} className="shrink-0" />
+                  <span className="truncate">{task.outputPath}</span>
+                </button>
+              </div>
+            )}
+            {task.stderrPath && (
+              <div>
+                <label className="field-label flex items-center gap-1">
+                  <FileText size={9} /> Error file
+                </label>
+                <button
+                  type="button"
+                  onClick={() => handleOpenPath(task.stderrPath)}
+                  className="w-full flex items-center gap-1.5 text-[11px] font-mono text-tagma-muted hover:text-tagma-text bg-tagma-bg border border-tagma-border hover:border-tagma-accent px-2.5 py-1.5 truncate transition-colors"
+                >
+                  <ExternalLink size={9} className="shrink-0" />
+                  <span className="truncate">{task.stderrPath}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Stdout */}
+            {task.stdout && (
+              <div>
+                <label className="field-label">Output</label>
+                <pre className="text-[10px] font-mono text-tagma-text bg-tagma-bg border border-tagma-border px-2.5 py-2 overflow-auto max-h-[300px] whitespace-pre-wrap break-words">
+                  {task.stdout}
+                </pre>
+              </div>
+            )}
+
+            {/* Stderr */}
+            {task.stderr && (
+              <div>
+                <label className="field-label">Errors</label>
+                <pre className="text-[10px] font-mono text-tagma-error/80 bg-tagma-error/5 border border-tagma-error/20 px-2.5 py-2 overflow-auto max-h-[200px] whitespace-pre-wrap break-words">
+                  {task.stderr}
+                </pre>
+              </div>
+            )}
+
+            {/* Normalized output (when SDK-normalized — e.g. AI-parsed JSON) */}
+            {task.normalizedOutput && (
+              <div>
+                <label className="field-label">Normalized Output</label>
+                <pre className="text-[10px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-2 overflow-auto max-h-[200px] whitespace-pre-wrap break-words">
+                  {task.normalizedOutput}
+                </pre>
+              </div>
+            )}
           </div>
+        </section>
+
+        {/* ─── Section 2: Task configuration (read-only snapshot) ─── */}
+        {taskConfig && (
+          <section>
+            <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 pb-1.5 border-b border-tagma-border/40">
+              Configuration (read-only)
+            </div>
+            <div className="pt-2.5 space-y-3">
+              {/* Type banner */}
+              <div className="flex items-center gap-2 text-[10px] text-tagma-muted">
+                {isTemplate
+                  ? <><Package size={11} className="text-purple-400" /> Template task</>
+                  : isCommand
+                    ? <><Terminal size={11} className="text-sky-400" /> Shell command</>
+                    : <><MessageSquare size={11} className="text-tagma-muted/70" /> AI prompt</>}
+              </div>
+
+              {/* Prompt or Command body */}
+              {promptBody && (
+                <div>
+                  <label className="field-label">Prompt</label>
+                  <pre className="text-[10px] font-mono text-tagma-text/90 bg-tagma-bg border border-tagma-border px-2.5 py-2 overflow-auto max-h-[200px] whitespace-pre-wrap break-words">
+                    {promptBody}
+                  </pre>
+                </div>
+              )}
+              {commandBody && (
+                <div>
+                  <label className="field-label">Command</label>
+                  <pre className="text-[10px] font-mono text-tagma-text/90 bg-tagma-bg border border-tagma-border px-2.5 py-2 overflow-auto max-h-[160px] whitespace-pre-wrap break-words">
+                    {commandBody}
+                  </pre>
+                </div>
+              )}
+
+              {/* Core metadata grid */}
+              <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
+                {track && (
+                  <ConfigRow label="Track">
+                    <span className="inline-flex items-center gap-1.5">
+                      {track.color && <span className="w-2 h-2 shrink-0" style={{ backgroundColor: track.color }} />}
+                      <span className="truncate">{track.name}</span>
+                    </span>
+                  </ConfigRow>
+                )}
+                {driver && <ConfigRow label="Driver">{driver}</ConfigRow>}
+                {modelTier && <ConfigRow label="Model">{modelTier}</ConfigRow>}
+                {permsLabel(permissions) && <ConfigRow label="Perms">{permsLabel(permissions)}</ConfigRow>}
+                {timeout && <ConfigRow label="Timeout">{timeout}</ConfigRow>}
+                {cwd && <ConfigRow label="CWD">{cwd}</ConfigRow>}
+                {agentProfile && <ConfigRow label="Profile">{agentProfile}</ConfigRow>}
+                {taskConfig.output && <ConfigRow label="Output var">{taskConfig.output}</ConfigRow>}
+                {taskConfig.use && <ConfigRow label="Template">{taskConfig.use}</ConfigRow>}
+                {taskConfig.continue_from && <ConfigRow label="Continue">{taskConfig.continue_from}</ConfigRow>}
+              </div>
+
+              {/* Trigger */}
+              {taskConfig.trigger && (
+                <div>
+                  <label className="field-label flex items-center gap-1">
+                    {taskConfig.trigger.type === 'file' ? <FileSearch size={9} /> : <Lock size={9} />}
+                    Trigger
+                  </label>
+                  <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
+                    <ConfigRow label="Type">{taskConfig.trigger.type}</ConfigRow>
+                    {taskConfig.trigger.message && <ConfigRow label="Message" mono={false}>{taskConfig.trigger.message}</ConfigRow>}
+                    {taskConfig.trigger.options && taskConfig.trigger.options.length > 0 && (
+                      <ConfigRow label="Options">{taskConfig.trigger.options.join(', ')}</ConfigRow>
+                    )}
+                    {taskConfig.trigger.path && <ConfigRow label="Path">{taskConfig.trigger.path}</ConfigRow>}
+                    {taskConfig.trigger.timeout && <ConfigRow label="Timeout">{taskConfig.trigger.timeout}</ConfigRow>}
+                  </div>
+                </div>
+              )}
+
+              {/* Completion */}
+              {taskConfig.completion && (
+                <div>
+                  <label className="field-label flex items-center gap-1">
+                    <CheckCircle2 size={9} /> Completion
+                  </label>
+                  <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
+                    <ConfigRow label="Type">{taskConfig.completion.type}</ConfigRow>
+                    {taskConfig.completion.expect != null && (
+                      <ConfigRow label="Expect">{JSON.stringify(taskConfig.completion.expect)}</ConfigRow>
+                    )}
+                    {taskConfig.completion.path && <ConfigRow label="Path">{taskConfig.completion.path}</ConfigRow>}
+                    {taskConfig.completion.kind && <ConfigRow label="Kind">{taskConfig.completion.kind}</ConfigRow>}
+                    {taskConfig.completion.min_size != null && (
+                      <ConfigRow label="Min size">{String(taskConfig.completion.min_size)}</ConfigRow>
+                    )}
+                    {taskConfig.completion.check && <ConfigRow label="Check">{taskConfig.completion.check}</ConfigRow>}
+                  </div>
+                </div>
+              )}
+
+              {/* Middlewares */}
+              {taskConfig.middlewares && taskConfig.middlewares.length > 0 && (
+                <div>
+                  <label className="field-label flex items-center gap-1">
+                    <Layers size={9} /> Middlewares ({taskConfig.middlewares.length})
+                  </label>
+                  <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
+                    {taskConfig.middlewares.map((mw, i) => (
+                      <ConfigRow key={`${mw.type}-${i}`} label={mw.type}>
+                        {mw.label ?? mw.file ?? '—'}
+                      </ConfigRow>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Dependencies */}
+              {taskConfig.depends_on && taskConfig.depends_on.length > 0 && (
+                <div>
+                  <label className="field-label flex items-center gap-1">
+                    <Link2 size={9} /> Depends on
+                  </label>
+                  <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
+                    {taskConfig.depends_on.map((dep) => (
+                      <div key={dep} className="text-[10px] font-mono text-tagma-muted truncate">{dep}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Template params */}
+              {taskConfig.use && taskConfig.with && Object.keys(taskConfig.with).length > 0 && (
+                <div>
+                  <label className="field-label flex items-center gap-1">
+                    <FileOutput size={9} /> Template params
+                  </label>
+                  <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
+                    {Object.entries(taskConfig.with).map(([k, v]) => (
+                      <ConfigRow key={k} label={k}>{typeof v === 'string' ? v : JSON.stringify(v)}</ConfigRow>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
         )}
       </div>
     </div>

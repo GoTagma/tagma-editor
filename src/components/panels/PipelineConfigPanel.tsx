@@ -10,6 +10,7 @@ interface PipelineConfigPanelProps {
   errors: string[];
   onUpdate: (fields: Record<string, unknown>) => void;
   onClose: () => void;
+  readOnly?: boolean;
 }
 
 const HOOK_KEYS: (keyof HooksConfig)[] = [
@@ -19,12 +20,13 @@ const HOOK_KEYS: (keyof HooksConfig)[] = [
 
 const GATE_HOOKS: ReadonlySet<string> = new Set(['pipeline_start', 'task_start']);
 
-export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose }: PipelineConfigPanelProps) {
+export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose, readOnly = false }: PipelineConfigPanelProps) {
   const [timeout, setTimeout_, blurTimeout] = useLocalField(config.timeout ?? '', (v) => onUpdate({ timeout: v || undefined }));
 
   const hooks = config.hooks ?? {};
 
   const commitHook = useCallback((key: keyof HooksConfig, value: HookCommand | undefined) => {
+    if (readOnly) return;
     const next = { ...hooks };
     if (value !== undefined) {
       next[key] = value;
@@ -32,7 +34,7 @@ export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose
       delete next[key];
     }
     onUpdate({ hooks: Object.keys(next).length > 0 ? next : undefined });
-  }, [hooks, onUpdate]);
+  }, [hooks, onUpdate, readOnly]);
 
   const maxH = useMemo(() => Math.floor(viewportH() * 0.8), []);
 
@@ -40,12 +42,13 @@ export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] flex flex-col animate-fade-in" style={{ maxHeight: maxH }} onClick={(e) => e.stopPropagation()}>
         <div className="panel-header">
-          <h2 className="panel-title">Pipeline Settings</h2>
+          <h2 className="panel-title">Pipeline Settings{readOnly ? ' (read-only)' : ''}</h2>
           <button onClick={onClose} className="p-1 text-tagma-muted hover:text-tagma-text transition-colors">
             <X size={14} />
           </button>
         </div>
 
+        <fieldset disabled={readOnly} className="contents">
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {errors.length > 0 && (
             <div className="bg-tagma-error/8 border border-tagma-error/30 px-2.5 py-1.5 space-y-1">
@@ -95,9 +98,27 @@ export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose
             <div className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1.5 flex gap-4">
               <span>{config.tracks.length} track{config.tracks.length !== 1 ? 's' : ''}</span>
               <span>{config.tracks.reduce((sum, t) => sum + t.tasks.length, 0)} task{config.tracks.reduce((sum, t) => sum + t.tasks.length, 0) !== 1 ? 's' : ''}</span>
+              {config.plugins && config.plugins.length > 0 && (
+                <span>{config.plugins.length} plugin{config.plugins.length !== 1 ? 's' : ''}</span>
+              )}
             </div>
           </div>
+
+          {/* Plugins (read-only listing) */}
+          {config.plugins && config.plugins.length > 0 && (
+            <div>
+              <label className="field-label">Plugins</label>
+              <div className="flex flex-col gap-1">
+                {config.plugins.map((p) => (
+                  <div key={p} className="text-[11px] font-mono text-tagma-muted bg-tagma-bg border border-tagma-border px-2.5 py-1">
+                    {p}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
+        </fieldset>
       </div>
     </div>
   );

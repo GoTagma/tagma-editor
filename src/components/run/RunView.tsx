@@ -1,43 +1,41 @@
-// RunView
-//
-// New prop `mode: "full" | "dock"` (default "full"):
-// - "full": renders the original full-screen run view including header with
-//   Back button. This is what App.tsx currently mounts.
-// - "dock": renders a compact variant suitable for a right-side dock / bottom
-//   panel — omits the Back button and collapses the header. Group 6 (or a
-//   follow-up to U7) should update App.tsx to mount RunView with mode="dock"
-//   alongside the editor instead of replacing it.
-//
-// This file also handles F3 (manual trigger approval overlay) and F8 (run
-// history browser rendered when no active run is running).
+// RunView — read-only mirror of the editor board scoped to a running
+// pipeline. It reuses TaskCard, TrackLane, Minimap, ZoomControls and
+// TaskConfigPanel with readOnly props so the Run screen stays visually
+// consistent with the editor.
 
-import { useMemo } from 'react';
-import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid } from 'lucide-react';
+import { useMemo, useCallback, useState, useEffect } from 'react';
+import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
-import { RunTaskNode } from './RunTaskNode';
+import { TaskCard } from '../board/TaskCard';
+import { TrackLane } from '../board/TrackLane';
+import { Minimap } from '../board/Minimap';
+import { ZoomControls } from '../board/ZoomControls';
 import { RunTaskPanel } from './RunTaskPanel';
 import { ApprovalDialog } from './ApprovalDialog';
 import { RunHistoryBrowser } from './RunHistoryBrowser';
-import type { RawPipelineConfig, DagEdge, TaskStatus } from '../../api/client';
+import { PipelineConfigPanel } from '../panels/PipelineConfigPanel';
+import type { RawPipelineConfig, DagEdge, TaskStatus, RunTaskState } from '../../api/client';
 import type { TaskPosition } from '../../store/pipeline-store';
+import {
+  HEADER_W,
+  TASK_W,
+  TASK_H,
+  TASK_GAP,
+  PAD_LEFT,
+  TRACK_H,
+  CANVAS_PAD_RIGHT,
+} from '../board/layout-constants';
 
-// Reuse same layout constants as BoardCanvas
-const HEADER_W = 210;
-const TASK_W = 176;
-const TASK_H = 52;
-const TASK_GAP = 24;
-const PAD_LEFT = 20;
-const TRACK_H = 64;
-const CANVAS_PAD_RIGHT = 300;
-
-export type RunViewMode = 'full' | 'dock';
+// Dedicated scroll container id so the Minimap (which samples DOM scroll
+// extents by id) doesn't collide with the editor board when both components
+// exist elsewhere in the tree.
+const RUN_SCROLL_ID = 'run-scroll';
 
 interface RunViewProps {
   config: RawPipelineConfig;
   dagEdges: DagEdge[];
   positions: Map<string, TaskPosition>;
   onBack: () => void;
-  mode?: RunViewMode;
 }
 
 const RUN_STATUS_LABEL: Record<string, string> = {
@@ -57,7 +55,7 @@ function countByStatus(tasks: Map<string, { status: TaskStatus }>) {
   return counts;
 }
 
-export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: RunViewProps) {
+export function RunView({ config: liveConfig, dagEdges, positions, onBack }: RunViewProps) {
   const {
     status,
     tasks,
@@ -67,21 +65,31 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
     abortRun,
     pendingApprovals,
     resolveApproval,
+    snapshot,
   } = useRunStore();
+
+  // Prefer the snapshot captured at startRun time — that is the config the
+  // pipeline is actually running with. Fall back to the live editor config
+  // only when no snapshot exists (e.g. idle state showing history).
+  const config = snapshot ?? liveConfig;
 
   const isTerminal = status === 'done' || status === 'aborted' || status === 'error';
   const isActive = status !== 'idle';
-  const isDock = mode === 'dock';
 
-  // First pending approval (FIFO by Map iteration order)
+  const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // First pending approval (FIFO by Map iteration order).
   const firstApproval = useMemo(() => {
     const it = pendingApprovals.values().next();
     return it.done ? null : it.value;
   }, [pendingApprovals]);
 
-  // Build flat task list with positions (same logic as BoardCanvas)
+  // Build flat task list with positions (same layout as BoardCanvas).
   const flatTasks = useMemo(() => {
-    const result: { qid: string; trackId: string; trackIndex: number; task: (typeof config.tracks)[0]['tasks'][0] }[] = [];
+    type FT = { qid: string; trackId: string; trackIndex: number; task: (typeof config.tracks)[number]['tasks'][number] };
+    const result: FT[] = [];
     for (let ti = 0; ti < config.tracks.length; ti++) {
       const track = config.tracks[ti];
       for (const task of track.tasks) {
@@ -91,10 +99,13 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
     return result;
   }, [config]);
 
-  // Compute positions
+  // Local runtime position map. `TaskPosition` from the store only carries
+  // `x` — the y-coordinate is derived from the track index, which lives in
+  // RunView since the read-only canvas owns its own layout.
+  type RunPos = { x: number; y: number };
   const taskPositions = useMemo(() => {
     const taskCountPerTrack = new Map<string, number>();
-    const posMap = new Map<string, { x: number; y: number }>();
+    const posMap = new Map<string, RunPos>();
     for (const ft of flatTasks) {
       const count = taskCountPerTrack.get(ft.trackId) ?? 0;
       const stored = positions.get(ft.qid);
@@ -106,7 +117,17 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
     return posMap;
   }, [flatTasks, positions]);
 
-  // Canvas dimensions
+  // Minimap reads from the pipeline store by default. We pass an override
+  // shape (x-only) keyed on qualified id so the minimap's layout math maps
+  // into the same coordinate space as the run canvas.
+  const minimapPositions = useMemo(() => {
+    const out = new Map<string, TaskPosition>();
+    for (const [qid, pos] of taskPositions) {
+      out.set(qid, { x: pos.x });
+    }
+    return out;
+  }, [taskPositions]);
+
   const canvasWidth = useMemo(() => {
     let maxX = 0;
     for (const [, pos] of taskPositions) {
@@ -117,7 +138,6 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
 
   const canvasHeight = config.tracks.length * TRACK_H;
 
-  // Build edges
   const edges = useMemo(() => {
     return dagEdges.map((edge) => {
       const from = taskPositions.get(edge.from);
@@ -132,12 +152,13 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
     }).filter(Boolean) as { key: string; d: string }[];
   }, [dagEdges, taskPositions]);
 
-  // Get selected task state (fallback to config if run hasn't populated tasks yet)
-  const selectedTask = useMemo((): import('../../api/client').RunTaskState | null => {
+  // Build selected task state. Fall back to the snapshot config when the
+  // task hasn't received any runtime updates yet so the right-hand panel
+  // can still show the readOnly task config.
+  const selectedTask = useMemo((): RunTaskState | null => {
     if (!selectedTaskId) return null;
     const fromRun = tasks.get(selectedTaskId);
     if (fromRun) return fromRun;
-    // Build from config
     const [trackId, taskId] = selectedTaskId.split('.');
     const track = config.tracks.find((t) => t.id === trackId);
     const task = track?.tasks.find((t) => t.id === taskId);
@@ -153,28 +174,71 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
       exitCode: null,
       stdout: '',
       stderr: '',
+      outputPath: null,
+      stderrPath: null,
+      sessionId: null,
+      normalizedOutput: null,
+      resolvedDriver: null,
+      resolvedModelTier: null,
+      resolvedPermissions: null,
     };
   }, [selectedTaskId, tasks, config]);
 
   const counts = countByStatus(tasks);
-
-  // When no run has ever started (or the store is idle), show the history
-  // browser so users can explore prior runs without leaving this view.
   const showHistory = !isActive;
 
+  // Keyboard: Ctrl+F opens search, Escape clears selection or closes search.
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      setSearchVisible(true);
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (searchVisible) {
+        setSearchVisible(false);
+        setSearchQuery('');
+      } else if (selectedTaskId) {
+        selectTask(null);
+      }
+    }
+  }, [searchVisible, selectedTaskId, selectTask]);
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
+  const searchMatches = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [] as { trackId: string; taskId: string; label: string; snippet: string }[];
+    const out: { trackId: string; taskId: string; label: string; snippet: string }[] = [];
+    for (const t of config.tracks) {
+      for (const task of t.tasks) {
+        const name = (task.name ?? '').toLowerCase();
+        const prompt = (task.prompt ?? '').toLowerCase();
+        if (name.includes(q) || prompt.includes(q)) {
+          out.push({
+            trackId: t.id,
+            taskId: task.id,
+            label: task.name ?? task.id,
+            snippet: (task.prompt ?? '').slice(0, 80),
+          });
+        }
+      }
+    }
+    return out;
+  }, [searchQuery, config]);
+
   return (
-    <div className={`h-full flex flex-col bg-tagma-bg relative ${isDock ? 'text-[11px]' : ''}`}>
+    <div className="h-full flex flex-col bg-tagma-bg relative">
       {/* Header */}
-      <header className={`${isDock ? 'h-8' : 'h-10'} bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0`}>
-        {!isDock && (
-          <>
-            <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-tagma-muted hover:text-tagma-text transition-colors px-2 py-1">
-              <ArrowLeft size={12} />
-              <span>Back to Editor</span>
-            </button>
-            <div className="w-px h-5 bg-tagma-border" />
-          </>
-        )}
+      <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-tagma-muted hover:text-tagma-text transition-colors px-2 py-1">
+          <ArrowLeft size={12} />
+          <span>Back to Editor</span>
+        </button>
+        <div className="w-px h-5 bg-tagma-border" />
 
         <div className="flex items-center gap-1.5 px-2">
           <LayoutGrid size={13} className="text-tagma-accent" />
@@ -198,7 +262,6 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
           </span>
         </div>
 
-        {/* Summary counts */}
         {tasks.size > 0 && (
           <div className="flex items-center gap-1.5 text-[9px] font-mono">
             {counts.success && <span className="text-tagma-success">{counts.success} ok</span>}
@@ -209,7 +272,6 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
           </div>
         )}
 
-        {/* Pending approvals indicator */}
         {pendingApprovals.size > 0 && (
           <span className="text-[9px] font-mono text-tagma-warning">
             {pendingApprovals.size} approval{pendingApprovals.size === 1 ? '' : 's'} pending
@@ -218,7 +280,25 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
 
         <div className="flex-1" />
 
-        {/* Abort button */}
+        {/* Pipeline settings (read-only) */}
+        <button
+          onClick={() => setShowPipelineSettings(true)}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
+          title="View pipeline settings (read-only)"
+        >
+          <Settings size={12} />
+        </button>
+
+        {/* Search */}
+        <button
+          onClick={() => setSearchVisible(true)}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
+          title="Search tasks (Ctrl+F)"
+        >
+          <Search size={12} />
+        </button>
+
+        {/* Abort */}
         {!isTerminal && status !== 'idle' && (
           <button onClick={abortRun} className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-tagma-error border border-tagma-error/20 hover:bg-tagma-error/10 transition-colors mr-1">
             <Square size={10} />
@@ -227,7 +307,6 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
         )}
       </header>
 
-      {/* Error banner */}
       {error && (
         <div className="px-4 py-2 bg-tagma-error/5 border-b border-tagma-error/20 text-[11px] text-tagma-error font-mono">
           {error}
@@ -238,30 +317,33 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
       <div className="flex-1 flex overflow-hidden">
         {showHistory ? (
           <div className="flex-1 overflow-hidden">
-            <RunHistoryBrowser compact={isDock} />
+            <RunHistoryBrowser />
           </div>
         ) : (
           <>
-            {/* Canvas */}
-            <div className="flex-1 flex overflow-hidden">
-              {/* Track headers */}
-              <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: isDock ? Math.min(HEADER_W, 160) : HEADER_W }}>
-                {config.tracks.map((track, i) => (
-                  <div
-                    key={track.id}
-                    className={`flex items-center px-4 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
-                    style={{ height: TRACK_H }}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      {track.color && <div className="w-2 h-2 shrink-0" style={{ backgroundColor: track.color }} />}
-                      <span className="text-xs font-medium text-tagma-text truncate">{track.name}</span>
+            <div className="flex-1 flex overflow-hidden relative">
+              {/* Track headers (reuses TrackLane for metadata parity with editor) */}
+              <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: HEADER_W }}>
+                {config.tracks.map((track, i) => {
+                  const taskCount = track.tasks.length;
+                  return (
+                    <div
+                      key={track.id}
+                      className={`border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
+                      style={{ height: TRACK_H }}
+                    >
+                      <TrackLane
+                        track={track}
+                        taskCount={taskCount}
+                        hasParallelWarning={false}
+                      />
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
-              {/* Task area */}
-              <div className="flex-1 overflow-auto">
+              {/* Task canvas */}
+              <div id={RUN_SCROLL_ID} className="flex-1 overflow-auto">
                 <div className="relative timeline-grid" style={{ width: canvasWidth, height: canvasHeight }}
                   onClick={() => selectTask(null)}>
                   {/* Track row backgrounds */}
@@ -280,31 +362,45 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
                     ))}
                   </svg>
 
-                  {/* Task nodes */}
+                  {/* Task nodes (reuses TaskCard in readOnly mode) */}
                   {flatTasks.map((ft) => {
                     const pos = taskPositions.get(ft.qid);
                     if (!pos) return null;
                     const taskState = tasks.get(ft.qid);
-                    const taskStatus: TaskStatus = taskState?.status ?? 'idle';
+                    const runtimeStatus: TaskStatus = taskState?.status ?? 'idle';
                     return (
-                      <RunTaskNode
+                      <TaskCard
                         key={ft.qid}
                         task={ft.task}
-                        status={taskStatus}
-                        durationMs={taskState?.durationMs ?? null}
+                        trackId={ft.trackId}
+                        pipelineConfig={config}
                         x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
                         isSelected={selectedTaskId === ft.qid}
-                        onClick={(taskId) => { selectTask(`${ft.trackId}.${taskId}`); }}
+                        isInvalid={false}
+                        isDragging={false}
+                        isTrackDragging={false}
+                        isEdgeTarget={false}
+                        readOnly
+                        runtimeStatus={runtimeStatus}
+                        runtimeDurationMs={taskState?.durationMs ?? null}
+                        onClickRun={(taskId) => selectTask(`${ft.trackId}.${taskId}`)}
                       />
                     );
                   })}
                 </div>
               </div>
+
+              {/* Floating minimap + zoom controls — same UX as editor */}
+              <Minimap scrollElementId={RUN_SCROLL_ID} config={config} positions={minimapPositions} />
+              <ZoomControls />
             </div>
 
-            {/* Right panel: selected task details — hidden in dock mode to save space */}
-            {selectedTask && !isDock && (
-              <RunTaskPanel task={selectedTask} onClose={() => selectTask(null)} />
+            {selectedTask && (
+              <RunTaskPanel
+                task={selectedTask}
+                config={config}
+                onClose={() => selectTask(null)}
+              />
             )}
           </>
         )}
@@ -314,10 +410,72 @@ export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: 
       {firstApproval && (
         <ApprovalDialog
           request={firstApproval}
+          config={config}
           onApprove={(choice) => resolveApproval(firstApproval.id, 'approved', choice)}
           onReject={() => resolveApproval(firstApproval.id, 'rejected')}
         />
       )}
+
+      {/* Pipeline settings modal (read-only) */}
+      {showPipelineSettings && (
+        <PipelineConfigPanel
+          config={config}
+          drivers={[]}
+          errors={[]}
+          onUpdate={() => { /* readOnly — no-op */ }}
+          onClose={() => setShowPipelineSettings(false)}
+          readOnly
+        />
+      )}
+
+      {/* Search overlay — read-only, navigates selection on click */}
+      {searchVisible && (
+        <div className="fixed top-14 right-4 z-[150] w-[340px] bg-tagma-surface border border-tagma-border shadow-panel animate-fade-in">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-tagma-border">
+            <input
+              autoFocus
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); }
+              }}
+              placeholder="Search tasks by name or prompt..."
+              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+            />
+            <button
+              onClick={() => { setSearchVisible(false); setSearchQuery(''); }}
+              className="p-1 text-tagma-muted hover:text-tagma-text"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="max-h-[240px] overflow-y-auto">
+            {searchQuery.trim() === '' && (
+              <div className="px-3 py-2 text-[10px] font-mono text-tagma-muted/60">Type to search tasks</div>
+            )}
+            {searchQuery.trim() !== '' && searchMatches.length === 0 && (
+              <div className="px-3 py-2 text-[10px] font-mono text-tagma-muted/60">No matches</div>
+            )}
+            {searchMatches.map((m) => (
+              <button
+                key={`${m.trackId}.${m.taskId}`}
+                className="w-full text-left px-3 py-2 border-b border-tagma-border/30 last:border-b-0 hover:bg-tagma-bg/60"
+                onClick={() => {
+                  selectTask(`${m.trackId}.${m.taskId}`);
+                  setSearchVisible(false);
+                }}
+              >
+                <div className="text-[11px] font-mono text-tagma-text truncate">{m.label}</div>
+                {m.snippet && (
+                  <div className="text-[10px] font-mono text-tagma-muted/60 truncate">{m.snippet}</div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

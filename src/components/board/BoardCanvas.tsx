@@ -11,16 +11,18 @@ import type { TaskPosition } from '../../store/pipeline-store';
 import { usePipelineStore } from '../../store/pipeline-store';
 import type { DagEdge } from '../../api/client';
 import { getZoom } from '../../utils/zoom';
+import {
+  HEADER_W,
+  TASK_W,
+  TASK_H,
+  TASK_GAP,
+  PAD_LEFT,
+  TRACK_H,
+  CANVAS_PAD_RIGHT,
+  BOARD_SCROLL_ID,
+} from './layout-constants';
 
-// ── Layout constants ──
-const HEADER_W = 210;
-const TASK_W = 176;
-const TASK_H = 52;
-const TASK_GAP = 24;
-const PAD_LEFT = 20;
-const TRACK_H = 64;
 const DRAG_THRESHOLD = 4;
-const CANVAS_PAD_RIGHT = 300;
 
 interface Pos { x: number; y: number }
 
@@ -695,7 +697,7 @@ export function BoardCanvas({
       {/* Right: Timeline canvas */}
       <div
         ref={contentRef}
-        id="board-scroll"
+        id={BOARD_SCROLL_ID}
         className="flex-1 min-w-0 overflow-auto timeline-grid hide-scrollbar"
         onScroll={syncScroll}
         onContextMenu={handleCanvasContextMenu}
