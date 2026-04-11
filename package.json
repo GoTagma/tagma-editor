@@ -16,7 +16,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tagma/driver-codex": "^0.1.3",
     "@tagma/sdk": "latest",
     "@tagma/types": "latest",
     "cors": "^2.8.5",
