@@ -12,6 +12,9 @@ import { Loader2, AlertCircle, CheckCircle2, X as XIcon } from 'lucide-react';
 
 import { RunView } from './components/run/RunView';
 import { useRunStore } from './store/run-store';
+import { ErrorToast } from './components/ErrorToast';
+import { useShortcuts } from './hooks/use-shortcuts';
+import { useAutosave } from './hooks/use-autosave';
 
 type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' | 'plugin-import' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
@@ -26,13 +29,13 @@ type ConfirmInfo = {
 export function App() {
   const {
     config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges,
-    yamlPath, workDir, isDirty, loading, errorMessage, registry,
+    yamlPath, workDir, isDirty, layoutDirty, loading, registry,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, selectTrack, setTaskPosition, setRegistry,
-    setWorkDir, saveFile, newPipeline, importFile, exportFile, openFile,
-    exportYaml, importYaml, init, clearError,
+    setWorkDir, saveFile, saveFileAs, newPipeline, importFile, exportFile, openFile,
+    exportYaml, importYaml, init,
   } = usePipelineStore();
 
   const { active: runActive, startRun, reset: resetRun } = useRunStore();
@@ -43,17 +46,16 @@ export function App() {
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
   const [confirmInfo, setConfirmInfo] = useState<ConfirmInfo | null>(null);
   const [workspaceYamls, setWorkspaceYamls] = useState<{ name: string; path: string }[]>([]);
+  const [saveAsInput, setSaveAsInput] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchVisible, setSearchVisible] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Pending action to execute after workspace is set
   const afterWorkspaceRef = useRef<'new' | 'import' | 'save' | 'run' | null>(null);
 
-  // Show store errors in the dialog
-  useEffect(() => {
-    if (errorMessage) {
-      setDialog({ type: 'error', title: 'Error', details: [errorMessage] });
-      clearError();
-    }
-  }, [errorMessage, clearError]);
+  // Store errors are surfaced via <ErrorToast />, which subscribes directly
+  // to `errorMessage` and handles auto-dismiss. No effect needed here.
 
   useEffect(() => { init(); }, []);
 
@@ -307,6 +309,13 @@ export function App() {
     setExplorer({ mode: 'directory', purpose: 'export' });
   }, [yamlPath]);
 
+  // U10: Save As... target file name. Server writes into {workDir}/.tagma/.
+  const handleSaveAs = useCallback(() => {
+    if (!requireWorkspace('save')) return;
+    const currentName = yamlPath ? yamlPath.split(/[/\\]/).pop() ?? '' : 'pipeline.yaml';
+    setSaveAsInput(currentName);
+  }, [requireWorkspace, yamlPath]);
+
   const activeYamlName = useMemo(
     () => (yamlPath ? yamlPath.split(/[/\\]/).pop() ?? null : null),
     [yamlPath],
@@ -342,6 +351,7 @@ export function App() {
           { label: 'Export YAML...', disabled: !yamlPath, onAction: handleExport },
           { separator: true as const },
           { label: 'Save', shortcut: 'Ctrl+S', onAction: handleSave },
+          { label: 'Save As...', onAction: handleSaveAs },
           { separator: true as const },
           { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
         ],
@@ -363,7 +373,7 @@ export function App() {
         ],
       },
     ];
-  }, [yamlPath, workDir, workspaceYamls, activeYamlName, handleNewPipeline, handleImport, handleExport, handleSave, handleOpenWorkspaceFile, handleDeleteWorkspaceFile]);
+  }, [yamlPath, workDir, workspaceYamls, activeYamlName, handleNewPipeline, handleImport, handleExport, handleSave, handleSaveAs, handleOpenWorkspaceFile, handleDeleteWorkspaceFile]);
 
   // Ctrl+O → Import
   useEffect(() => {
@@ -376,6 +386,47 @@ export function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [handleImport]);
+
+  // U4: periodic localStorage draft autosave while dirty (crash recovery).
+  useAutosave();
+
+  // Global undo/redo/copy/paste/duplicate/search/escape shortcuts (U1).
+  useShortcuts({
+    onFocusSearch: () => {
+      setSearchVisible(true);
+      // Defer focus until after the input is in the DOM.
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    },
+  });
+
+  // U3: beforeunload warning when the document has unsaved changes.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!isDirty && !layoutDirty) return;
+      e.preventDefault();
+      // Legacy browsers require returnValue to be set to a string.
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty, layoutDirty]);
+
+  const commitSaveAs = useCallback(async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const withExt = /\.ya?ml$/i.test(trimmed) ? trimmed : `${trimmed}.yaml`;
+    // Build the target path inside the workspace's .tagma directory, matching
+    // the server's auto-save-location convention.
+    const sep = workDir.includes('\\') ? '\\' : '/';
+    const target = `${workDir}${sep}.tagma${sep}${withExt}`;
+    setSaveAsInput(null);
+    try {
+      await saveFileAs(target);
+      await refreshWorkspaceYamls();
+    } catch (e: any) {
+      setDialog({ type: 'error', title: 'Save As Failed', details: [e?.message ?? 'Unknown error'] });
+    }
+  }, [workDir, saveFileAs, refreshWorkspaceYamls]);
 
   if (loading) {
     return (
@@ -398,6 +449,7 @@ export function App() {
           positions={positions}
           onBack={resetRun}
         />
+        <ErrorToast />
         {/* Dialog overlay (shared) */}
         {dialog && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDialog(null)}>
@@ -583,6 +635,115 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* Save As prompt (U10) */}
+      {saveAsInput !== null && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60" onClick={() => setSaveAsInput(null)}>
+          <div
+            className="bg-tagma-surface border border-tagma-border shadow-panel w-[440px] flex flex-col animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="panel-header">
+              <h2 className="panel-title">Save As</h2>
+              <button onClick={() => setSaveAsInput(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="px-4 py-4 flex flex-col gap-2">
+              <label className="text-[10px] font-mono text-tagma-muted uppercase tracking-wider">File name (saved under .tagma/)</label>
+              <input
+                type="text"
+                autoFocus
+                value={saveAsInput}
+                onChange={(e) => setSaveAsInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitSaveAs(saveAsInput);
+                  if (e.key === 'Escape') setSaveAsInput(null);
+                }}
+                className="text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+                placeholder="my-pipeline.yaml"
+              />
+            </div>
+            <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
+              <button
+                onClick={() => setSaveAsInput(null)}
+                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors rounded-sm"
+              >
+                Cancel
+              </button>
+              <button onClick={() => commitSaveAs(saveAsInput)} className="btn-primary">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search overlay (U1 — Ctrl+F) */}
+      {searchVisible && (
+        <div className="fixed top-14 right-4 z-[150] w-[340px] bg-tagma-surface border border-tagma-border shadow-panel animate-fade-in">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-tagma-border">
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); }
+              }}
+              placeholder="Search tasks by name or prompt..."
+              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+            />
+            <button
+              onClick={() => { setSearchVisible(false); setSearchQuery(''); }}
+              className="p-1 text-tagma-muted hover:text-tagma-text"
+            >
+              <XIcon size={12} />
+            </button>
+          </div>
+          <div className="max-h-[240px] overflow-y-auto">
+            {(() => {
+              const q = searchQuery.trim().toLowerCase();
+              if (!q) {
+                return <div className="px-3 py-2 text-[10px] font-mono text-tagma-muted/60">Type to search tasks</div>;
+              }
+              const matches: { trackId: string; taskId: string; label: string; snippet: string }[] = [];
+              for (const t of config.tracks) {
+                for (const task of t.tasks) {
+                  const name = (task.name ?? '').toLowerCase();
+                  const prompt = (task.prompt ?? '').toLowerCase();
+                  if (name.includes(q) || prompt.includes(q)) {
+                    matches.push({
+                      trackId: t.id,
+                      taskId: task.id,
+                      label: task.name ?? task.id,
+                      snippet: (task.prompt ?? '').slice(0, 80),
+                    });
+                  }
+                }
+              }
+              if (matches.length === 0) {
+                return <div className="px-3 py-2 text-[10px] font-mono text-tagma-muted/60">No matches</div>;
+              }
+              return matches.map((m) => (
+                <button
+                  key={`${m.trackId}.${m.taskId}`}
+                  className="w-full text-left px-3 py-2 border-b border-tagma-border/30 last:border-b-0 hover:bg-tagma-bg/60"
+                  onClick={() => {
+                    selectTask(`${m.trackId}.${m.taskId}`);
+                    setSearchVisible(false);
+                  }}
+                >
+                  <div className="text-[11px] font-mono text-tagma-text truncate">{m.label}</div>
+                  {m.snippet && (
+                    <div className="text-[10px] font-mono text-tagma-muted/60 truncate">{m.snippet}</div>
+                  )}
+                </button>
+              ));
+            })()}
+          </div>
+        </div>
+      )}
+
+      <ErrorToast />
 
       {/* Confirm dialog */}
       {confirmInfo && (

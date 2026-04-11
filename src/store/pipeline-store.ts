@@ -1,8 +1,33 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
-import type { ServerState, RawPipelineConfig, RawTaskConfig, ValidationError, DagEdge, PluginRegistry, EditorLayout } from '../api/client';
+import type { ServerState, RawPipelineConfig, RawTrackConfig, RawTaskConfig, ValidationError, DagEdge, PluginRegistry } from '../api/client';
 
 export interface TaskPosition { x: number; }
+
+/**
+ * Undo/redo history entry. Captures only config-level state — selection,
+ * transient UI and layoutDirty are intentionally excluded because they
+ * should not be part of the undo stack (see Group 6 docs).
+ */
+export interface HistoryEntry {
+  config: RawPipelineConfig;
+  positions: Map<string, TaskPosition>;
+  dagEdges: DagEdge[];
+  validationErrors: ValidationError[];
+}
+
+/** Maximum entries kept in each history stack before oldest is dropped. */
+const HISTORY_LIMIT = 50;
+
+/**
+ * Clipboard slot for copy/paste of a task or an entire track.
+ * Payload is a deep-clonable plain object that keeps all fields except
+ * identity (ids are regenerated on paste).
+ */
+export type ClipboardSlot =
+  | { kind: 'task'; trackId: string; task: RawTaskConfig }
+  | { kind: 'track'; track: RawTrackConfig }
+  | null;
 
 interface PipelineState {
   config: RawPipelineConfig;
@@ -14,9 +39,13 @@ interface PipelineState {
   yamlPath: string | null;
   workDir: string;
   isDirty: boolean;
+  layoutDirty: boolean;
   loading: boolean;
   errorMessage: string | null;
   registry: PluginRegistry;
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+  clipboard: ClipboardSlot;
 
   applyState: (state: ServerState) => void;
   clearError: () => void;
@@ -48,10 +77,36 @@ interface PipelineState {
   exportYaml: () => Promise<string>;
   importYaml: (yaml: string) => Promise<void>;
   loadDemo: () => Promise<void>;
+
+  // Undo/redo (config-level history only).
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
+
+  // Clipboard: copy / paste / duplicate selected task or track.
+  copySelection: () => boolean;
+  pasteClipboard: () => boolean;
+  duplicateSelection: () => boolean;
 }
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/**
+ * Extract a human-readable message from any thrown value. Fetch errors from
+ * `request()` in api/client.ts are thrown as `new Error(err.error ?? ...)`,
+ * so `.message` normally carries the server-reported reason.
+ */
+function errorToMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  if (e && typeof e === 'object' && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === 'string') return m;
+  }
+  try { return JSON.stringify(e); } catch { return String(e); }
 }
 
 const TRACK_COLORS = [
@@ -59,14 +114,70 @@ const TRACK_COLORS = [
   '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
 ];
 
+/** Snapshot of mutable slice used for optimistic rollback. */
+interface Snapshot {
+  config: RawPipelineConfig;
+  positions: Map<string, TaskPosition>;
+  dagEdges: DagEdge[];
+  validationErrors: ValidationError[];
+  selectedTaskId: string | null;
+  selectedTrackId: string | null;
+  isDirty: boolean;
+  layoutDirty: boolean;
+}
+
 export const usePipelineStore = create<PipelineState>((set, _get) => {
-  const flushLayout = () => {
+  const takeSnapshot = (): Snapshot => {
+    const s = _get();
+    return {
+      config: s.config,
+      positions: new Map(s.positions),
+      dagEdges: s.dagEdges,
+      validationErrors: s.validationErrors,
+      selectedTaskId: s.selectedTaskId,
+      selectedTrackId: s.selectedTrackId,
+      isDirty: s.isDirty,
+      layoutDirty: s.layoutDirty,
+    };
+  };
+
+  const restoreSnapshot = (snap: Snapshot) => {
+    set({
+      config: snap.config,
+      positions: snap.positions,
+      dagEdges: snap.dagEdges,
+      validationErrors: snap.validationErrors,
+      selectedTaskId: snap.selectedTaskId,
+      selectedTrackId: snap.selectedTrackId,
+      isDirty: snap.isDirty,
+      layoutDirty: snap.layoutDirty,
+    });
+  };
+
+  /**
+   * Flush pending layout positions to the server.
+   * Returns a promise that resolves on success and rejects on failure so
+   * callers (saveFile) can await the result. On success, clear layoutDirty.
+   * On failure, surface the error via errorMessage.
+   */
+  const flushLayout = async (): Promise<void> => {
     const positions = _get().positions;
     const obj: Record<string, { x: number }> = {};
     for (const [k, v] of positions) obj[k] = v;
-    api.saveLayout(obj).catch(() => {});
+    try {
+      await api.saveLayout(obj);
+      set({ layoutDirty: false });
+    } catch (e) {
+      set({ errorMessage: 'Failed to save layout: ' + errorToMessage(e) });
+      throw e;
+    }
   };
 
+  /**
+   * Apply a fresh ServerState from the backend. Only server-derived fields
+   * are updated; dirty tracking is owned by the caller (mutation actions set
+   * isDirty true before firing, save actions set it false after success).
+   */
   const applyState = (state: ServerState) => {
     set({
       config: state.config,
@@ -74,7 +185,6 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       dagEdges: state.dag.edges,
       yamlPath: state.yamlPath,
       workDir: state.workDir,
-      isDirty: true,
       loading: false,
     });
   };
@@ -94,13 +204,76 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       yamlPath: state.yamlPath,
       workDir: state.workDir,
       positions,
-      isDirty: true,
       loading: false,
     });
   };
 
-  const fire = (fn: () => Promise<ServerState>) => {
-    fn().then(applyState).catch((e) => console.error('API error:', e));
+  // Monotonic request counter used to reject out-of-order responses from
+  // `fire()`. Rapid edits (rename, drag) can race: if request A is dispatched
+  // first but its response arrives *after* request B's, A's stale ServerState
+  // would overwrite B's — causing the UI to flicker back to an older value.
+  // We stamp each fire() call with its epoch and only apply the response if
+  // no newer request was dispatched in the meantime.
+  let fireEpoch = 0;
+
+  /** Snapshot → HistoryEntry projection (config-level fields only). */
+  const snapshotToHistory = (snap: Snapshot): HistoryEntry => ({
+    config: snap.config,
+    positions: new Map(snap.positions),
+    dagEdges: snap.dagEdges,
+    validationErrors: snap.validationErrors,
+  });
+
+  /**
+   * Push a pre-mutation snapshot onto the undo stack and clear redo.
+   * Called only when a mutation CONFIRMS success, so failed/rolled-back
+   * operations never leak into history.
+   */
+  const pushHistory = (entry: HistoryEntry) => {
+    set((s) => {
+      const past = [...s.past, entry];
+      if (past.length > HISTORY_LIMIT) past.shift();
+      return { past, future: [] };
+    });
+  };
+
+  /**
+   * Fire a mutation request. On success applies the authoritative ServerState
+   * AND pushes the pre-mutation snapshot onto the undo history. On failure
+   * surfaces the error into `errorMessage` and optionally restores an
+   * optimistic snapshot so local state does not diverge from the server.
+   *
+   * History invariant: the snapshot pushed onto `past` is the state BEFORE
+   * the mutation. Only pushed on success — so rolled-back failures never
+   * enter the undo stack.
+   */
+  const fire = (
+    fn: () => Promise<ServerState>,
+    opts?: { snapshot?: Snapshot; errorPrefix?: string; skipHistory?: boolean },
+  ) => {
+    const myEpoch = ++fireEpoch;
+    // Capture pre-mutation snapshot for history. Reuse `opts.snapshot` when
+    // provided (it's already a pre-mutation snapshot captured by the caller
+    // BEFORE any optimistic local edits). Otherwise take one now.
+    const preSnapshot: Snapshot = opts?.snapshot ?? takeSnapshot();
+    // Every mutation implies a dirty document.
+    set({ isDirty: true });
+    fn().then(
+      (state) => {
+        if (myEpoch !== fireEpoch) return; // a newer request superseded us
+        applyState(state);
+        if (!opts?.skipHistory) pushHistory(snapshotToHistory(preSnapshot));
+      },
+      (e) => {
+        // Still honor epoch ordering for error reporting — if a later request
+        // was dispatched after ours, it will apply its own result and we
+        // should not clobber that with a stale rollback.
+        if (myEpoch !== fireEpoch) return;
+        if (opts?.snapshot) restoreSnapshot(opts.snapshot);
+        const prefix = opts?.errorPrefix ?? 'Operation failed';
+        set({ errorMessage: `${prefix}: ${errorToMessage(e)}` });
+      },
+    );
   };
 
   return {
@@ -113,9 +286,13 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     yamlPath: null,
     workDir: '',
     isDirty: false,
+    layoutDirty: false,
     loading: true,
     errorMessage: null,
     registry: { drivers: [], triggers: [], completions: [], middlewares: [] },
+    past: [],
+    future: [],
+    clipboard: null,
 
     applyState,
     clearError: () => set({ errorMessage: null }),
@@ -127,44 +304,45 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
           api.getRegistry().catch(() => ({ drivers: [], triggers: [], completions: [], middlewares: [] })),
         ]);
         applyStateWithLayout(state);
-        set({ isDirty: false, registry });
+        set({ isDirty: false, layoutDirty: false, registry, past: [], future: [] });
       } catch (e) {
-        console.error('Failed to init:', e);
-        set({ loading: false });
+        set({ loading: false, errorMessage: 'Failed to initialize: ' + errorToMessage(e) });
       }
     },
 
-    setPipelineName: (name) => fire(() => api.updatePipeline({ name })),
-    updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields)),
+    setPipelineName: (name) => fire(() => api.updatePipeline({ name }), { errorPrefix: 'Failed to rename pipeline' }),
+    updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields), { errorPrefix: 'Failed to update pipeline' }),
     addTrack: (name) => {
       const trackCount = _get().config.tracks.length;
       const color = TRACK_COLORS[trackCount % TRACK_COLORS.length];
-      fire(() => api.addTrack(generateId(), name, color));
+      fire(() => api.addTrack(generateId(), name, color), { errorPrefix: 'Failed to add track' });
     },
-    renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name })),
-    updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields)),
+    renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name }), { errorPrefix: 'Failed to rename track' }),
+    updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields), { errorPrefix: 'Failed to update track' }),
 
     deleteTrack: (trackId) => {
+      const snapshot = takeSnapshot();
       set((s) => {
         const positions = new Map(s.positions);
         for (const key of positions.keys()) {
           if (key.startsWith(trackId + '.')) positions.delete(key);
         }
-        return { positions, selectedTaskId: s.selectedTaskId?.startsWith(trackId + '.') ? null : s.selectedTaskId };
+        return {
+          positions,
+          selectedTaskId: s.selectedTaskId?.startsWith(trackId + '.') ? null : s.selectedTaskId,
+        };
       });
 
-      fire(() => api.deleteTrack(trackId));
+      fire(() => api.deleteTrack(trackId), { snapshot, errorPrefix: 'Failed to delete track' });
     },
 
     moveTrackTo: (trackId, toIndex) => {
-      // Optimistically reorder tracks locally before API round-trip.
-      // ValidationError paths are JSONPath with numeric indices (e.g.
-      // "tracks[1].tasks[0].prompt"); if we only reorder config.tracks but
-      // leave validationErrors untouched, the index-based attribution in
-      // App.tsx will briefly point errors at the wrong tracks, causing
-      // warning icons to flash on adjacent rows until the server re-validates.
-      // Remap each error's track index through the same permutation so the
-      // attribution stays correct within the same render.
+      // Optimistically reorder tracks locally before API round-trip. We used
+      // to also remap validationErrors paths via regex, but the server
+      // response already contains authoritative validationErrors — just wait
+      // for it. A brief single-frame mis-attribution is preferable to a
+      // locally-invented path that could drift from the server.
+      const snapshot = takeSnapshot();
       set((s) => {
         const tracks = s.config.tracks;
         const fromIndex = tracks.findIndex((t) => t.id === trackId);
@@ -173,61 +351,48 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const moved = tracks[fromIndex];
         const newTracks = [...without];
         newTracks.splice(Math.min(toIndex, newTracks.length), 0, moved);
-
-        const newIdxById = new Map<string, number>();
-        newTracks.forEach((t, i) => newIdxById.set(t.id, i));
-        const oldToNew = new Map<number, number>();
-        tracks.forEach((t, oldIdx) => {
-          const n = newIdxById.get(t.id);
-          if (n !== undefined) oldToNew.set(oldIdx, n);
-        });
-
-        const validationErrors = s.validationErrors.map((err) => {
-          const m = err.path.match(/^tracks\[(\d+)\](.*)$/);
-          if (!m) return err;
-          const newIdx = oldToNew.get(parseInt(m[1], 10));
-          if (newIdx === undefined) return err;
-          return { ...err, path: `tracks[${newIdx}]${m[2]}` };
-        });
-
-        return { config: { ...s.config, tracks: newTracks }, validationErrors };
+        return { config: { ...s.config, tracks: newTracks }, layoutDirty: true };
       });
-      fire(() => api.reorderTrack(trackId, toIndex));
+      fire(() => api.reorderTrack(trackId, toIndex), { snapshot, errorPrefix: 'Failed to reorder track' });
     },
 
     addTask: (trackId, name, positionX) => {
       const id = generateId();
       const task: RawTaskConfig = { id, name, prompt: '' };
+      const snapshot = takeSnapshot();
       if (positionX !== undefined) {
         set((s) => {
           const positions = new Map(s.positions);
           positions.set(`${trackId}.${id}`, { x: positionX });
-          return { positions };
+          return { positions, layoutDirty: true };
         });
       }
-      fire(() => api.addTask(trackId, task));
+      fire(() => api.addTask(trackId, task), { snapshot, errorPrefix: 'Failed to add task' });
     },
 
-    updateTask: (trackId, taskId, patch) => fire(() => api.updateTask(trackId, taskId, patch)),
+    updateTask: (trackId, taskId, patch) =>
+      fire(() => api.updateTask(trackId, taskId, patch), { errorPrefix: 'Failed to update task' }),
 
     deleteTask: (trackId, taskId) => {
       const qid = `${trackId}.${taskId}`;
+      const snapshot = takeSnapshot();
       set((s) => ({
         selectedTaskId: s.selectedTaskId === qid ? null : s.selectedTaskId,
         positions: (() => { const p = new Map(s.positions); p.delete(qid); return p; })(),
       }));
 
-      fire(() => api.deleteTask(trackId, taskId));
+      fire(() => api.deleteTask(trackId, taskId), { snapshot, errorPrefix: 'Failed to delete task' });
     },
 
     transferTaskToTrack: (fromTrackId, taskId, toTrackId) => {
       const qidOld = `${fromTrackId}.${taskId}`;
       const qidNew = `${toTrackId}.${taskId}`;
-      // Optimistically move the task between tracks and remap positions + dag
-      // edges so the canvas reflects the new location on the same frame the
-      // pointer is released. Without this, config/dagEdges still reference the
-      // old qid until the server responds, causing connection lines to snap
-      // back to a default grid slot before jumping to the correct position.
+      // Minimal optimistic move: relocate the task to the new track in
+      // config and rename its position key. We do NOT recompute dagEdges
+      // locally — the server response is authoritative and will replace them
+      // on success. A single-frame mismatch (edges still pointing at the old
+      // qid) is preferable to a hand-rolled rewrite that could drift.
+      const snapshot = takeSnapshot();
       set((s) => {
         let moved: RawTaskConfig | undefined;
         const withoutTask = s.config.tracks.map((t) => {
@@ -251,29 +416,31 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         if (!positions.has(qidNew) && oldPos) positions.set(qidNew, oldPos);
         positions.delete(qidOld);
 
-        // Rewrite any dag edge endpoint that pointed at the old qid.
-        const dagEdges = s.dagEdges.map((e) => ({
-          from: e.from === qidOld ? qidNew : e.from,
-          to: e.to === qidOld ? qidNew : e.to,
-        }));
-
         return {
           config: { ...s.config, tracks: newTracks },
           positions,
-          dagEdges,
           selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId,
-          isDirty: true,
+          layoutDirty: true,
         };
       });
 
-      fire(() => api.transferTask(fromTrackId, taskId, toTrackId));
+      fire(
+        () => api.transferTask(fromTrackId, taskId, toTrackId),
+        { snapshot, errorPrefix: 'Failed to move task' },
+      );
     },
 
     addDependency: (fromTrackId, fromTaskId, toTrackId, toTaskId) =>
-      fire(() => api.addDependency(fromTrackId, fromTaskId, toTrackId, toTaskId)),
+      fire(
+        () => api.addDependency(fromTrackId, fromTaskId, toTrackId, toTaskId),
+        { errorPrefix: 'Failed to add dependency' },
+      ),
 
     removeDependency: (trackId, taskId, depRef) =>
-      fire(() => api.removeDependency(trackId, taskId, depRef)),
+      fire(
+        () => api.removeDependency(trackId, taskId, depRef),
+        { errorPrefix: 'Failed to remove dependency' },
+      ),
 
     setRegistry: (registry) => set({ registry }),
 
@@ -284,22 +451,36 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       set((s) => {
         const positions = new Map(s.positions);
         positions.set(qualifiedId, { x });
-        return { positions, isDirty: true };
+        return { positions, isDirty: true, layoutDirty: true };
       });
     },
 
     setWorkDir: async (wd) => {
       try {
-        // Auto-save current pipeline before switching workspace
+        // Auto-save current pipeline before switching workspace.
+        // If the save fails we MUST abort the switch — otherwise the
+        // follow-up newPipeline() call overwrites the in-memory pipeline
+        // and the user silently loses their unsaved work.
         const current = _get();
         if (current.isDirty && current.yamlPath) {
-          await api.saveFile().catch(() => {});
+          try {
+            await flushLayout();
+            await api.saveFile();
+          } catch (saveErr) {
+            set({
+              errorMessage:
+                'Cannot switch workspace: failed to save current pipeline — ' +
+                errorToMessage(saveErr) +
+                '. Save manually or discard changes before switching.',
+            });
+            return;
+          }
         }
         // Set new workspace, then reset to a blank pipeline via store's newPipeline
         await api.setWorkDir(wd);
         await _get().newPipeline();
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to set workspace: ' + (e.message ?? e) });
+      } catch (e) {
+        set({ errorMessage: 'Failed to set workspace: ' + errorToMessage(e) });
       }
     },
 
@@ -308,20 +489,22 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const state = await api.openFile(path);
         set({ selectedTaskId: null, selectedTrackId: null });
         applyStateWithLayout(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to open file: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false, past: [], future: [] });
+      } catch (e) {
+        set({ errorMessage: 'Failed to open file: ' + errorToMessage(e) });
       }
     },
 
     saveFile: async () => {
       try {
-        flushLayout();
+        // Flush layout first so the layout file lands on disk alongside the
+        // YAML. Awaiting surfaces any layout error before we commit the save.
+        await flushLayout();
         const state = await api.saveFile();
         applyState(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to save: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false });
+      } catch (e) {
+        set({ errorMessage: 'Failed to save: ' + errorToMessage(e) });
       }
     },
 
@@ -329,9 +512,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       try {
         const state = await api.saveFileAs(path);
         applyState(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to save: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false });
+      } catch (e) {
+        set({ errorMessage: 'Failed to save: ' + errorToMessage(e) });
       }
     },
 
@@ -340,9 +523,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         set({ selectedTaskId: null, selectedTrackId: null });
         const state = await api.newPipeline(name);
         applyStateWithLayout(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to create pipeline: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false, past: [], future: [] });
+      } catch (e) {
+        set({ errorMessage: 'Failed to create pipeline: ' + errorToMessage(e) });
       }
     },
 
@@ -351,9 +534,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const state = await api.importFile(sourcePath);
         set({ selectedTaskId: null, selectedTrackId: null });
         applyStateWithLayout(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to import file: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false, past: [], future: [] });
+      } catch (e) {
+        set({ errorMessage: 'Failed to import file: ' + errorToMessage(e) });
       }
     },
 
@@ -361,8 +544,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       try {
         const result = await api.exportFile(destDir);
         return result.path;
-      } catch (e: any) {
-        set({ errorMessage: 'Failed to export: ' + (e.message ?? e) });
+      } catch (e) {
+        set({ errorMessage: 'Failed to export: ' + errorToMessage(e) });
         return null;
       }
     },
@@ -374,9 +557,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const state = await api.importYaml(yaml);
         set({ selectedTaskId: null });
         applyStateWithLayout(state);
-        set({ isDirty: false });
-      } catch (e: any) {
-        set({ errorMessage: 'Invalid YAML: ' + (e.message ?? e) });
+        set({ isDirty: false, layoutDirty: false, past: [], future: [] });
+      } catch (e) {
+        set({ errorMessage: 'Invalid YAML: ' + errorToMessage(e) });
       }
     },
 
@@ -385,8 +568,181 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const state = await api.loadDemo();
         set({ selectedTaskId: null });
         applyStateWithLayout(state);
-        set({ isDirty: false });
-      } catch (e) { console.error('Failed to load demo:', e); }
+        set({ isDirty: false, layoutDirty: false, past: [], future: [] });
+      } catch (e) {
+        set({ errorMessage: 'Failed to load demo: ' + errorToMessage(e) });
+      }
+    },
+
+    // ---- Undo / Redo ----------------------------------------------------
+    // Semantics: local-only restore. We pop the previous snapshot into
+    // local state (config, positions, dagEdges, validationErrors) and mark
+    // the document dirty so the user can Ctrl+S to persist. We do NOT
+    // auto-push to the server because:
+    //   (1) the client has no generic "set full config" API — existing
+    //       mutation endpoints are per-field/per-entity;
+    //   (2) keeping undo local avoids races with in-flight fire() calls.
+    // Selection and transient UI state are intentionally untouched.
+
+    canUndo: () => _get().past.length > 0,
+    canRedo: () => _get().future.length > 0,
+
+    undo: () => {
+      const s = _get();
+      if (s.past.length === 0) return;
+      const current: HistoryEntry = {
+        config: s.config,
+        positions: new Map(s.positions),
+        dagEdges: s.dagEdges,
+        validationErrors: s.validationErrors,
+      };
+      const prev = s.past[s.past.length - 1];
+      set({
+        config: prev.config,
+        positions: new Map(prev.positions),
+        dagEdges: prev.dagEdges,
+        validationErrors: prev.validationErrors,
+        past: s.past.slice(0, -1),
+        future: [...s.future, current],
+        isDirty: true,
+        layoutDirty: true,
+      });
+    },
+
+    redo: () => {
+      const s = _get();
+      if (s.future.length === 0) return;
+      const current: HistoryEntry = {
+        config: s.config,
+        positions: new Map(s.positions),
+        dagEdges: s.dagEdges,
+        validationErrors: s.validationErrors,
+      };
+      const next = s.future[s.future.length - 1];
+      set({
+        config: next.config,
+        positions: new Map(next.positions),
+        dagEdges: next.dagEdges,
+        validationErrors: next.validationErrors,
+        past: [...s.past, current],
+        future: s.future.slice(0, -1),
+        isDirty: true,
+        layoutDirty: true,
+      });
+    },
+
+    // ---- Clipboard ------------------------------------------------------
+    // Copy/paste/duplicate operate on the current selection. Paste creates
+    // new ids so clones are independent. Paste routes through the normal
+    // mutation path (fire() → api.addTask / addTrack), so clones
+    // participate in undo history automatically.
+
+    copySelection: () => {
+      const s = _get();
+      if (s.selectedTaskId) {
+        const [trackId, taskId] = s.selectedTaskId.split('.');
+        const track = s.config.tracks.find((t) => t.id === trackId);
+        const task = track?.tasks.find((t) => t.id === taskId);
+        if (!task) return false;
+        set({ clipboard: { kind: 'task', trackId, task: { ...task } } });
+        return true;
+      }
+      if (s.selectedTrackId) {
+        const track = s.config.tracks.find((t) => t.id === s.selectedTrackId);
+        if (!track) return false;
+        set({ clipboard: { kind: 'track', track: { ...track, tasks: track.tasks.map((t) => ({ ...t })) } } });
+        return true;
+      }
+      return false;
+    },
+
+    pasteClipboard: () => {
+      const s = _get();
+      const clip = s.clipboard;
+      if (!clip) return false;
+      if (clip.kind === 'task') {
+        // Target track: selected track, else selected task's track, else
+        // the clipboard's original track, else the first track.
+        let targetTrackId = clip.trackId;
+        if (s.selectedTrackId) targetTrackId = s.selectedTrackId;
+        else if (s.selectedTaskId) targetTrackId = s.selectedTaskId.split('.')[0];
+        if (!s.config.tracks.some((t) => t.id === targetTrackId)) {
+          targetTrackId = s.config.tracks[0]?.id ?? '';
+        }
+        if (!targetTrackId) return false;
+        const cloned: RawTaskConfig = {
+          ...clip.task,
+          id: generateId(),
+          name: clip.task.name ? `${clip.task.name} (copy)` : undefined,
+          // Strip dependencies: referenced ids may not resolve in the new
+          // location and would fail server-side validation.
+          depends_on: undefined,
+        };
+        fire(() => api.addTask(targetTrackId, cloned), { errorPrefix: 'Failed to paste task' });
+        return true;
+      }
+      if (clip.kind === 'track') {
+        // Server exposes addTrack(id, name, color) + per-task addTask, so
+        // clone the track and replay tasks sequentially. History records
+        // the initial addTrack entry; subsequent task adds extend it.
+        const newTrackId = generateId();
+        const newName = `${clip.track.name} (copy)`;
+        const tasksToClone: RawTaskConfig[] = clip.track.tasks.map((t) => ({
+          ...t,
+          id: generateId(),
+          depends_on: undefined,
+        }));
+        const preSnapshot = takeSnapshot();
+        set({ isDirty: true });
+        api.addTrack(newTrackId, newName, clip.track.color)
+          .then(async (state) => {
+            applyState(state);
+            for (const task of tasksToClone) {
+              try {
+                const next = await api.addTask(newTrackId, task);
+                applyState(next);
+              } catch (e) {
+                set({ errorMessage: 'Failed to paste task in cloned track: ' + errorToMessage(e) });
+                return;
+              }
+            }
+            pushHistory(snapshotToHistory(preSnapshot));
+          })
+          .catch((e) => {
+            set({ errorMessage: 'Failed to paste track: ' + errorToMessage(e) });
+          });
+        return true;
+      }
+      return false;
+    },
+
+    duplicateSelection: () => {
+      // Ctrl+D = copy + paste in place, without disturbing the clipboard.
+      const s = _get();
+      if (s.selectedTaskId) {
+        const [trackId, taskId] = s.selectedTaskId.split('.');
+        const track = s.config.tracks.find((t) => t.id === trackId);
+        const task = track?.tasks.find((t) => t.id === taskId);
+        if (!task) return false;
+        const cloned: RawTaskConfig = {
+          ...task,
+          id: generateId(),
+          name: task.name ? `${task.name} (copy)` : undefined,
+          depends_on: undefined,
+        };
+        fire(() => api.addTask(trackId, cloned), { errorPrefix: 'Failed to duplicate task' });
+        return true;
+      }
+      if (s.selectedTrackId) {
+        const track = s.config.tracks.find((t) => t.id === s.selectedTrackId);
+        if (!track) return false;
+        const prevClip = s.clipboard;
+        set({ clipboard: { kind: 'track', track: { ...track, tasks: track.tasks.map((t) => ({ ...t })) } } });
+        const result = _get().pasteClipboard();
+        set({ clipboard: prevClip });
+        return result;
+      }
+      return false;
     },
   };
 });

@@ -1,9 +1,14 @@
-import { useState, useCallback } from 'react';
-import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
-import type { RawTaskConfig, RawPipelineConfig, TriggerConfig, CompletionConfig } from '../../api/client';
+import { useState, useCallback, useMemo } from 'react';
+import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert } from 'lucide-react';
+import type { RawTaskConfig, RawPipelineConfig, RawTrackConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
+import { useDriverCapability } from '../../hooks/use-driver-capability';
 import { MiddlewareEditor } from './MiddlewareEditor';
+import { InheritedValue, ResetButton, resolveScalar, resolvePermissions, permsToString } from './InheritedValue';
+import { ConfirmDialog } from './ConfirmDialog';
+import { SchemaForm, getBuiltinSchema } from './SchemaForm';
+import { Minimap } from '../board/Minimap';
 
 const KNOWN_TRIGGER_TYPES = new Set(['manual', 'file']);
 const KNOWN_COMPLETION_TYPES = new Set(['exit_code', 'file_exists', 'output_check']);
@@ -27,18 +32,9 @@ interface TaskConfigPanelProps {
   onRemoveDependency: (trackId: string, taskId: string, depRef: string) => void;
 }
 
-/** Resolve inherited value: track → pipeline */
-function inheritedDriver(trackId: string, config: RawPipelineConfig): string | undefined {
-  const track = config.tracks.find((t) => t.id === trackId);
-  return track?.driver ?? config.driver;
-}
-function inheritedModelTier(trackId: string, config: RawPipelineConfig): string | undefined {
-  const track = config.tracks.find((t) => t.id === trackId);
-  return track?.model_tier;
-}
-function inheritedPermissions(trackId: string, config: RawPipelineConfig) {
-  const track = config.tracks.find((t) => t.id === trackId);
-  return track?.permissions;
+/** Find the enclosing track for a task panel. */
+function findTrack(trackId: string, config: RawPipelineConfig): RawTrackConfig | undefined {
+  return config.tracks.find((t) => t.id === trackId);
 }
 
 export function TaskConfigPanel({
@@ -47,10 +43,47 @@ export function TaskConfigPanel({
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const track = findTrack(trackId, pipelineConfig);
+  const trackName = track?.name ?? trackId;
+
+  // Resolved inherited values (task → track → pipeline → default).
+  const resolvedDriver = useMemo(
+    () => resolveScalar(task.driver, track?.driver, pipelineConfig.driver, 'claude-code'),
+    [task.driver, track?.driver, pipelineConfig.driver],
+  );
+  const resolvedModelTier = useMemo(
+    () => resolveScalar(task.model_tier, track?.model_tier, undefined, 'medium'),
+    [task.model_tier, track?.model_tier],
+  );
+  const resolvedAgentProfile = useMemo(
+    () => resolveScalar(task.agent_profile, track?.agent_profile, undefined),
+    [task.agent_profile, track?.agent_profile],
+  );
+  const resolvedCwd = useMemo(
+    () => resolveScalar(task.cwd, track?.cwd, undefined, '.'),
+    [task.cwd, track?.cwd],
+  );
+  const resolvedTimeout = useMemo(
+    () => resolveScalar(task.timeout, undefined, pipelineConfig.timeout, undefined),
+    [task.timeout, pipelineConfig.timeout],
+  );
+  const resolvedPerms = useMemo(
+    () => resolvePermissions(task.permissions, track?.permissions),
+    [task.permissions, track?.permissions],
+  );
 
   const registry = usePipelineStore((s) => s.registry);
   const triggerOptions = mergeTypeOptions(['manual', 'file'], registry.triggers);
   const completionOptions = mergeTypeOptions(['exit_code', 'file_exists', 'output_check'], registry.completions);
+
+  // F2/G5: look up the resolved driver's capabilities for the current task.
+  // Used below to surface inline warnings next to `agent_profile` and
+  // `continue_from` when the driver cannot honor them.
+  const driverCaps = useDriverCapability(resolvedDriver.value);
+  const systemPromptUnsupported = driverCaps ? driverCaps.systemPrompt === false : false;
+  const sessionResumeUnsupported = driverCaps ? driverCaps.sessionResume === false : false;
 
   const commitField = useCallback((patch: Partial<RawTaskConfig>) => {
     onUpdateTask(trackId, task.id, patch);
@@ -123,20 +156,31 @@ export function TaskConfigPanel({
     commitField({ continue_from: v || undefined });
   }, [commitField]);
 
-  // Resolve depends_on refs to prompt tasks (candidates for continue_from).
-  const promptDepRefs = (() => {
-    const refs: string[] = [];
-    for (const depRef of dependencies) {
-      const qid = depRef.includes('.') ? depRef : `${trackId}.${depRef}`;
-      const [trId, tId] = qid.split('.');
-      const depTrack = pipelineConfig.tracks.find((t) => t.id === trId);
-      const depTask = depTrack?.tasks.find((t) => t.id === tId);
-      if (depTask && !!depTask.prompt && !depTask.command && !depTask.use) {
-        refs.push(depRef);
+  // F7: continue_from candidates — widen to any upstream dependency. The SDK
+  // accepts continue_from when upstream has an `output` file, upstream driver
+  // supports parseResult, or downstream driver supports session resume. The
+  // client can't perfectly know driver capabilities yet (TODO: expose
+  // DriverCapabilities via /api/registry) so we let server-side validation
+  // report incompatibility and offer every upstream dep as a candidate.
+  const continueFromCandidates = dependencies;
+  const downstreamTasksThatDependOnMe = useMemo(() => {
+    const out: { trackId: string; taskId: string; qualified: string }[] = [];
+    const myQualified = `${trackId}.${task.id}`;
+    for (const tr of pipelineConfig.tracks) {
+      for (const t of tr.tasks) {
+        if (t.id === task.id && tr.id === trackId) continue;
+        const deps = t.depends_on ?? [];
+        const matches = deps.some((d) => {
+          const qid = d.includes('.') ? d : `${tr.id}.${d}`;
+          return qid === myQualified;
+        });
+        if (matches) {
+          out.push({ trackId: tr.id, taskId: t.id, qualified: `${tr.id}.${t.id}` });
+        }
       }
     }
-    return refs;
-  })();
+    return out;
+  }, [pipelineConfig.tracks, trackId, task.id]);
 
   return (
     <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
@@ -197,60 +241,91 @@ export function TaskConfigPanel({
           <>
             {/* Driver */}
             <div>
-              <label className="field-label">Driver</label>
+              <div className="flex items-center justify-between">
+                <label className="field-label">Driver</label>
+                <ResetButton visible={!!task.driver} onReset={() => commitField({ driver: undefined })} />
+              </div>
               <select className="field-input" value={task.driver ?? ''} onChange={(e) => handleDriverChange(e.target.value)}>
-                <option value="">inherited{inheritedDriver(trackId, pipelineConfig) ? ` (${inheritedDriver(trackId, pipelineConfig)})` : ''}</option>
+                <option value="">(inherited)</option>
                 {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
+              <InheritedValue isOverridden={!!task.driver} resolved={resolvedDriver} trackName={trackName} pipelineName={pipelineConfig.name} />
             </div>
 
             {/* Model Tier */}
             <div>
-              <label className="field-label">Model Tier</label>
+              <div className="flex items-center justify-between">
+                <label className="field-label">Model Tier</label>
+                <ResetButton visible={!!task.model_tier} onReset={() => commitField({ model_tier: undefined })} />
+              </div>
               <select className="field-input" value={task.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
-                <option value="">inherited{inheritedModelTier(trackId, pipelineConfig) ? ` (${inheritedModelTier(trackId, pipelineConfig)})` : ''}</option>
+                <option value="">(inherited)</option>
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>
               </select>
+              <InheritedValue isOverridden={!!task.model_tier} resolved={resolvedModelTier} trackName={trackName} pipelineName={pipelineConfig.name} />
             </div>
 
             {/* Agent Profile */}
             <div>
-              <label className="field-label">Agent Profile</label>
+              <div className="flex items-center justify-between">
+                <label className="field-label">Agent Profile</label>
+                <ResetButton visible={!!task.agent_profile} onReset={() => commitField({ agent_profile: undefined })} />
+              </div>
               <textarea className="field-input min-h-[60px] resize-y font-mono text-[11px]" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile}
                 placeholder="Named profile or multi-line system prompt..." />
+              {systemPromptUnsupported && (
+                <p className="text-[10px] text-amber-400 mt-1 flex items-start gap-1">
+                  <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                  <span>
+                    Driver "{resolvedDriver.value ?? 'unknown'}" does not support <code>systemPrompt</code> — this
+                    text will be silently dropped at runtime.
+                  </span>
+                </p>
+              )}
+              <InheritedValue isOverridden={!!task.agent_profile} resolved={resolvedAgentProfile} trackName={trackName} pipelineName={pipelineConfig.name} />
             </div>
 
             {/* Permissions */}
             <div>
-              <label className="field-label">Permissions</label>
-              <div className="flex gap-3">
-                {(['read', 'write', 'execute'] as const).map((key) => (
-                  <label key={key} className="flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={!!task.permissions?.[key]}
-                      onChange={() => handlePermToggle(key)}
-                      className="accent-tagma-accent" />
-                    <span className="text-[11px] text-tagma-text capitalize">{key}</span>
-                  </label>
-                ))}
+              <div className="flex items-center justify-between">
+                <label className="field-label">Permissions</label>
+                <ResetButton visible={!!task.permissions} onReset={() => commitField({ permissions: undefined })} />
               </div>
-              {!task.permissions && (() => {
-                const ip = inheritedPermissions(trackId, pipelineConfig);
-                if (!ip) return null;
-                const parts = [ip.read && 'read', ip.write && 'write', ip.execute && 'execute'].filter(Boolean);
-                return parts.length > 0
-                  ? <p className="text-[10px] text-tagma-muted mt-1">Inherited: {parts.join(', ')}</p>
-                  : null;
-              })()}
+              <div className="flex gap-3">
+                {(['read', 'write', 'execute'] as const).map((key) => {
+                  const isExecute = key === 'execute';
+                  return (
+                    <label key={key} className="flex items-center gap-1.5 cursor-pointer"
+                      title={isExecute ? 'Allows arbitrary shell execution (Bash, bypassPermissions on claude-code). Enable only in trusted workdirs.' : undefined}>
+                      <input type="checkbox" checked={!!task.permissions?.[key]}
+                        onChange={() => handlePermToggle(key)}
+                        className="accent-tagma-accent" />
+                      <span className={`text-[11px] capitalize ${isExecute ? 'text-red-400' : 'text-tagma-text'}`}>{key}</span>
+                      {isExecute && <ShieldAlert size={10} className="text-red-400" />}
+                    </label>
+                  );
+                })}
+              </div>
+              <InheritedValue
+                isOverridden={!!task.permissions}
+                resolved={{ value: permsToString(resolvedPerms.value), source: resolvedPerms.source }}
+                trackName={trackName}
+                pipelineName={pipelineConfig.name}
+              />
             </div>
           </>
         )}
 
         {/* Timeout */}
         <div>
-          <label className="field-label">Timeout</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Timeout</label>
+            <ResetButton visible={!!task.timeout} onReset={() => commitField({ timeout: undefined })} />
+          </div>
           <input type="text" className="field-input" value={timeout} onChange={(e) => setTimeout_(e.target.value)} onBlur={blurTimeout} placeholder="e.g. 5m, 30s" />
+          <InheritedValue isOverridden={!!task.timeout} resolved={resolvedTimeout} trackName={trackName} pipelineName={pipelineConfig.name} />
         </div>
 
         {/* Output path */}
@@ -261,8 +336,12 @@ export function TaskConfigPanel({
 
         {/* CWD */}
         <div>
-          <label className="field-label">Working Directory</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Working Directory</label>
+            <ResetButton visible={!!task.cwd} onReset={() => commitField({ cwd: undefined })} />
+          </div>
           <input type="text" className="field-input font-mono text-[11px]" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
+          <InheritedValue isOverridden={!!task.cwd} resolved={resolvedCwd} trackName={trackName} pipelineName={pipelineConfig.name} />
         </div>
 
         {/* Dependencies */}
@@ -282,22 +361,32 @@ export function TaskConfigPanel({
           </div>
         )}
 
-        {/* Continue From — only meaningful for prompt tasks that have prompt dependencies */}
-        {mode === 'prompt' && promptDepRefs.length > 0 && (
+        {/* Continue From — shown whenever there's any upstream dependency (F7). */}
+        {mode === 'prompt' && continueFromCandidates.length > 0 && (
           <div>
             <label className="field-label">
               Continue From
-              <span className="text-[10px] text-tagma-muted font-normal ml-1">(resume conversation from a prompt dep)</span>
+              <span className="text-[10px] text-tagma-muted font-normal ml-1">(resume session from an upstream task)</span>
             </label>
             <select className="field-input" value={task.continue_from ?? ''} onChange={(e) => handleContinueFromChange(e.target.value)}>
               <option value="">none</option>
-              {promptDepRefs.map((ref) => (
+              {continueFromCandidates.map((ref) => (
                 <option key={ref} value={ref}>{ref}</option>
               ))}
             </select>
             <p className="text-[10px] text-tagma-muted mt-1">
-              Auto-set to the latest prompt dep when connected; change or clear as needed.
+              Uses session resume when both drivers support it; otherwise falls back to reading the upstream output.
+              Server validation will flag unsupported combinations.
             </p>
+            {sessionResumeUnsupported && (
+              <p className="text-[10px] text-amber-400 mt-1 flex items-start gap-1">
+                <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                <span>
+                  Driver "{resolvedDriver.value ?? 'unknown'}" does not support session resume —
+                  <code>continue_from</code> will fall back to injecting the upstream output as text.
+                </span>
+              </p>
+            )}
           </div>
         )}
 
@@ -354,20 +443,38 @@ export function TaskConfigPanel({
               </div>
             )}
 
-            {/* Unknown plugin trigger — fall back to a generic KV editor so custom
-                trigger plugins can still be configured from the editor. */}
-            {task.trigger && !KNOWN_TRIGGER_TYPES.has(task.trigger.type) && (
-              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
-                <p className="text-[10px] text-tagma-muted">Custom trigger fields (from plugin "{task.trigger.type}"):</p>
-                <KeyValueEditor
-                  value={Object.fromEntries(Object.entries(task.trigger).filter(([k]) => k !== 'type')) as Record<string, unknown>}
-                  onChange={(kv) => {
-                    const t = task.trigger?.type ?? '';
-                    commitField({ trigger: { type: t, ...kv } as TriggerConfig });
-                  }}
-                />
-              </div>
-            )}
+            {/* Unknown plugin trigger — F10: prefer SchemaForm when a schema is
+                known (either from the hand-written built-in fallback or a
+                future server-provided descriptor). Fall back to KV editor for
+                truly unknown plugins. */}
+            {task.trigger && !KNOWN_TRIGGER_TYPES.has(task.trigger.type) && (() => {
+              const triggerType = task.trigger.type;
+              const schema = getBuiltinSchema('trigger', triggerType);
+              const fieldValues = Object.fromEntries(
+                Object.entries(task.trigger).filter(([k]) => k !== 'type'),
+              ) as Record<string, unknown>;
+              return (
+                <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                  {schema ? (
+                    <SchemaForm
+                      schema={schema}
+                      value={fieldValues}
+                      onChange={(kv) => commitField({ trigger: { type: triggerType, ...kv } as TriggerConfig })}
+                    />
+                  ) : (
+                    <>
+                      <p className="text-[10px] text-tagma-muted">
+                        Custom trigger fields (plugin "{triggerType}" has no known schema — falling back to KV editor):
+                      </p>
+                      <KeyValueEditor
+                        value={fieldValues}
+                        onChange={(kv) => commitField({ trigger: { type: triggerType, ...kv } as TriggerConfig })}
+                      />
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Completion */}
             <div>
@@ -427,35 +534,78 @@ export function TaskConfigPanel({
               </div>
             )}
 
-            {/* Unknown plugin completion — fall back to generic KV editor. */}
-            {task.completion && !KNOWN_COMPLETION_TYPES.has(task.completion.type) && (
-              <div className="pl-3 border-l-2 border-tagma-border space-y-2">
-                <p className="text-[10px] text-tagma-muted">Custom completion fields (from plugin "{task.completion.type}"):</p>
-                <KeyValueEditor
-                  value={Object.fromEntries(Object.entries(task.completion).filter(([k]) => k !== 'type')) as Record<string, unknown>}
-                  onChange={(kv) => {
-                    const t = task.completion?.type ?? '';
-                    commitField({ completion: { type: t, ...kv } as CompletionConfig });
-                  }}
-                />
-              </div>
-            )}
+            {/* Unknown plugin completion — F10: prefer SchemaForm when a
+                schema is known, fall back to KV editor otherwise. */}
+            {task.completion && !KNOWN_COMPLETION_TYPES.has(task.completion.type) && (() => {
+              const completionType = task.completion.type;
+              const schema = getBuiltinSchema('completion', completionType);
+              const fieldValues = Object.fromEntries(
+                Object.entries(task.completion).filter(([k]) => k !== 'type'),
+              ) as Record<string, unknown>;
+              return (
+                <div className="pl-3 border-l-2 border-tagma-border space-y-2">
+                  {schema ? (
+                    <SchemaForm
+                      schema={schema}
+                      value={fieldValues}
+                      onChange={(kv) => commitField({ completion: { type: completionType, ...kv } as CompletionConfig })}
+                    />
+                  ) : (
+                    <>
+                      <p className="text-[10px] text-tagma-muted">
+                        Custom completion fields (plugin "{completionType}" has no known schema — falling back to KV editor):
+                      </p>
+                      <KeyValueEditor
+                        value={fieldValues}
+                        onChange={(kv) => commitField({ completion: { type: completionType, ...kv } as CompletionConfig })}
+                      />
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
-            {/* Use Template */}
+            {/* Use Template (F1 — basic). TODO: the server /api/registry doesn't
+                currently expose template manifests, so we fall back to a plain
+                text input + KV editor for parameters. When the registry gains a
+                `templates` field with parameter schemas (type, enum, min/max,
+                required, default, description), swap this block for a proper
+                dropdown + generated form. See tagma-sdk/src/schema.ts:54-207. */}
             <div>
-              <label className="field-label">Template (use)</label>
-              <input type="text" className="field-input font-mono text-[11px]" value={useTemplate} onChange={(e) => setUseTemplate(e.target.value)} onBlur={blurUseTemplate}
-                placeholder='e.g. @tagma/template-lint' />
-              <p className="text-[10px] text-tagma-muted mt-1">Mutually exclusive with prompt/command</p>
+              <label className="field-label">
+                Template <span className="text-[10px] text-tagma-muted font-normal">(use)</span>
+              </label>
+              <input
+                type="text"
+                className="field-input font-mono text-[11px]"
+                value={useTemplate}
+                onChange={(e) => setUseTemplate(e.target.value)}
+                onBlur={blurUseTemplate}
+                placeholder="e.g. @tagma/template-lint"
+                list="tagma-template-suggestions"
+              />
+              {/* Datalist stays empty for now — registry doesn't yet list templates. */}
+              <datalist id="tagma-template-suggestions" />
+              <p className="text-[10px] text-tagma-muted mt-1">
+                Reference a <code>@tagma/template-*</code> package. Mutually exclusive with prompt/command.
+              </p>
             </div>
 
-            {/* Template with parameters */}
+            {/* Template parameters (with) — raw KV until registry exposes schema. */}
             {task.use && (
               <div>
-                <label className="field-label">Template Parameters (with)</label>
-                <KeyValueEditor value={(task.with ?? {}) as Record<string, unknown>} onChange={(params) => {
-                  commitField({ with: Object.keys(params).length > 0 ? params : undefined });
-                }} />
+                <label className="field-label">
+                  Parameters <span className="text-[10px] text-tagma-muted font-normal">(with: key &rarr; value)</span>
+                </label>
+                <KeyValueEditor
+                  value={(task.with ?? {}) as Record<string, unknown>}
+                  onChange={(params) => {
+                    commitField({ with: Object.keys(params).length > 0 ? params : undefined });
+                  }}
+                />
+                <p className="text-[10px] text-tagma-muted mt-1">
+                  Parameter names and types are defined by the template package. Values are validated by the SDK at run time.
+                </p>
               </div>
             )}
 
@@ -467,12 +617,50 @@ export function TaskConfigPanel({
 
         {/* Delete */}
         <div className="pt-4 border-t border-tagma-border">
-          <button onClick={() => onDeleteTask(trackId, task.id)} className="btn-danger flex items-center justify-center gap-1.5">
+          <button onClick={() => setConfirmDelete(true)} className="btn-danger flex items-center justify-center gap-1.5">
             <Trash2 size={12} />
             Delete Task
           </button>
         </div>
       </div>
+
+      {/* Minimap docked at the bottom of the panel (U15 — moved here from the
+          canvas so it no longer overlaps track rows). */}
+      <Minimap />
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete task?"
+          confirmLabel="Delete task"
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            onDeleteTask(trackId, task.id);
+          }}
+          message={
+            <>
+              <p>
+                Delete task <span className="font-mono text-tagma-accent">{qualifiedId}</span>?
+              </p>
+              {downstreamTasksThatDependOnMe.length > 0 ? (
+                <div className="mt-2">
+                  <p className="text-tagma-muted">
+                    This will remove <span className="text-amber-400">{downstreamTasksThatDependOnMe.length}</span>{' '}
+                    downstream dependency reference{downstreamTasksThatDependOnMe.length !== 1 ? 's' : ''}:
+                  </p>
+                  <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5">
+                    {downstreamTasksThatDependOnMe.map((d) => (
+                      <li key={d.qualified} className="font-mono text-[11px] text-tagma-text/80">&bull; {d.qualified}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-tagma-muted text-[11px]">No downstream tasks depend on this task.</p>
+              )}
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

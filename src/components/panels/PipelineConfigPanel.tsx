@@ -76,7 +76,10 @@ export function PipelineConfigPanel({ config, drivers, errors, onUpdate, onClose
           {/* Hooks */}
           <div>
             <label className="field-label">Hooks</label>
-            <p className="text-[10px] text-tagma-muted mb-2">Shell commands to run at lifecycle events. One command per line; multiple lines are executed sequentially.</p>
+            <p className="text-[10px] text-tagma-muted mb-2">
+              Shell commands to run at lifecycle events. One command per line; multiple lines are executed sequentially.
+              Hooks tagged <span className="text-amber-400/80">gate</span> (<code>pipeline_start</code>, <code>task_start</code>) block the pipeline on non-zero exit.
+            </p>
             <div className="space-y-3">
               {HOOK_KEYS.map((key) => (
                 <HookField key={key} hookKey={key} value={hooks[key]} isGate={GATE_HOOKS.has(key)} onCommit={commitHook} />
@@ -128,7 +131,14 @@ function HookField({ hookKey, value, isGate, onCommit }: {
     <div>
       <div className="flex items-center gap-1.5 mb-1">
         <label className="text-[10px] font-mono text-tagma-muted">{hookKey}</label>
-        {isGate && <span className="text-[9px] px-1 py-px bg-amber-500/10 text-amber-400/70 border border-amber-500/20">gate</span>}
+        {isGate && (
+          <span
+            className="text-[9px] px-1 py-px bg-amber-500/10 text-amber-400/70 border border-amber-500/20 cursor-help"
+            title="Gate hook: a non-zero exit code blocks the entire pipeline. Use carefully."
+          >
+            gate
+          </span>
+        )}
         {lineCount > 1 && <span className="text-[9px] text-tagma-muted">{lineCount} cmds</span>}
       </div>
       <textarea

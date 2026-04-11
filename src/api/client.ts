@@ -9,11 +9,78 @@ function jsonBody(obj: unknown): string {
   return JSON.stringify(obj, (_key, value) => (value === undefined ? null : value));
 }
 
+// ── Revision / ETag (C6) ──
+//
+// The server stamps every ServerState response with `revision: number`. The
+// client caches the most-recently-observed revision here and attaches it as
+// `If-Match: <revision>` to every mutation call. On 409 the server returns
+// `{ error, currentState }`; `request()` converts that into a
+// `RevisionConflictError` so callers (future pipeline-store work) can detect
+// the conflict and replace local state with `currentState`.
+//
+// NOTE: pipeline-store is owned by a different refactor group and must NOT be
+// touched in this cycle. The client support lives here so the store can
+// consume it in a follow-up cycle.
+let lastRevision: number | null = null;
+
+export function getClientRevision(): number | null {
+  return lastRevision;
+}
+
+export function setClientRevision(rev: number | null | undefined): void {
+  if (typeof rev === 'number' && Number.isFinite(rev)) lastRevision = rev;
+}
+
+export class RevisionConflictError extends Error {
+  readonly currentState: ServerState;
+  readonly expected: number | null;
+  readonly current: number;
+  constructor(currentState: ServerState, expected: number | null, current: number) {
+    super('revision mismatch');
+    this.name = 'RevisionConflictError';
+    this.currentState = currentState;
+    this.expected = expected;
+    this.current = current;
+  }
+}
+
+function isMutation(options?: RequestInit): boolean {
+  const m = (options?.method ?? 'GET').toUpperCase();
+  return m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE';
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  // Attach If-Match on mutations when we have a known revision.
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+  if (isMutation(options) && lastRevision !== null) {
+    headers['If-Match'] = String(lastRevision);
+  }
+
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+
+  if (res.status === 409) {
+    // Revision conflict — parse payload and throw a typed error so future
+    // pipeline-store work can detect and re-apply state.
+    const payload = await res.json().catch(() => null) as {
+      error?: string;
+      expected?: number;
+      current?: number;
+      currentState?: ServerState;
+    } | null;
+    if (payload?.currentState) {
+      setClientRevision(payload.currentState.revision);
+      throw new RevisionConflictError(
+        payload.currentState,
+        typeof payload.expected === 'number' ? payload.expected : null,
+        typeof payload.current === 'number' ? payload.current : -1,
+      );
+    }
+    throw new Error(payload?.error ?? 'Revision conflict');
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error ?? 'Request failed');
@@ -21,7 +88,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (res.headers.get('content-type')?.includes('text/yaml')) {
     return (await res.text()) as unknown as T;
   }
-  return res.json();
+  const data = await res.json();
+  // Opportunistically pick up revision from any ServerState-shaped response.
+  if (data && typeof data === 'object' && 'revision' in data && typeof (data as { revision?: unknown }).revision === 'number') {
+    setClientRevision((data as { revision: number }).revision);
+  }
+  return data;
 }
 
 export interface EditorLayout {
@@ -35,6 +107,22 @@ export interface ServerState {
   yamlPath: string | null;
   workDir: string;
   layout: EditorLayout;
+  /**
+   * Monotonic mutation counter (C6). Always present on responses from the
+   * current server; marked optional for backward compatibility with older
+   * servers that do not yet stamp it.
+   */
+  revision?: number;
+}
+
+/**
+ * Driver capability flags (F2) mirrored from @tagma/types DriverCapabilities.
+ * Kept as a local mirror so this file stays free of SDK imports.
+ */
+export interface DriverCapabilities {
+  sessionResume: boolean;
+  systemPrompt: boolean;
+  outputFormat: boolean;
 }
 
 export type HookCommand = string | string[];
@@ -134,11 +222,48 @@ export interface DagEdge {
   to: string;
 }
 
+/**
+ * F10: Plugin schema metadata. Optional on the registry — the SDK's built-in
+ * plugins do not currently expose declarative schemas, so the client falls
+ * back to hand-written descriptors in `SchemaForm.tsx`. When/if the SDK
+ * starts exposing schemas, the server should echo them here and the client
+ * will merge-prefer server-provided schemas over the hand-written fallback.
+ *
+ * Kept intentionally loose (`unknown`) so this type stays compatible with
+ * both hand-written descriptors and any future zod/JSON-Schema payload.
+ */
+export interface PluginSchemaDescriptor {
+  readonly fields?: readonly {
+    readonly key: string;
+    readonly type: string;
+    readonly required?: boolean;
+    readonly description?: string;
+    readonly default?: unknown;
+    readonly enum?: readonly string[];
+    readonly min?: number;
+    readonly max?: number;
+  }[];
+  readonly [key: string]: unknown;
+}
+
 export interface PluginRegistry {
   drivers: string[];
   triggers: string[];
   completions: string[];
   middlewares: string[];
+  /**
+   * F2: capabilities keyed by driver name. Optional for compatibility with
+   * older servers; use `useDriverCapability` to look up safely.
+   */
+  driverCapabilities?: Record<string, DriverCapabilities>;
+  /**
+   * F10 (optional): schema descriptors keyed by plugin type, grouped by
+   * category. Server may return this if the SDK exposes schemas; otherwise
+   * the client uses hand-written fallbacks for known built-ins.
+   */
+  triggerSchemas?: Record<string, PluginSchemaDescriptor>;
+  completionSchemas?: Record<string, PluginSchemaDescriptor>;
+  middlewareSchemas?: Record<string, PluginSchemaDescriptor>;
 }
 
 export interface PluginInfo {
@@ -193,12 +318,47 @@ export interface RunState {
   error: string | null;
 }
 
+// Approval request mirrored from SDK ApprovalRequest — kept as a local
+// mirror to avoid coupling this client to the SDK package directly.
+export interface ApprovalRequestInfo {
+  id: string;
+  taskId: string;
+  trackId?: string;
+  message: string;
+  options: string[];
+  createdAt: string;
+  timeoutMs: number;
+  metadata?: Record<string, unknown>;
+}
+
+export type ApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'aborted';
+
 export type RunEvent =
   | { type: 'run_start'; runId: string; tasks: RunTaskState[] }
-  | { type: 'task_update'; taskId: string; status: TaskStatus; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
-  | { type: 'run_end'; success: boolean }
-  | { type: 'run_error'; error: string }
-  | { type: 'log'; line: string };
+  | { type: 'task_update'; runId?: string; taskId: string; status: TaskStatus; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | { type: 'run_end'; runId?: string; success: boolean }
+  | { type: 'run_error'; runId?: string; error: string }
+  | { type: 'log'; runId?: string; line: string }
+  | { type: 'approval_request'; runId?: string; request: ApprovalRequestInfo }
+  | { type: 'approval_resolved'; runId?: string; requestId: string; outcome: ApprovalOutcome; choice?: string };
+
+export interface RunHistoryEntry {
+  runId: string;
+  path: string;
+  startedAt: string;
+  sizeBytes: number;
+}
+
+// ── External state events (C5) ──
+//
+// Emitted by the server when the backing YAML file changes on disk outside
+// of the editor. `external-change` means the server has already reloaded
+// (client should adopt `newState`); `external-conflict` means the server
+// detected a change but its in-memory state is dirty and cannot be safely
+// replaced — the client must decide what to do.
+export type ServerStateEvent =
+  | { type: 'external-change'; newState: ServerState }
+  | { type: 'external-conflict'; path: string; error?: string };
 
 export const api = {
   getState: () => request<ServerState>('/state'),
@@ -323,4 +483,43 @@ export const api = {
 
   importLocalPlugin: (path: string) =>
     request<PluginActionResult>('/plugins/import-local', { method: 'POST', body: jsonBody({ path }) }),
+
+  // ── Run history (F8) ──
+  listRunHistory: () =>
+    request<{ runs: RunHistoryEntry[] }>('/run/history'),
+
+  getRunLog: (runId: string) =>
+    request<{ runId: string; content: string }>(`/run/history/${encodeURIComponent(runId)}`),
+
+  // ── Approvals (F3) ──
+  resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) =>
+    request<{ ok: boolean; stubbed?: boolean }>(`/run/approval/${encodeURIComponent(requestId)}`, {
+      method: 'POST',
+      body: jsonBody({ outcome, choice }),
+    }),
+
+  // ── State events (C5) ──
+  // Polling fallback for clients that can't use SSE.
+  reloadState: () => request<ServerState>('/state/reload'),
+
+  // SSE subscription: returns an unsubscribe function. Fires for every
+  // external-change / external-conflict event emitted server-side.
+  subscribeStateEvents: (onEvent: (event: ServerStateEvent) => void): (() => void) => {
+    const es = new EventSource(`${BASE}/state/events`);
+    es.addEventListener('state_event', (e) => {
+      try {
+        const event = JSON.parse((e as MessageEvent).data) as ServerStateEvent;
+        if (event.type === 'external-change' && event.newState?.revision !== undefined) {
+          setClientRevision(event.newState.revision);
+        }
+        onEvent(event);
+      } catch {
+        // malformed payload — ignore
+      }
+    });
+    es.onerror = () => {
+      // EventSource auto-reconnects
+    };
+    return () => es.close();
+  },
 };

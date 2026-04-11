@@ -1,8 +1,23 @@
+// RunView
+//
+// New prop `mode: "full" | "dock"` (default "full"):
+// - "full": renders the original full-screen run view including header with
+//   Back button. This is what App.tsx currently mounts.
+// - "dock": renders a compact variant suitable for a right-side dock / bottom
+//   panel — omits the Back button and collapses the header. Group 6 (or a
+//   follow-up to U7) should update App.tsx to mount RunView with mode="dock"
+//   alongside the editor instead of replacing it.
+//
+// This file also handles F3 (manual trigger approval overlay) and F8 (run
+// history browser rendered when no active run is running).
+
 import { useMemo } from 'react';
 import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
 import { RunTaskNode } from './RunTaskNode';
 import { RunTaskPanel } from './RunTaskPanel';
+import { ApprovalDialog } from './ApprovalDialog';
+import { RunHistoryBrowser } from './RunHistoryBrowser';
 import type { RawPipelineConfig, DagEdge, TaskStatus } from '../../api/client';
 import type { TaskPosition } from '../../store/pipeline-store';
 
@@ -15,11 +30,14 @@ const PAD_LEFT = 20;
 const TRACK_H = 64;
 const CANVAS_PAD_RIGHT = 300;
 
+export type RunViewMode = 'full' | 'dock';
+
 interface RunViewProps {
   config: RawPipelineConfig;
   dagEdges: DagEdge[];
   positions: Map<string, TaskPosition>;
   onBack: () => void;
+  mode?: RunViewMode;
 }
 
 const RUN_STATUS_LABEL: Record<string, string> = {
@@ -39,10 +57,27 @@ function countByStatus(tasks: Map<string, { status: TaskStatus }>) {
   return counts;
 }
 
-export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
-  const { status, tasks, error, selectedTaskId, selectTask, abortRun } = useRunStore();
+export function RunView({ config, dagEdges, positions, onBack, mode = 'full' }: RunViewProps) {
+  const {
+    status,
+    tasks,
+    error,
+    selectedTaskId,
+    selectTask,
+    abortRun,
+    pendingApprovals,
+    resolveApproval,
+  } = useRunStore();
 
   const isTerminal = status === 'done' || status === 'aborted' || status === 'error';
+  const isActive = status !== 'idle';
+  const isDock = mode === 'dock';
+
+  // First pending approval (FIFO by Map iteration order)
+  const firstApproval = useMemo(() => {
+    const it = pendingApprovals.values().next();
+    return it.done ? null : it.value;
+  }, [pendingApprovals]);
 
   // Build flat task list with positions (same logic as BoardCanvas)
   const flatTasks = useMemo(() => {
@@ -123,20 +158,27 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
 
   const counts = countByStatus(tasks);
 
-  return (
-    <div className="h-full flex flex-col bg-tagma-bg">
-      {/* Header */}
-      <header className="h-10 bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0">
-        <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-tagma-muted hover:text-tagma-text transition-colors px-2 py-1">
-          <ArrowLeft size={12} />
-          <span>Back to Editor</span>
-        </button>
+  // When no run has ever started (or the store is idle), show the history
+  // browser so users can explore prior runs without leaving this view.
+  const showHistory = !isActive;
 
-        <div className="w-px h-5 bg-tagma-border" />
+  return (
+    <div className={`h-full flex flex-col bg-tagma-bg relative ${isDock ? 'text-[11px]' : ''}`}>
+      {/* Header */}
+      <header className={`${isDock ? 'h-8' : 'h-10'} bg-tagma-surface border-b border-tagma-border flex items-center px-2 gap-2 shrink-0`}>
+        {!isDock && (
+          <>
+            <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-tagma-muted hover:text-tagma-text transition-colors px-2 py-1">
+              <ArrowLeft size={12} />
+              <span>Back to Editor</span>
+            </button>
+            <div className="w-px h-5 bg-tagma-border" />
+          </>
+        )}
 
         <div className="flex items-center gap-1.5 px-2">
           <LayoutGrid size={13} className="text-tagma-accent" />
-          <span className="text-xs font-medium text-tagma-text">{config.name}</span>
+          <span className="text-xs font-medium text-tagma-text truncate max-w-[160px]">{config.name}</span>
         </div>
 
         <div className="w-px h-5 bg-tagma-border" />
@@ -167,6 +209,13 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
           </div>
         )}
 
+        {/* Pending approvals indicator */}
+        {pendingApprovals.size > 0 && (
+          <span className="text-[9px] font-mono text-tagma-warning">
+            {pendingApprovals.size} approval{pendingApprovals.size === 1 ? '' : 's'} pending
+          </span>
+        )}
+
         <div className="flex-1" />
 
         {/* Abort button */}
@@ -187,72 +236,88 @@ export function RunView({ config, dagEdges, positions, onBack }: RunViewProps) {
 
       {/* Main area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Canvas */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Track headers */}
-          <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: HEADER_W }}>
-            {config.tracks.map((track, i) => (
-              <div
-                key={track.id}
-                className={`flex items-center px-4 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
-                style={{ height: TRACK_H }}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  {track.color && <div className="w-2 h-2 shrink-0" style={{ backgroundColor: track.color }} />}
-                  <span className="text-xs font-medium text-tagma-text truncate">{track.name}</span>
+        {showHistory ? (
+          <div className="flex-1 overflow-hidden">
+            <RunHistoryBrowser compact={isDock} />
+          </div>
+        ) : (
+          <>
+            {/* Canvas */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Track headers */}
+              <div className="shrink-0 border-r border-tagma-border overflow-hidden" style={{ width: isDock ? Math.min(HEADER_W, 160) : HEADER_W }}>
+                {config.tracks.map((track, i) => (
+                  <div
+                    key={track.id}
+                    className={`flex items-center px-4 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
+                    style={{ height: TRACK_H }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {track.color && <div className="w-2 h-2 shrink-0" style={{ backgroundColor: track.color }} />}
+                      <span className="text-xs font-medium text-tagma-text truncate">{track.name}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Task area */}
+              <div className="flex-1 overflow-auto">
+                <div className="relative timeline-grid" style={{ width: canvasWidth, height: canvasHeight }}
+                  onClick={() => selectTask(null)}>
+                  {/* Track row backgrounds */}
+                  {config.tracks.map((track, i) => (
+                    <div
+                      key={track.id}
+                      className={`absolute left-0 right-0 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
+                      style={{ top: i * TRACK_H, height: TRACK_H }}
+                    />
+                  ))}
+
+                  {/* Edges */}
+                  <svg className="absolute inset-0 pointer-events-none" style={{ width: canvasWidth, height: canvasHeight }}>
+                    {edges.map((e) => (
+                      <path key={e.key} d={e.d} fill="none" stroke="rgba(107,114,128,0.25)" strokeWidth={1.5} />
+                    ))}
+                  </svg>
+
+                  {/* Task nodes */}
+                  {flatTasks.map((ft) => {
+                    const pos = taskPositions.get(ft.qid);
+                    if (!pos) return null;
+                    const taskState = tasks.get(ft.qid);
+                    const taskStatus: TaskStatus = taskState?.status ?? 'idle';
+                    return (
+                      <RunTaskNode
+                        key={ft.qid}
+                        task={ft.task}
+                        status={taskStatus}
+                        durationMs={taskState?.durationMs ?? null}
+                        x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
+                        isSelected={selectedTaskId === ft.qid}
+                        onClick={(taskId) => { selectTask(`${ft.trackId}.${taskId}`); }}
+                      />
+                    );
+                  })}
                 </div>
               </div>
-            ))}
-          </div>
-
-          {/* Task area */}
-          <div className="flex-1 overflow-auto">
-            <div className="relative timeline-grid" style={{ width: canvasWidth, height: canvasHeight }}
-              onClick={() => selectTask(null)}>
-              {/* Track row backgrounds */}
-              {config.tracks.map((track, i) => (
-                <div
-                  key={track.id}
-                  className={`absolute left-0 right-0 border-b border-tagma-border/40 ${i % 2 === 1 ? 'track-row-odd' : ''}`}
-                  style={{ top: i * TRACK_H, height: TRACK_H }}
-                />
-              ))}
-
-              {/* Edges */}
-              <svg className="absolute inset-0 pointer-events-none" style={{ width: canvasWidth, height: canvasHeight }}>
-                {edges.map((e) => (
-                  <path key={e.key} d={e.d} fill="none" stroke="rgba(107,114,128,0.25)" strokeWidth={1.5} />
-                ))}
-              </svg>
-
-              {/* Task nodes */}
-              {flatTasks.map((ft) => {
-                const pos = taskPositions.get(ft.qid);
-                if (!pos) return null;
-                const taskState = tasks.get(ft.qid);
-                const taskStatus: TaskStatus = taskState?.status ?? 'idle';
-                return (
-                  <RunTaskNode
-                    key={ft.qid}
-                    task={ft.task}
-                    status={taskStatus}
-                    durationMs={taskState?.durationMs ?? null}
-                    x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
-                    isSelected={selectedTaskId === ft.qid}
-                    onClick={(taskId) => { selectTask(`${ft.trackId}.${taskId}`); }}
-                  />
-                );
-              })}
             </div>
-          </div>
-        </div>
 
-        {/* Right panel: selected task details */}
-        {selectedTask && (
-          <RunTaskPanel task={selectedTask} onClose={() => selectTask(null)} />
+            {/* Right panel: selected task details — hidden in dock mode to save space */}
+            {selectedTask && !isDock && (
+              <RunTaskPanel task={selectedTask} onClose={() => selectTask(null)} />
+            )}
+          </>
         )}
       </div>
 
+      {/* Approval overlay (F3) */}
+      {firstApproval && (
+        <ApprovalDialog
+          request={firstApproval}
+          onApprove={(choice) => resolveApproval(firstApproval.id, 'approved', choice)}
+          onReject={() => resolveApproval(firstApproval.id, 'rejected')}
+        />
+      )}
     </div>
   );
 }

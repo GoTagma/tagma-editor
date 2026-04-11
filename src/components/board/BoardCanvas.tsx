@@ -3,9 +3,11 @@ import { Plus, Trash2, Pencil, ListPlus } from 'lucide-react';
 import { TrackLane } from './TrackLane';
 import { TaskCard } from './TaskCard';
 import { ContextMenu, type MenuEntry } from './ContextMenu';
+import { ZoomControls } from './ZoomControls';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '../../api/client';
 
 import type { TaskPosition } from '../../store/pipeline-store';
+import { usePipelineStore } from '../../store/pipeline-store';
 import type { DagEdge } from '../../api/client';
 import { getZoom } from '../../utils/zoom';
 
@@ -126,6 +128,79 @@ interface TaskDragState { qid: string; taskId: string; trackId: string; contentX
 interface EdgeDragState { srcQid: string; mx: number; my: number; target: string | null }
 interface TrackDragState { trackId: string; startIndex: number; dropIndex: number; deltaY: number }
 
+/**
+ * Parse cycle-containing edges from a SDK cycle-detection message of the form
+ * "Circular dependency detected: A → B → C → A" (or the older "cycle detected:").
+ * Returns a set of edge keys (`from->to`) that participate in the cycle.
+ */
+function parseCycleEdges(messages: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const msg of messages) {
+    const m = /(?:cycle|circular dependency) detected:\s*(.+)$/i.exec(msg);
+    if (!m) continue;
+    // Split on → (U+2192), -> or spaces around arrows, tolerate whitespace.
+    const nodes = m[1]
+      .split(/\s*(?:→|->|⇒)\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (let i = 0; i < nodes.length - 1; i += 1) {
+      out.add(`${nodes[i]}->${nodes[i + 1]}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Given the task positions and DAG edges for a single track, return a list of
+ * contiguous groups where none of the tasks in a group have a depends_on
+ * relationship among themselves — these are "parallel zones".
+ */
+interface ParallelZone { trackId: string; qids: string[]; minX: number; maxX: number }
+
+function computeParallelZones(
+  tracks: readonly RawTrackConfig[],
+  positionsMap: Map<string, Pos>,
+  dagEdges: DagEdge[],
+): ParallelZone[] {
+  const zones: ParallelZone[] = [];
+  // Index edges by "from" for O(1) lookup.
+  const edgeSet = new Set<string>();
+  for (const e of dagEdges) edgeSet.add(`${e.from}->${e.to}`);
+
+  for (const track of tracks) {
+    if (track.tasks.length < 2) continue;
+    const qids = track.tasks
+      .map((t) => `${track.id}.${t.id}`)
+      .filter((q) => positionsMap.has(q))
+      .sort((a, b) => (positionsMap.get(a)!.x - positionsMap.get(b)!.x));
+    if (qids.length < 2) continue;
+
+    // Greedy grouping: extend a group while every pair inside has no edge.
+    let group: string[] = [];
+    const flush = () => {
+      if (group.length >= 2) {
+        let minX = Infinity, maxX = -Infinity;
+        for (const q of group) {
+          const p = positionsMap.get(q)!;
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+        }
+        zones.push({ trackId: track.id, qids: [...group], minX, maxX });
+      }
+      group = [];
+    };
+    for (const q of qids) {
+      const independent = group.every(
+        (g) => !edgeSet.has(`${g}->${q}`) && !edgeSet.has(`${q}->${g}`),
+      );
+      if (independent) group.push(q);
+      else { flush(); group = [q]; }
+    }
+    flush();
+  }
+  return zones;
+}
+
 export function BoardCanvas({
   config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds, errorsByTask, errorsByTrack,
   onSelectTask, onSelectTrack, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
@@ -134,6 +209,17 @@ export function BoardCanvas({
 }: BoardCanvasProps) {
   const headerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Re-render on viewport scroll so the minimap viewport rect follows the
+  // canvas (cheap rAF-throttled tick, see effect below).
+  const [, setScrollTick] = useState(0);
+  // Subscribe to store fields the parent does NOT thread through props.
+  // We only use these for read-only visualization (cycle highlight, parallel
+  // zones, selected-track-aware delete). All mutation continues to go through
+  // the props callbacks owned by App.tsx.
+  const validationErrors = usePipelineStore((s) => s.validationErrors);
+  const selectedTrackId = usePipelineStore((s) => s.selectedTrackId);
+  const deleteTaskAction = usePipelineStore((s) => s.deleteTask);
+  const deleteTrackAction = usePipelineStore((s) => s.deleteTrack);
   const [taskDrag, setTaskDrag] = useState<TaskDragState | null>(null);
   const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
   const [trackDrag, setTrackDrag] = useState<TrackDragState | null>(null);
@@ -424,13 +510,129 @@ export function BoardCanvas({
     setInlineValue('');
   }, [inlineValue, inlineAdd, onAddTask, onAddTrack, onRenameTrack]);
 
+  // ── Remove the currently selected edge by looking up the dep ref that
+  // resolves to edge.from on the edge.to task. Mirrors the inline click
+  // handler on the X-badge but is reused by the Delete key and the edge
+  // context menu so behavior stays consistent.
+  const removeSelectedEdge = useCallback(() => {
+    const ek = selEdge;
+    if (!ek) return;
+    const [fromQid, toQid] = ek.split('->');
+    if (!fromQid || !toQid) return;
+    const [toTrack, toTaskId] = toQid.split('.');
+    const track = config.tracks.find((t) => t.id === toTrack);
+    if (!track) { setSelEdge(null); return; }
+    const task = track.tasks.find((t) => t.id === toTaskId);
+    if (!task?.depends_on) { setSelEdge(null); return; }
+    for (const dep of task.depends_on) {
+      const resolved = dep.includes('.')
+        ? dep
+        : (track.tasks.some((t) => t.id === dep) ? `${toTrack}.${dep}` : dep);
+      if (resolved === fromQid || `${toTrack}.${dep}` === fromQid) {
+        onRemoveDependency(toTrack, toTaskId, dep);
+        break;
+      }
+    }
+    setSelEdge(null);
+  }, [selEdge, config.tracks, onRemoveDependency]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setTaskDrag(null); setEdgeDrag(null); setTrackDrag(null); setCtx(null); setInlineAdd(null); setSelEdge(null); }
+      if (e.key === 'Escape') {
+        setTaskDrag(null); setEdgeDrag(null); setTrackDrag(null);
+        setCtx(null); setInlineAdd(null); setSelEdge(null);
+        return;
+      }
+      // Delete / Backspace removes the current selection. We skip when the
+      // user is typing in a form control so field editing isn't hijacked.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const target = e.target as HTMLElement | null;
+        if (target) {
+          const tag = target.tagName;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+        }
+        // Priority: edge > task > track. Group 3 will layer a confirm dialog
+        // over task/track delete; for now we just call the store action.
+        if (selEdge) {
+          e.preventDefault();
+          removeSelectedEdge();
+          return;
+        }
+        if (selectedTaskId) {
+          const [trkId, taskId] = selectedTaskId.split('.');
+          if (trkId && taskId) {
+            e.preventDefault();
+            deleteTaskAction(trkId, taskId);
+          }
+          return;
+        }
+        if (selectedTrackId) {
+          e.preventDefault();
+          deleteTrackAction(selectedTrackId);
+        }
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
+  }, [selEdge, selectedTaskId, selectedTrackId, removeSelectedEdge, deleteTaskAction, deleteTrackAction]);
+
+  // ── Cycle edge highlighting (L3) ──
+  const cycleEdgeSet = useMemo(() => {
+    const msgs = validationErrors
+      .filter((err) => /cycle|circular/i.test(err.message))
+      .map((err) => err.message);
+    return parseCycleEdges(msgs);
+  }, [validationErrors]);
+
+  // ── Focus-task side channel (U5) ──
+  // Task cards dispatch a `tagma:focus-task` CustomEvent whose detail is the
+  // qualified task id. BoardCanvas listens and scrolls the canvas so the
+  // card is centered in the viewport.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<string>;
+      const qid = ce.detail;
+      const el = contentRef.current;
+      if (!qid || !el) return;
+      const pos = staticPositions.get(qid);
+      if (!pos) return;
+      const z = getZoom();
+      const visW = el.clientWidth;
+      const visH = el.clientHeight;
+      el.scrollTo({
+        left: Math.max(0, pos.x + TASK_W / 2 - visW / (2 * z)),
+        top: Math.max(0, pos.y + TASK_H / 2 - visH / (2 * z)),
+        behavior: 'smooth',
+      });
+    };
+    window.addEventListener('tagma:focus-task', handler);
+    return () => window.removeEventListener('tagma:focus-task', handler);
+  }, [staticPositions]);
+
+  // ── Minimap viewport tracking — re-render on scroll of canvas. ──
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    let rafId = 0;
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        setScrollTick((t) => (t + 1) & 0xffff);
+      });
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, []);
+
+  // ── Parallel zones (L1) ──
+  const parallelZones = useMemo(
+    () => computeParallelZones(visualTracks, staticPositions, dagEdges),
+    [visualTracks, staticPositions, dagEdges],
+  );
 
   // Build edge key for selection
   const edgeKey = (from: string, to: string) => `${from}->${to}`;
@@ -491,6 +693,7 @@ export function BoardCanvas({
       {/* Right: Timeline canvas */}
       <div
         ref={contentRef}
+        id="board-scroll"
         className="flex-1 min-w-0 overflow-auto timeline-grid hide-scrollbar"
         onScroll={syncScroll}
         onContextMenu={handleCanvasContextMenu}
@@ -508,6 +711,36 @@ export function BoardCanvas({
               onClick={() => { if (!panDidDragRef.current) { onSelectTask(null); onSelectTrack(null); setSelEdge(null); } }}
             />
           ))}
+
+          {/* Parallel zone hints (L1) — subtle dashed rectangle behind
+              sibling tasks in a track that have no depends_on relationship
+              among themselves, with a small corner label. */}
+          {parallelZones.map((zone, idx) => {
+            const vIdx = visualTracks.findIndex((t) => t.id === zone.trackId);
+            if (vIdx < 0) return null;
+            const topY = vIdx * TRACK_H + 4;
+            const h = TRACK_H - 8;
+            const left = zone.minX - 6;
+            const width = (zone.maxX + TASK_W + 6) - left;
+            return (
+              <div
+                key={`pz-${zone.trackId}-${idx}`}
+                className="absolute pointer-events-none"
+                style={{
+                  left, top: topY, width, height: h,
+                  border: '1px dashed rgba(148, 163, 184, 0.25)',
+                  background: 'rgba(148, 163, 184, 0.035)',
+                  borderRadius: 2,
+                }}
+              >
+                <span
+                  className="absolute top-[1px] right-[3px] text-[7px] font-mono uppercase tracking-wider text-tagma-muted/60 select-none"
+                >
+                  parallel
+                </span>
+              </div>
+            );
+          })}
 
           {/* Task cards */}
           {allTasks.map((ft) => {
@@ -549,6 +782,9 @@ export function BoardCanvas({
               <marker id="ah-cont-hi" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
                 <polygon points="0 0, 7 2.5, 0 5" fill="#c4b5fd" />
               </marker>
+              <marker id="ah-cycle" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <polygon points="0 0, 7 2.5, 0 5" fill="#ef4444" />
+              </marker>
             </defs>
 
             {dagEdges.map((edge) => {
@@ -566,6 +802,7 @@ export function BoardCanvas({
               const fromTask = taskByQid.get(edge.from);
               const toTask = taskByQid.get(edge.to);
               const isContinue = !!fromTask?.prompt && !fromTask?.command && !!toTask?.prompt && !toTask?.command;
+              const inCycle = cycleEdgeSet.has(ek);
 
               return (
                 <g key={ek}>
@@ -573,14 +810,51 @@ export function BoardCanvas({
                     className="pointer-events-auto cursor-pointer"
                     onMouseEnter={() => { if (!selEdge) setHovEdge(ek); }}
                     onMouseLeave={() => { if (!selEdge) setHovEdge(null); }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSelEdge(ek);
+                      setHovEdge(null);
+                      setCtx({
+                        x: e.clientX, y: e.clientY,
+                        items: [
+                          {
+                            label: 'Delete dependency',
+                            icon: <Trash2 size={12} />,
+                            danger: true,
+                            onAction: () => {
+                              const [toTrackId, toTaskId] = edge.to.split('.');
+                              const track = config.tracks.find((t) => t.id === toTrackId);
+                              if (!track) return;
+                              const task = track.tasks.find((t) => t.id === toTaskId);
+                              if (!task?.depends_on) return;
+                              for (const dep of task.depends_on) {
+                                const resolved = dep.includes('.')
+                                  ? dep
+                                  : (track.tasks.some((t) => t.id === dep) ? `${toTrackId}.${dep}` : dep);
+                                if (resolved === edge.from || `${toTrackId}.${dep}` === edge.from) {
+                                  onRemoveDependency(toTrackId, toTaskId, dep);
+                                  break;
+                                }
+                              }
+                              setSelEdge(null);
+                            },
+                          },
+                        ],
+                      });
+                    }}
                     onClick={(e) => { e.stopPropagation(); setSelEdge(selected ? null : ek); setHovEdge(null); }} />
                   <path d={d} fill="none"
-                    stroke={highlighted
+                    stroke={inCycle
+                      ? '#ef4444'
+                      : highlighted
                       ? (isContinue ? '#c4b5fd' : '#d4845a')
                       : (isContinue ? 'rgba(167, 139, 250, 0.5)' : 'rgba(100, 100, 100, 0.4)')}
-                    strokeWidth={highlighted ? 2 : 1}
-                    strokeDasharray={isContinue ? '6 3' : undefined}
-                    markerEnd={highlighted
+                    strokeWidth={inCycle ? 2.2 : highlighted ? 2 : 1}
+                    strokeDasharray={inCycle ? '4 3' : isContinue ? '6 3' : undefined}
+                    markerEnd={inCycle
+                      ? 'url(#ah-cycle)'
+                      : highlighted
                       ? (isContinue ? 'url(#ah-cont-hi)' : 'url(#ah-hi)')
                       : (isContinue ? 'url(#ah-cont)' : 'url(#ah)')}
                     className="transition-[stroke,stroke-width] duration-75" />
@@ -591,17 +865,21 @@ export function BoardCanvas({
                         setSelEdge(null);
                         // Remove the dependency
                         const [toTrack, toTask] = edge.to.split('.');
-                        // Find the dep ref used in the task
+                        // Find the dep ref used in the task. The track may
+                        // have been renamed/deleted or the task transferred
+                        // between render and click — guard every lookup.
                         const track = config.tracks.find((t) => t.id === toTrack);
-                        const task = track?.tasks.find((t) => t.id === toTask);
-                        if (task?.depends_on) {
-                          // Find which ref resolves to edge.from
-                          for (const dep of task.depends_on) {
-                            const resolved = dep.includes('.') ? dep : (track!.tasks.some((t) => t.id === dep) ? `${toTrack}.${dep}` : dep);
-                            if (resolved === edge.from || `${toTrack}.${dep}` === edge.from) {
-                              onRemoveDependency(toTrack, toTask, dep);
-                              break;
-                            }
+                        if (!track) return;
+                        const task = track.tasks.find((t) => t.id === toTask);
+                        if (!task?.depends_on) return;
+                        // Find which ref resolves to edge.from
+                        for (const dep of task.depends_on) {
+                          const resolved = dep.includes('.')
+                            ? dep
+                            : (track.tasks.some((t) => t.id === dep) ? `${toTrack}.${dep}` : dep);
+                          if (resolved === edge.from || `${toTrack}.${dep}` === edge.from) {
+                            onRemoveDependency(toTrack, toTask, dep);
+                            break;
                           }
                         }
                       }}>
@@ -651,6 +929,13 @@ export function BoardCanvas({
           </div>
         </div>
       )}
+
+      {/* Minimap (U15) is now rendered inside TaskConfigPanel / TrackConfigPanel
+          at their bottom — see App.tsx wiring. Moved out of the canvas so it no
+          longer overlaps track rows. */}
+
+      {/* Zoom controls (U14) — bottom-right */}
+      <ZoomControls />
 
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctx.items} onClose={closeCtx} />}
     </div>

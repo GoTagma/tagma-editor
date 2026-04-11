@@ -1,8 +1,12 @@
-import { useCallback } from 'react';
-import { Trash2, AlertTriangle } from 'lucide-react';
-import type { RawTrackConfig, MiddlewareConfig } from '../../api/client';
+import { useCallback, useMemo, useState } from 'react';
+import { Trash2, AlertTriangle, ShieldAlert } from 'lucide-react';
+import type { RawTrackConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
+import { usePipelineStore } from '../../store/pipeline-store';
 import { MiddlewareEditor } from './MiddlewareEditor';
+import { InheritedValue, ResetButton, resolveScalar } from './InheritedValue';
+import { ConfirmDialog } from './ConfirmDialog';
+import { Minimap } from '../board/Minimap';
 
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
@@ -12,10 +16,40 @@ interface TrackConfigPanelProps {
   onDeleteTrack: (trackId: string) => void;
 }
 
+const ON_FAILURE_DESCRIPTIONS: Record<string, string> = {
+  '': 'Skip downstream tasks in this track (default).',
+  skip_downstream: 'Skip downstream tasks in this track (default).',
+  ignore: 'Treat failure as success; downstream tasks proceed.',
+  stop_all: '\u26a0 Skip ALL remaining tasks in the entire pipeline.',
+};
+
 export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDeleteTrack }: TrackConfigPanelProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Read pipeline-level config from the store so we can resolve the inheritance
+  // chain (track → pipeline). App.tsx doesn't need to thread anything new.
+  const pipelineConfig = usePipelineStore((s) => s.config);
+
   const commit = useCallback((fields: Record<string, unknown>) => {
     onUpdateTrack(track.id, fields);
   }, [track.id, onUpdateTrack]);
+
+  // Pipeline-level inheritance (pipeline only carries driver/timeout today).
+  const resolvedDriver = useMemo(
+    () => resolveScalar(track.driver, undefined, pipelineConfig.driver, 'claude-code'),
+    [track.driver, pipelineConfig.driver],
+  );
+  const resolvedModelTier = useMemo(
+    () => resolveScalar(track.model_tier, undefined, undefined, 'medium'),
+    [track.model_tier],
+  );
+  const resolvedAgentProfile = useMemo(
+    () => resolveScalar(track.agent_profile, undefined, undefined),
+    [track.agent_profile],
+  );
+  const resolvedCwd = useMemo(
+    () => resolveScalar(track.cwd, undefined, undefined, '.'),
+    [track.cwd],
+  );
 
   const [name, setName, blurName] = useLocalField(track.name ?? '', (v) => commit({ name: v }));
   // driver uses direct commit (no local field needed for select)
@@ -83,51 +117,75 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
 
         {/* Driver */}
         <div>
-          <label className="field-label">Driver</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Driver</label>
+            <ResetButton visible={!!track.driver} onReset={() => commit({ driver: undefined })} />
+          </div>
           <select className="field-input" value={track.driver ?? ''} onChange={(e) => commit({ driver: e.target.value || undefined })}>
             <option value="">(inherited)</option>
             {drivers.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
+          <InheritedValue isOverridden={!!track.driver} resolved={resolvedDriver} pipelineName={pipelineConfig.name} />
         </div>
 
         {/* Model Tier */}
         <div>
-          <label className="field-label">Model Tier</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Model Tier</label>
+            <ResetButton visible={!!track.model_tier} onReset={() => commit({ model_tier: undefined })} />
+          </div>
           <select className="field-input" value={track.model_tier ?? ''} onChange={(e) => handleModelTierChange(e.target.value)}>
-            <option value="">inherited</option>
+            <option value="">(inherited)</option>
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
           </select>
+          <InheritedValue isOverridden={!!track.model_tier} resolved={resolvedModelTier} pipelineName={pipelineConfig.name} />
         </div>
 
         {/* Agent Profile */}
         <div>
-          <label className="field-label">Agent Profile</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Agent Profile</label>
+            <ResetButton visible={!!track.agent_profile} onReset={() => commit({ agent_profile: undefined })} />
+          </div>
           <textarea className="field-input min-h-[60px] resize-y font-mono text-[11px]" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} onBlur={blurAgentProfile}
             placeholder="Named profile or multi-line system prompt..." />
+          <InheritedValue isOverridden={!!track.agent_profile} resolved={resolvedAgentProfile} pipelineName={pipelineConfig.name} />
         </div>
 
         {/* CWD */}
         <div>
-          <label className="field-label">Working Directory</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Working Directory</label>
+            <ResetButton visible={!!track.cwd} onReset={() => commit({ cwd: undefined })} />
+          </div>
           <input type="text" className="field-input font-mono text-[11px]" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
+          <InheritedValue isOverridden={!!track.cwd} resolved={resolvedCwd} pipelineName={pipelineConfig.name} />
         </div>
 
         <div className="border-t border-tagma-border" />
 
         {/* Permissions */}
         <div>
-          <label className="field-label">Permissions</label>
+          <div className="flex items-center justify-between">
+            <label className="field-label">Permissions</label>
+            <ResetButton visible={!!track.permissions} onReset={() => commit({ permissions: undefined })} />
+          </div>
           <div className="flex gap-3">
-            {(['read', 'write', 'execute'] as const).map((key) => (
-              <label key={key} className="flex items-center gap-1.5 cursor-pointer">
-                <input type="checkbox" checked={!!track.permissions?.[key]}
-                  onChange={() => handlePermToggle(key)}
-                  className="accent-tagma-accent" />
-                <span className="text-[11px] text-tagma-text capitalize">{key}</span>
-              </label>
-            ))}
+            {(['read', 'write', 'execute'] as const).map((key) => {
+              const isExecute = key === 'execute';
+              return (
+                <label key={key} className="flex items-center gap-1.5 cursor-pointer"
+                  title={isExecute ? 'Allows arbitrary shell execution (Bash, bypassPermissions on claude-code). Enable only in trusted workdirs.' : undefined}>
+                  <input type="checkbox" checked={!!track.permissions?.[key]}
+                    onChange={() => handlePermToggle(key)}
+                    className="accent-tagma-accent" />
+                  <span className={`text-[11px] capitalize ${isExecute ? 'text-red-400' : 'text-tagma-text'}`}>{key}</span>
+                  {isExecute && <ShieldAlert size={10} className="text-red-400" />}
+                </label>
+              );
+            })}
           </div>
         </div>
 
@@ -140,6 +198,9 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
             <option value="stop_all">stop_all</option>
             <option value="ignore">ignore</option>
           </select>
+          <p className={`text-[10px] mt-1 ${(track.on_failure ?? '') === 'stop_all' ? 'text-amber-400' : 'text-tagma-muted'}`}>
+            {ON_FAILURE_DESCRIPTIONS[track.on_failure ?? '']}
+          </p>
         </div>
 
         <div className="border-t border-tagma-border" />
@@ -156,12 +217,45 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
 
         {/* Delete */}
         <div className="pt-4 border-t border-tagma-border">
-          <button onClick={() => onDeleteTrack(track.id)} className="btn-danger flex items-center justify-center gap-1.5">
+          <button onClick={() => setConfirmDelete(true)} className="btn-danger flex items-center justify-center gap-1.5">
             <Trash2 size={12} />
             Delete Track
           </button>
         </div>
       </div>
+
+      {/* Minimap docked at the bottom of the panel (U15). */}
+      <Minimap />
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete track?"
+          confirmLabel="Delete track"
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            onDeleteTrack(track.id);
+          }}
+          message={
+            <>
+              <p>
+                Delete track <span className="font-mono text-tagma-accent">{track.id}</span>?
+              </p>
+              <p className="text-tagma-muted mt-2">
+                This will remove <span className="text-amber-400">{track.tasks.length}</span> task
+                {track.tasks.length !== 1 ? 's' : ''} and any cross-track dependency references to them.
+              </p>
+              {track.tasks.length > 0 && (
+                <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5">
+                  {track.tasks.map((t) => (
+                    <li key={t.id} className="font-mono text-[11px] text-tagma-text/80">&bull; {track.id}.{t.id}</li>
+                  ))}
+                </ul>
+              )}
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

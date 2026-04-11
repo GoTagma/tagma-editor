@@ -46,38 +46,53 @@ function Chip({ children, className = '' }: { children: React.ReactNode; classNa
   );
 }
 
-/* ── Error Tooltip ── */
+/* ── Error Tooltip ──
+ * Positioned relative to the card (above by default, below if clipped).
+ * Recomputes once on mount based on the captured anchorRect; does NOT
+ * follow the mouse — this is the U13 fix for flicker. A short opacity
+ * transition smooths the appearance.
+ */
 function ErrorTooltip({ messages, anchorRect }: { messages: string[]; anchorRect: DOMRect }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [visible, setVisible] = useState(false);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const z = getZoom();
-    const gap = 6, margin = 8;
+    const gap = 8, margin = 8;
     const vw = viewportW(), vh = viewportH();
     const tW = el.getBoundingClientRect().width / z;
     const tH = el.getBoundingClientRect().height / z;
     const aL = anchorRect.left / z, aT = anchorRect.top / z;
     const aW = anchorRect.width / z, aB = anchorRect.bottom / z;
 
+    // Anchor above the card centered horizontally; fall back to below if
+    // there's not enough room above.
     let left = aL + aW / 2 - tW / 2;
     left = Math.max(margin, Math.min(left, vw - tW - margin));
-    let top = aT - gap - tH >= margin ? aT - gap - tH : aB + gap;
+    let top = aT - gap - tH;
+    if (top < margin) top = aB + gap;
     top = Math.max(margin, Math.min(top, vh - tH - margin));
     setPos({ left, top });
-  }, [anchorRect]);
+    // Kick opacity transition on next frame.
+    const id = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(id);
+    // anchorRect is captured once per hover-in; intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return createPortal(
     <div
       ref={ref}
-      className="fixed pointer-events-none bg-[#1a1a1e] border border-red-500/40 shadow-lg rounded-[3px] animate-fade-in"
+      className="fixed pointer-events-none bg-[#1a1a1e] border border-red-500/40 shadow-lg rounded-[3px]"
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
         width: 260, maxHeight: viewportH() - 16,
         overflow: 'hidden', zIndex: 9999,
-        visibility: pos ? 'visible' : 'hidden',
+        opacity: pos && visible ? 1 : 0,
+        transition: 'opacity 150ms ease-out',
       }}
     >
       <div className="px-3 py-1.5">
@@ -273,7 +288,21 @@ export function TaskCard({
             {badges}
           </span>
         )}
-        <span className="inline-flex items-center justify-center w-[10px] h-[10px] shrink-0">
+        <span
+          className="inline-flex items-center justify-center w-[10px] h-[10px] shrink-0 pointer-events-auto"
+          onPointerDown={(e) => {
+            if (!isInvalid) return;
+            // Stop the card drag from swallowing this click; dispatch a
+            // focus-task event that BoardCanvas listens for and scrolls the
+            // card into view. Also select the task so the panel opens.
+            e.stopPropagation();
+            e.preventDefault();
+            const qid = `${trackId}.${task.id}`;
+            window.dispatchEvent(new CustomEvent('tagma:focus-task', { detail: qid }));
+          }}
+          style={{ cursor: isInvalid ? 'pointer' : 'default' }}
+          title={isInvalid ? 'Jump to this task' : undefined}
+        >
           {isInvalid && <AlertTriangle size={8} className="text-red-400" />}
         </span>
       </div>

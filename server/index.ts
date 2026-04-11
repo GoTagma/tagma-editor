@@ -23,8 +23,17 @@ import {
   listRegistered,
   loadPlugins,
   hasHandler,
+  getHandler,
   registerPlugin,
 } from '@tagma/sdk';
+import type { DriverPlugin, DriverCapabilities } from '@tagma/types';
+import {
+  startWatching as startFileWatching,
+  stopWatching as stopFileWatching,
+  onFileWatcherEvent,
+  markSynced as markWatcherSynced,
+  type ExternalChangeEvent,
+} from './file-watcher.js';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '@tagma/sdk';
 import type { ValidationError, RawDag } from '@tagma/sdk';
 
@@ -39,6 +48,27 @@ app.use(express.json({ limit: '5mb' }));
 let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
 let workDir: string = process.cwd();
+
+// ── Revision / ETag (C6) ──
+//
+// `stateRevision` increments on every successful mutation. Clients track their
+// last-seen revision and send `If-Match: <revision>` (or body field
+// `expectedRevision`) on mutations. If the numbers don't match, the server
+// responds 409 with `{ error, currentState }` so the client can re-apply.
+//
+// Contract (documented here for future pipeline-store integration):
+//   Request  → headers: { 'If-Match': '<number>' }
+//              body:    { ..., expectedRevision?: number }
+//   Success  → 2xx JSON, state includes `revision` field incremented by 1+
+//   Conflict → 409 JSON: { error: 'revision mismatch', currentState: ServerState }
+//
+// Group 5 leaves client consumption for a future cycle; pipeline-store is
+// owned by other groups and must not be touched here.
+let stateRevision = 0;
+function bumpRevision(): number {
+  stateRevision += 1;
+  return stateRevision;
+}
 
 /** Editor layout data stored alongside the YAML file as .layout.json */
 interface EditorLayout {
@@ -160,8 +190,91 @@ function getState() {
     yamlPath,
     workDir,
     layout,
+    revision: stateRevision,
   };
 }
+
+/**
+ * Fetch DriverCapabilities for every currently-registered driver (F2).
+ * Silently omits drivers that throw during lookup.
+ */
+function getDriverCapabilities(): Record<string, DriverCapabilities> {
+  const out: Record<string, DriverCapabilities> = {};
+  for (const name of listRegistered('drivers')) {
+    try {
+      const plugin = getHandler<DriverPlugin>('drivers', name);
+      out[name] = plugin.capabilities;
+    } catch { /* ignore broken plugin */ }
+  }
+  return out;
+}
+
+// ── Mutation middleware: revision bump + If-Match check (C6) ──
+//
+// Applied via `app.use` BEFORE any mutation routes are registered (see order
+// below). The middleware is a no-op for GET/HEAD/OPTIONS and for non-/api
+// paths. For mutations it:
+//   1. Validates `If-Match` / `expectedRevision` against `stateRevision`
+//   2. On mismatch → 409 with the current ServerState
+//   3. On match (or when no expectation provided) → hooks `res.on('finish')`
+//      to bump `stateRevision` after a successful 2xx response
+//
+// Requests that did not send an expectation are still accepted (backward
+// compat for older clients) but will still bump the revision on success.
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  if (!MUTATION_METHODS.has(req.method)) return next();
+
+  // Skip If-Match checks on endpoints that Group 4 owns and on plugin/FS
+  // utilities where revision doesn't carry meaning.
+  const skipRoutes = [
+    '/api/run/',
+    '/api/plugins/',
+    '/api/fs/',
+    '/api/state/events',
+    '/api/layout',
+  ];
+  if (skipRoutes.some((p) => req.path.startsWith(p))) return next();
+
+  const headerMatch = req.header('If-Match');
+  const bodyExpected =
+    req.body && typeof req.body === 'object' && 'expectedRevision' in req.body
+      ? Number((req.body as Record<string, unknown>).expectedRevision)
+      : undefined;
+  const expected =
+    headerMatch !== undefined && headerMatch !== ''
+      ? Number(headerMatch)
+      : bodyExpected;
+
+  if (expected !== undefined && Number.isFinite(expected) && expected !== stateRevision) {
+    return res.status(409).json({
+      error: 'revision mismatch',
+      expected,
+      current: stateRevision,
+      currentState: getState(),
+    });
+  }
+
+  // Strip `expectedRevision` from body so downstream handlers never see it
+  // as a stray field (avoids accidentally persisting it into YAML).
+  if (req.body && typeof req.body === 'object' && 'expectedRevision' in req.body) {
+    delete (req.body as Record<string, unknown>).expectedRevision;
+  }
+
+  // Bump pre-emptively so the getState() embedded in the response body already
+  // carries the new revision. If the handler errors (4xx/5xx) we roll back so
+  // clients don't see a phantom jump.
+  const pre = stateRevision;
+  bumpRevision();
+  res.on('finish', () => {
+    if (res.statusCode >= 400) {
+      stateRevision = pre;
+    }
+  });
+
+  next();
+});
 
 // ── GET state ──
 app.get('/api/state', (_req, res) => {
@@ -169,14 +282,104 @@ app.get('/api/state', (_req, res) => {
 });
 
 // ── Plugin registry ──
+// F2: additionally expose per-driver DriverCapabilities so the UI can grey
+// out sessionResume / systemPrompt / outputFormat fields when a driver does
+// not support them. Legacy `drivers` field (string[]) is preserved for
+// backward compatibility.
 app.get('/api/registry', (_req, res) => {
   res.json({
     drivers: listRegistered('drivers'),
     triggers: listRegistered('triggers'),
     completions: listRegistered('completions'),
     middlewares: listRegistered('middlewares'),
+    driverCapabilities: getDriverCapabilities(),
   });
 });
+
+// ── External file-change SSE (C5) ──
+//
+// Clients subscribe to `/api/state/events` to get notified when the
+// in-memory state's backing YAML was modified outside the editor. We emit
+// one of:
+//   { type: 'external-change', newState }  → server already reloaded; client should re-apply
+//   { type: 'external-conflict', path }    → client has in-memory changes; must resolve manually
+//
+// This piggybacks on the same SSE pattern as /api/run/events. A follow-up
+// client task will wire consumption; today the endpoint just streams events
+// and logs conflicts server-side. For clients that cannot use SSE,
+// `/api/state/reload` returns the latest state on demand.
+interface StateEventClient {
+  res: import('express').Response;
+}
+const stateEventClients = new Set<StateEventClient>();
+
+function broadcastStateEvent(payload: Record<string, unknown>): void {
+  const data = JSON.stringify(payload);
+  for (const client of stateEventClients) {
+    try { client.res.write(`event: state_event\ndata: ${data}\n\n`); } catch { /* best-effort */ }
+  }
+}
+
+app.get('/api/state/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write('\n');
+  const client: StateEventClient = { res };
+  stateEventClients.add(client);
+  req.on('close', () => stateEventClients.delete(client));
+});
+
+// Polling fallback — returns current state. Intended for clients that can't
+// keep an SSE connection open.
+app.get('/api/state/reload', (_req, res) => {
+  res.json(getState());
+});
+
+// Wire the file-watcher into the SSE broadcaster. When the watcher detects
+// an external change with clean in-memory state, auto-reload the YAML and
+// push the new state to subscribers.
+onFileWatcherEvent((event: ExternalChangeEvent) => {
+  if (event.type === 'external-change') {
+    try {
+      config = parseYaml(event.content);
+    } catch {
+      try {
+        const doc = yaml.load(event.content) as any;
+        const p = doc?.pipeline ?? doc ?? {};
+        config = {
+          name: p.name || 'Untitled',
+          driver: p.driver,
+          timeout: p.timeout,
+          tracks: Array.isArray(p.tracks) ? p.tracks : [],
+        } as RawPipelineConfig;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[file-watcher] failed to parse reloaded YAML', err);
+        broadcastStateEvent({ type: 'external-conflict', path: event.path, error: 'parse-failed' });
+        return;
+      }
+    }
+    bumpRevision();
+    markWatcherSynced(event.content, null);
+    broadcastStateEvent({ type: 'external-change', newState: getState() });
+  } else if (event.type === 'external-conflict') {
+    broadcastStateEvent({ type: 'external-conflict', path: event.path });
+  }
+});
+
+/** Helper: begin watching a path (after load/save) and seed the baseline. */
+function beginWatching(path: string, content: string): void {
+  try {
+    markWatcherSynced(content, existsSync(path) ? statSync(path).mtimeMs : null);
+    startFileWatching(path, () => serializePipeline(config));
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[file-watcher] beginWatching failed', err);
+  }
+}
 
 // ── Plugin management ──
 
@@ -877,6 +1080,7 @@ app.post('/api/open', (req, res) => {
     }
     yamlPath = absPath;
     loadLayout();
+    beginWatching(absPath, content);
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to open file' });
@@ -897,6 +1101,7 @@ app.post('/api/save', (_req, res) => {
     writeFileSync(savePath, content, 'utf-8');
     yamlPath = savePath;
     saveLayout();
+    beginWatching(savePath, content);
     res.json(getState());
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to save file' });
@@ -912,6 +1117,7 @@ app.post('/api/save-as', (req, res) => {
     writeFileSync(absPath, yaml, 'utf-8');
     yamlPath = absPath;
     saveLayout();
+    beginWatching(absPath, yaml);
     res.json(getState());
   } catch (e: any) {
     res.status(500).json({ error: e.message ?? 'Failed to save file' });
@@ -935,6 +1141,7 @@ app.post('/api/new', (req, res) => {
   layout = { positions: {} };
   const content = serializePipeline(config);
   writeFileSync(yamlPath, content, 'utf-8');
+  beginWatching(yamlPath, content);
   res.json(getState());
 });
 
@@ -987,6 +1194,7 @@ app.post('/api/import-file', (req, res) => {
     }
     yamlPath = destPath;
     loadLayout();
+    beginWatching(destPath, content);
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to import file' });
@@ -1036,6 +1244,7 @@ app.post('/api/delete-file', (req, res) => {
       yamlPath = null;
       config = createEmptyPipeline('Untitled Pipeline');
       layout = { positions: {} };
+      stopFileWatching();
     }
     res.json(getState());
   } catch (e: any) {
@@ -1087,13 +1296,19 @@ app.post('/api/demo', (_req, res) => {
 
 type RunEvent =
   | { type: 'run_start'; runId: string; tasks: { taskId: string; trackId: string; taskName: string; status: string; startedAt: null; finishedAt: null; durationMs: null; exitCode: null; stdout: string; stderr: string }[] }
-  | { type: 'task_update'; taskId: string; status: string; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
-  | { type: 'run_end'; success: boolean }
-  | { type: 'run_error'; error: string }
-  | { type: 'log'; line: string };
+  | { type: 'task_update'; runId: string; taskId: string; status: string; startedAt?: string; finishedAt?: string; durationMs?: number; exitCode?: number; stdout?: string; stderr?: string }
+  | { type: 'run_end'; runId: string; success: boolean }
+  | { type: 'run_error'; runId: string; error: string }
+  | { type: 'log'; runId: string; line: string }
+  | { type: 'approval_request'; runId: string; request: { id: string; taskId: string; trackId?: string; message: string; options: string[]; createdAt: string; timeoutMs: number; metadata?: Record<string, unknown> } }
+  | { type: 'approval_resolved'; runId: string; requestId: string; outcome: 'approved' | 'rejected' | 'timeout' | 'aborted'; choice?: string };
 
 let runProcess: ChildProcess | null = null;
+let activeRunId: string | null = null;
 const sseClients = new Set<import('express').Response>();
+// Pending approval requests keyed by requestId. Populated when the SDK/CLI emits
+// an approval_request event; resolved when the editor POSTs a decision.
+const pendingApprovals = new Map<string, { runId: string; taskId: string }>();
 
 function broadcast(event: RunEvent) {
   const data = JSON.stringify(event);
@@ -1155,6 +1370,7 @@ app.post('/api/run/start', (_req, res) => {
 
   // Generate a run ID
   const runId = `run_${Date.now().toString(36)}`;
+  activeRunId = runId;
 
   broadcast({ type: 'run_start', runId, tasks: initialTasks });
 
@@ -1168,25 +1384,25 @@ app.post('/api/run/start', (_req, res) => {
     const msg = rawMsg.replace(/^ERROR:\s*/, '');
 
     if (msg.startsWith('running')) {
-      broadcast({ type: 'task_update', taskId, status: 'running', startedAt: new Date().toISOString() });
+      broadcast({ type: 'task_update', runId, taskId, status: 'running', startedAt: new Date().toISOString() });
     } else if (msg.startsWith('success')) {
       const durMatch = msg.match(/\((\d+\.?\d*)s\)/);
       const durationMs = durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined;
-      broadcast({ type: 'task_update', taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
+      broadcast({ type: 'task_update', runId, taskId, status: 'success', finishedAt: new Date().toISOString(), durationMs, exitCode: 0 });
     } else if (msg.match(/^(failed|timeout)/)) {
       const exitMatch = msg.match(/exit=(-?\d+)/);
       const durMatch = msg.match(/duration=(\d+\.?\d*)s/);
       broadcast({
-        type: 'task_update', taskId,
+        type: 'task_update', runId, taskId,
         status: msg.startsWith('timeout') ? 'timeout' : 'failed',
         finishedAt: new Date().toISOString(),
         exitCode: exitMatch ? parseInt(exitMatch[1]) : -1,
         durationMs: durMatch ? Math.round(parseFloat(durMatch[1]) * 1000) : undefined,
       });
     } else if (msg.startsWith('skipped')) {
-      broadcast({ type: 'task_update', taskId, status: 'skipped', finishedAt: new Date().toISOString() });
+      broadcast({ type: 'task_update', runId, taskId, status: 'skipped', finishedAt: new Date().toISOString() });
     } else if (msg.startsWith('blocked')) {
-      broadcast({ type: 'task_update', taskId, status: 'blocked', finishedAt: new Date().toISOString() });
+      broadcast({ type: 'task_update', runId, taskId, status: 'blocked', finishedAt: new Date().toISOString() });
     }
   }
 
@@ -1203,15 +1419,17 @@ app.post('/api/run/start', (_req, res) => {
   });
 
   child.on('close', (code) => {
-    broadcast({ type: 'run_end', success: code === 0 });
+    broadcast({ type: 'run_end', runId, success: code === 0 });
     runProcess = null;
+    if (activeRunId === runId) activeRunId = null;
     // Clean up temp files
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
   child.on('error', (err) => {
-    broadcast({ type: 'run_error', error: err.message });
+    broadcast({ type: 'run_error', runId, error: err.message });
     runProcess = null;
+    if (activeRunId === runId) activeRunId = null;
   });
 
   res.json({ ok: true, runId });
@@ -1221,10 +1439,98 @@ app.post('/api/run/abort', (_req, res) => {
   if (!runProcess) {
     return res.status(404).json({ error: 'No run in progress' });
   }
+  const runId = activeRunId ?? 'unknown';
   runProcess.kill('SIGTERM');
   runProcess = null;
-  broadcast({ type: 'run_end', success: false });
+  activeRunId = null;
+  broadcast({ type: 'run_end', runId, success: false });
   res.json({ ok: true });
+});
+
+// ── Approval (F3) ──
+// POST a decision for a pending approval request. This endpoint is wired
+// optimistically: it always broadcasts an `approval_resolved` SSE event so
+// the UI can close dialogs. The actual SDK-side ApprovalGateway.resolve()
+// wiring requires the CLI to expose a control channel; this is tracked as a
+// TODO until the CLI gains a JSON control protocol.
+app.post('/api/run/approval/:requestId', (req, res) => {
+  const { requestId } = req.params;
+  const { outcome, choice } = req.body ?? {};
+  if (outcome !== 'approved' && outcome !== 'rejected') {
+    return res.status(400).json({ error: 'outcome must be approved|rejected' });
+  }
+  const pending = pendingApprovals.get(requestId);
+  const runId = pending?.runId ?? activeRunId ?? 'unknown';
+  pendingApprovals.delete(requestId);
+  // TODO: forward the decision to the running CLI via a control channel
+  // (stdin JSON protocol or a UDS). Today we only broadcast back to the UI.
+  broadcast({ type: 'approval_resolved', runId, requestId, outcome, choice });
+  res.json({ ok: true, stubbed: true });
+});
+
+// ── Run History (F8) ──
+// Lists prior run directories under `<workDir>/.tagma/logs/` sorted by
+// mtime desc, capped at 20. Each entry exposes minimal metadata the UI
+// needs to render a history list; the full pipeline.log is fetched via
+// /api/run/history/:runId.
+interface RunHistoryEntry {
+  runId: string;
+  path: string;
+  startedAt: string;
+  sizeBytes: number;
+}
+
+app.get('/api/run/history', (_req, res) => {
+  const cwd = workDir || process.cwd();
+  const logsDir = join(cwd, '.tagma', 'logs');
+  if (!existsSync(logsDir)) {
+    return res.json({ runs: [] });
+  }
+  try {
+    const entries = readdirSync(logsDir)
+      .filter((name) => name.startsWith('run_'))
+      .map((name): RunHistoryEntry | null => {
+        const full = join(logsDir, name);
+        try {
+          const st = statSync(full);
+          if (!st.isDirectory()) return null;
+          const logFile = join(full, 'pipeline.log');
+          const logStat = existsSync(logFile) ? statSync(logFile) : null;
+          return {
+            runId: name,
+            path: full,
+            startedAt: st.mtime.toISOString(),
+            sizeBytes: logStat?.size ?? 0,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is RunHistoryEntry => x !== null)
+      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
+      .slice(0, 20);
+    res.json({ runs: entries });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/run/history/:runId', (req, res) => {
+  const { runId } = req.params;
+  if (!/^run_[A-Za-z0-9_-]+$/.test(runId)) {
+    return res.status(400).json({ error: 'invalid runId' });
+  }
+  const cwd = workDir || process.cwd();
+  const logFile = join(cwd, '.tagma', 'logs', runId, 'pipeline.log');
+  if (!existsSync(logFile)) {
+    return res.status(404).json({ error: 'log not found' });
+  }
+  try {
+    const content = readFileSync(logFile, 'utf-8');
+    res.json({ runId, content });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const PORT = parseInt(process.env.PORT ?? '3001');

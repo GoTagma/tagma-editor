@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
-import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw, Search, FolderOpen } from 'lucide-react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Download, Trash2, Loader2, Check, AlertCircle, Package, RefreshCw, Search, FolderOpen, RotateCcw, Info } from 'lucide-react';
 import { api } from '../../api/client';
 import type { PluginInfo, PluginRegistry } from '../../api/client';
 
@@ -14,10 +14,54 @@ interface PluginManagerProps {
   onRequestBrowse?: () => void;
 }
 
+type ErrorKind = 'network' | 'permission' | 'version' | 'notfound' | 'unknown';
+
 type ActionState = { type: 'idle' }
   | { type: 'loading'; plugin: string; action: string }
-  | { type: 'error'; plugin: string; message: string }
+  | { type: 'error'; plugin: string; action: string; message: string; kind: ErrorKind }
   | { type: 'success'; plugin: string; message: string };
+
+/**
+ * Classify an npm / server install error message into a coarse bucket so we
+ * can render a short human hint alongside the raw message. The server already
+ * returns the full `Install failed: <stderr>` string — we just pattern-match
+ * on well-known substrings.
+ */
+function classifyError(message: string): ErrorKind {
+  const m = message.toLowerCase();
+  if (m.includes('enotfound') || m.includes('etimedout') || m.includes('econnrefused') || m.includes('network') || m.includes('fetch failed')) {
+    return 'network';
+  }
+  if (m.includes('eacces') || m.includes('eperm') || m.includes('permission denied')) {
+    return 'permission';
+  }
+  if (m.includes('etarget') || m.includes('eresolve') || m.includes('version') || m.includes('peer dep')) {
+    return 'version';
+  }
+  if (m.includes('e404') || m.includes('not found') || m.includes('404')) {
+    return 'notfound';
+  }
+  return 'unknown';
+}
+
+function errorHint(kind: ErrorKind): string {
+  switch (kind) {
+    case 'network': return 'Network error — check your connection or proxy settings.';
+    case 'permission': return 'Permission denied — check write access to the working directory.';
+    case 'version': return 'Version conflict — the package version could not be resolved.';
+    case 'notfound': return 'Package not found on the registry.';
+    case 'unknown': return 'See details below.';
+  }
+}
+
+/** Extract a useful message from an unknown error thrown by fetch/request. */
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string') return err;
+  try { return JSON.stringify(err); } catch { return 'Unknown error'; }
+}
+
+const SUCCESS_DISMISS_MS = 2000;
 
 const ALL_CATEGORY = 'all';
 const INSTALLED_FILTER = 'installed';
@@ -28,6 +72,23 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
   const [inputValue, setInputValue] = useState('');
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState(ALL_CATEGORY);
+  const successDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-dismiss success banners after SUCCESS_DISMISS_MS.
+  useEffect(() => {
+    if (actionState.type === 'success') {
+      if (successDismissTimer.current) clearTimeout(successDismissTimer.current);
+      successDismissTimer.current = setTimeout(() => {
+        setActionState((s) => (s.type === 'success' ? { type: 'idle' } : s));
+      }, SUCCESS_DISMISS_MS);
+    }
+    return () => {
+      if (successDismissTimer.current) {
+        clearTimeout(successDismissTimer.current);
+        successDismissTimer.current = null;
+      }
+    };
+  }, [actionState]);
 
   const refresh = useCallback(async () => {
     try {
@@ -85,8 +146,9 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
         message: result.warning ?? `Installed v${result.plugin.version}`,
       });
       await refresh();
-    } catch (e: any) {
-      setActionState({ type: 'error', plugin: name, message: e.message ?? 'Install failed' });
+    } catch (e: unknown) {
+      const message = extractErrorMessage(e);
+      setActionState({ type: 'error', plugin: name, action: 'Install', message, kind: classifyError(message) });
     }
   }, [declaredPlugins, onRegistryUpdate, onPluginsChange, refresh]);
 
@@ -100,8 +162,9 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
 
       setActionState({ type: 'success', plugin: name, message: 'Uninstalled' });
       await refresh();
-    } catch (e: any) {
-      setActionState({ type: 'error', plugin: name, message: e.message ?? 'Uninstall failed' });
+    } catch (e: unknown) {
+      const message = extractErrorMessage(e);
+      setActionState({ type: 'error', plugin: name, action: 'Uninstall', message, kind: classifyError(message) });
     }
   }, [declaredPlugins, onRegistryUpdate, onPluginsChange, refresh]);
 
@@ -112,10 +175,19 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
       onRegistryUpdate(result.registry);
       setActionState({ type: 'success', plugin: name, message: 'Loaded into registry' });
       await refresh();
-    } catch (e: any) {
-      setActionState({ type: 'error', plugin: name, message: e.message ?? 'Load failed' });
+    } catch (e: unknown) {
+      const message = extractErrorMessage(e);
+      setActionState({ type: 'error', plugin: name, action: 'Load', message, kind: classifyError(message) });
     }
   }, [onRegistryUpdate, refresh]);
+
+  const handleRetry = useCallback(() => {
+    if (actionState.type !== 'error') return;
+    const { plugin, action } = actionState;
+    if (action === 'Install') handleInstall(plugin);
+    else if (action === 'Uninstall') handleUninstall(plugin);
+    else if (action === 'Load') handleLoad(plugin);
+  }, [actionState, handleInstall, handleUninstall, handleLoad]);
 
   const handleAdd = useCallback(async () => {
     const name = inputValue.trim();
@@ -134,6 +206,29 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {/* F11: Explain the Install / Load distinction. These two actions are
+          NOT interchangeable and the difference determines whether the pipeline
+          YAML on disk changes. Keeping semantics unchanged — just making the
+          mental model visible in the UI. */}
+      <div className="shrink-0 mb-3 px-2 py-1.5 bg-blue-500/5 border border-blue-500/20 text-[10px] text-tagma-muted">
+        <div className="flex items-start gap-1.5">
+          <Info size={11} className="text-blue-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p>
+              <span className="text-blue-400 font-medium">Install</span> — writes the package
+              name into <code className="font-mono">pipeline.plugins[]</code> in your YAML and
+              runs <code className="font-mono">npm install</code> on the workspace. Persisted;
+              survives reloads and is restored on the next <code>open</code>.
+            </p>
+            <p>
+              <span className="text-blue-400 font-medium">Load</span> — imports an
+              already-installed package into the current runtime registry only. Does <em>not</em>
+              touch the YAML; the effect is lost when the server restarts.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Search bar */}
       <div className="relative mb-3 shrink-0">
         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-tagma-muted pointer-events-none" />
@@ -199,7 +294,10 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
 
       {/* Add new plugin */}
       <div className="shrink-0 border-t border-tagma-border pt-3">
-        <label className="field-label">Install Plugin</label>
+        <label className="field-label">
+          Install Plugin
+          <span className="text-[10px] text-tagma-muted font-normal ml-1">(writes to YAML)</span>
+        </label>
         <div className="flex gap-1.5">
           <input
             type="text"
@@ -235,13 +333,21 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
             <span>{(actionState as { action: string }).action} <span className="font-mono">{(actionState as { plugin: string }).plugin}</span>...</span>
           </div>
         ) : (
-          <p className="text-[10px] text-tagma-muted mt-1">Enter a package name or browse a local plugin directory</p>
+          <p className="text-[10px] text-tagma-muted mt-1">
+            Enter a package name or browse a local plugin directory.
+            Installed packages are persisted to <code className="font-mono">pipeline.plugins[]</code>
+            and re-installed on the next open.
+          </p>
         )}
       </div>
 
       {/* Status message */}
       {actionState.type !== 'idle' && actionState.type !== 'loading' && (
-        <StatusMessage state={actionState} onDismiss={() => setActionState({ type: 'idle' })} />
+        <StatusMessage
+          state={actionState}
+          onDismiss={() => setActionState({ type: 'idle' })}
+          onRetry={handleRetry}
+        />
       )}
     </div>
   );
@@ -300,7 +406,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
                 onClick={() => onInstall(plugin.name)}
                 disabled={disabled}
                 className="p-1 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
-                title="Install"
+                title="Install — writes to YAML (pipeline.plugins[]) and runs npm install"
               >
                 <Download size={12} />
               </button>
@@ -310,7 +416,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
                 onClick={() => onLoad(plugin.name)}
                 disabled={disabled}
                 className="p-1 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
-                title="Load into registry"
+                title="Load into registry — runtime only, does not modify YAML"
               >
                 <RefreshCw size={12} />
               </button>
@@ -332,7 +438,7 @@ function PluginRow({ plugin, actionState, onInstall, onUninstall, onLoad, disabl
   );
 }
 
-function StatusMessage({ state, onDismiss }: { state: ActionState; onDismiss: () => void }) {
+function StatusMessage({ state, onDismiss, onRetry }: { state: ActionState; onDismiss: () => void; onRetry: () => void }) {
   if (state.type === 'idle' || state.type === 'loading') return null;
 
   const isError = state.type === 'error';
@@ -342,13 +448,40 @@ function StatusMessage({ state, onDismiss }: { state: ActionState; onDismiss: ()
     : 'bg-green-500/10 border-green-500/30 text-green-400';
 
   return (
-    <div className={`mt-2 px-2 py-1.5 border text-[10px] flex items-start gap-1.5 ${colorClass}`}>
-      <Icon size={12} className="shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <span className="font-mono">{state.plugin}</span>
-        <span className="text-tagma-muted ml-1">— {state.message}</span>
+    <div className={`mt-2 px-2 py-1.5 border text-[10px] ${colorClass}`}>
+      <div className="flex items-start gap-1.5">
+        <Icon size={12} className="shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1">
+            <span className="font-mono truncate">{state.plugin}</span>
+            {isError && (
+              <span className="text-tagma-muted">— {state.action} failed</span>
+            )}
+          </div>
+          {isError ? (
+            <>
+              <div className="mt-0.5 text-tagma-muted">{errorHint(state.kind)}</div>
+              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-red-500/20 text-red-300 text-[9px] font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                {state.message}
+              </pre>
+            </>
+          ) : (
+            <div className="text-tagma-muted mt-0.5">{state.message}</div>
+          )}
+        </div>
+        <button onClick={onDismiss} className="text-tagma-muted hover:text-tagma-text shrink-0" title="Dismiss">&times;</button>
       </div>
-      <button onClick={onDismiss} className="text-tagma-muted hover:text-tagma-text shrink-0">&times;</button>
+      {isError && (
+        <div className="flex justify-end mt-1">
+          <button
+            onClick={onRetry}
+            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-red-500/20 border border-red-500/30 text-red-300 hover:bg-red-500/30 transition-colors"
+            title="Retry"
+          >
+            <RotateCcw size={10} /> Retry
+          </button>
+        </div>
+      )}
     </div>
   );
 }

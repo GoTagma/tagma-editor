@@ -75,6 +75,7 @@ export function Toolbar({
           <button
             onClick={() => { setEditName(pipelineName); setIsEditing(true); }}
             className="flex items-center gap-1.5 group min-w-0 shrink-0"
+            title={yamlPath ?? 'Unsaved pipeline'}
           >
             <span className="text-[11px] font-semibold tracking-wide text-tagma-text truncate max-w-[180px] group-hover:text-white transition-colors">{pipelineName}</span>
             <Pencil size={9} className="text-tagma-muted/50 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />

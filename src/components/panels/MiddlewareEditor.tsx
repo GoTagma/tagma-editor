@@ -1,10 +1,8 @@
 import { useCallback } from 'react';
 import { X, Plus } from 'lucide-react';
 import type { MiddlewareConfig } from '../../api/client';
-import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
-
-const KNOWN_MIDDLEWARE_TYPES = new Set(['static_context']);
+import { SchemaForm, getBuiltinSchema, type PluginSchema } from './SchemaForm';
 
 interface MiddlewareEditorProps {
   middlewares: MiddlewareConfig[];
@@ -56,11 +54,20 @@ function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove }: {
   onUpdate: (patch: Partial<MiddlewareConfig>) => void;
   onRemove: () => void;
 }) {
-  const [file, setFile, blurFile] = useLocalField(middleware.file ?? '', (v) => onUpdate({ file: v || undefined }));
-  const [label, setLabel, blurLabel] = useLocalField(middleware.label ?? '', (v) => onUpdate({ label: v || undefined }));
-
-  const isKnown = KNOWN_MIDDLEWARE_TYPES.has(middleware.type);
+  // F10: look up a schema for this middleware type. Falls back to a KV editor
+  // for plugins with no known schema (see SchemaForm.tsx for discovery note).
+  const schema: PluginSchema | null = getBuiltinSchema('middleware', middleware.type);
   const customEntries = Object.entries(middleware).filter(([k]) => k !== 'type');
+  const fieldValues = Object.fromEntries(customEntries) as Record<string, unknown>;
+
+  const handleSchemaChange = useCallback((next: Record<string, unknown>) => {
+    // Replace all non-type fields with the schema-form output so removed keys
+    // are dropped rather than retained from the previous object.
+    onUpdate({
+      ...({ type: middleware.type } as MiddlewareConfig),
+      ...next,
+    });
+  }, [middleware.type, onUpdate]);
 
   return (
     <div className="bg-tagma-bg border border-tagma-border p-2 space-y-1.5 relative">
@@ -75,25 +82,16 @@ function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove }: {
           ))}
         </select>
       </div>
-      {middleware.type === 'static_context' && (
-        <>
-          <div>
-            <label className="text-[10px] text-tagma-muted">File <span className="text-tagma-error">*</span></label>
-            <input type="text" className="field-input font-mono text-[11px]" value={file} onChange={(e) => setFile(e.target.value)} onBlur={blurFile} placeholder="./context.md" />
-          </div>
-          <div>
-            <label className="text-[10px] text-tagma-muted">Label</label>
-            <input type="text" className="field-input text-[11px]" value={label} onChange={(e) => setLabel(e.target.value)} onBlur={blurLabel} placeholder="Reference: filename" />
-          </div>
-        </>
-      )}
-      {!isKnown && (
+      {schema ? (
+        <SchemaForm schema={schema} value={fieldValues} onChange={handleSchemaChange} />
+      ) : (
         <div className="space-y-1">
-          <p className="text-[10px] text-tagma-muted">Custom fields (from plugin "{middleware.type}"):</p>
+          <p className="text-[10px] text-tagma-muted">
+            Custom fields (plugin "{middleware.type}" has no known schema — falling back to KV editor):
+          </p>
           <CustomFieldsEditor
             entries={customEntries as [string, unknown][]}
             onChange={(next) => onUpdate({
-              // Replace non-type fields wholesale so keys removed in the editor are dropped.
               ...({ type: middleware.type } as MiddlewareConfig),
               ...Object.fromEntries(next),
             })}
