@@ -155,19 +155,29 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
           not the track has errors. This keeps the left color bar aligned
           across tracks. */}
       <div className="flex items-center h-[22px] gap-[6px] min-w-0 overflow-hidden">
-        <span className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : 'text-tagma-text'}`}>
+        <span
+          aria-hidden
+          className="inline-block w-[8px] h-[8px] shrink-0 rounded-[1px]"
+          style={{ backgroundColor: track.color || 'transparent' }}
+        />
+        <span
+          className={`text-[11px] font-semibold truncate flex-1 leading-[22px] tracking-tight ${hasError ? 'text-red-400' : (track.color ? '' : 'text-tagma-text')}`}
+          style={!hasError && track.color ? { color: track.color } : undefined}
+        >
           {track.name}
         </span>
 
-        <span className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0">
-          {hasError && <AlertTriangle size={9} className="text-red-400" />}
-        </span>
-
+        {/* Single indicator slot — fixed position so error/warn icons align
+            across tracks. Error takes precedence over parallel warning. */}
         <span
           className="inline-flex items-center justify-center w-[14px] h-[14px] shrink-0"
-          title={hasParallelWarning ? 'Tasks without edges run in parallel' : undefined}
+          title={hasError ? undefined : (hasParallelWarning ? 'Tasks without edges run in parallel' : undefined)}
         >
-          {hasParallelWarning && <AlertTriangle size={9} className="text-tagma-warning" />}
+          {hasError
+            ? <AlertTriangle size={9} className="text-red-400" />
+            : hasParallelWarning
+              ? <AlertTriangle size={9} className="text-tagma-warning" />
+              : null}
         </span>
 
         <span className="text-[9px] font-mono text-tagma-muted/50 tabular-nums shrink-0 leading-[22px]">

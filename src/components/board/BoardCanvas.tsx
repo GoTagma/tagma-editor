@@ -461,7 +461,6 @@ export function BoardCanvas({
             }
           }
 
-          const barColor = track.color || 'transparent';
           return (
             <div
               key={track.id}
@@ -470,7 +469,6 @@ export function BoardCanvas({
                 height: TRACK_H,
                 width: HEADER_W,
                 boxSizing: 'border-box',
-                borderLeft: `3px solid ${barColor}`,
                 transform: translateY ? `translateY(${translateY}px)` : undefined,
                 transition: trackDrag ? (isDraggedTrack ? 'none' : 'transform 150ms ease-out') : undefined,
                 zIndex: isDraggedTrack ? 10 : 0,
