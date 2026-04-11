@@ -6,7 +6,6 @@ import { usePipelineStore } from '../../store/pipeline-store';
 import { MiddlewareEditor } from './MiddlewareEditor';
 import { InheritedValue, ResetButton, resolveScalar } from './InheritedValue';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Minimap } from '../board/Minimap';
 
 interface TrackConfigPanelProps {
   track: RawTrackConfig;
@@ -223,9 +222,6 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
           </button>
         </div>
       </div>
-
-      {/* Minimap docked at the bottom of the panel (U15). */}
-      <Minimap />
 
       {confirmDelete && (
         <ConfirmDialog

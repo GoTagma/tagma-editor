@@ -7,15 +7,18 @@ import { getZoom } from '../../utils/zoom';
 const TASK_W = 176;
 const TASK_H = 52;
 const TRACK_H = 64;
-const PAD_LEFT = 20;
 const SCROLL_ELEMENT_ID = 'board-scroll';
 
+// Floating minimap footprint — fixed so it doesn't react to sidebar resize.
+const MAP_W = 240;
+const MAP_H = 140;
+const PAD = 4;
+
 /**
- * Self-contained minimap: reads pipeline config + positions from the store and
- * queries the canvas scroll viewport by id. Can be rendered anywhere in the
- * tree — previously it lived inside BoardCanvas with an absolute bottom-left
- * position (which overlapped tracks). Now it is embedded at the bottom of the
- * right-side config panels.
+ * Floating minimap overlaid on the canvas at bottom-right, just above the
+ * ZoomControls. Previously embedded in the right-side config panels, which
+ * caused the content rect to stretch/shrink with sidebar width. Pinning it to
+ * the canvas keeps coordinate math dependent only on the canvas itself.
  */
 export function Minimap() {
   const config = usePipelineStore((s) => s.config);
@@ -27,23 +30,6 @@ export function Minimap() {
   const [contentW, setContentW] = useState(1);
   const [contentH, setContentH] = useState(1);
   const svgRef = useRef<SVGSVGElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [wrapW, setWrapW] = useState(248);
-
-  // Minimap footprint — width fills container; height is fixed.
-  const MAP_W = wrapW;
-  const MAP_H = 128;
-  const PAD = 4;
-
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const update = () => setWrapW(Math.max(1, el.clientWidth));
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   // Use the real canvas scroll extents so task positions, viewport rect, and
   // scroll state always map consistently into minimap coordinates. Sampling
@@ -173,23 +159,24 @@ export function Minimap() {
 
   if (!visible) {
     return (
-      <div className="border-t border-tagma-border px-2 py-1.5 flex items-center justify-between bg-tagma-surface/60">
-        <span className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted">minimap</span>
-        <button
-          type="button"
-          onClick={() => setVisible(true)}
-          className="flex items-center justify-center w-5 h-5 text-tagma-muted hover:text-tagma-text"
-          title="Show minimap"
-        >
-          <MapIcon size={11} />
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => setVisible(true)}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="absolute z-20 flex items-center gap-1 px-2 bg-tagma-surface/90 border border-tagma-border shadow-panel text-tagma-muted hover:text-tagma-text"
+        style={{ bottom: 12, right: 96, height: 22 }}
+        title="Show minimap"
+      >
+        <MapIcon size={11} />
+        <span className="text-[9px] font-mono uppercase tracking-wider">minimap</span>
+      </button>
     );
   }
 
   return (
     <div
-      className="border-t border-tagma-border bg-tagma-surface/60"
+      className="absolute z-20 bg-tagma-surface/90 border border-tagma-border shadow-panel"
+      style={{ bottom: 12, right: 96 }}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -205,7 +192,6 @@ export function Minimap() {
         </button>
       </div>
       <div className="p-1.5">
-        <div ref={wrapRef}>
         <svg
           ref={svgRef}
           width={MAP_W}
@@ -247,7 +233,6 @@ export function Minimap() {
             />
           )}
         </svg>
-        </div>
       </div>
     </div>
   );

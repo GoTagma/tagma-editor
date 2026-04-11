@@ -4,6 +4,7 @@ import { TrackLane } from './TrackLane';
 import { TaskCard } from './TaskCard';
 import { ContextMenu, type MenuEntry } from './ContextMenu';
 import { ZoomControls } from './ZoomControls';
+import { Minimap } from './Minimap';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '../../api/client';
 
 import type { TaskPosition } from '../../store/pipeline-store';
@@ -934,9 +935,8 @@ export function BoardCanvas({
         </div>
       )}
 
-      {/* Minimap (U15) is now rendered inside TaskConfigPanel / TrackConfigPanel
-          at their bottom — see App.tsx wiring. Moved out of the canvas so it no
-          longer overlaps track rows. */}
+      {/* Minimap — floats at bottom-right, above the zoom controls. */}
+      <Minimap />
 
       {/* Zoom controls (U14) — bottom-right */}
       <ZoomControls />

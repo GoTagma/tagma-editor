@@ -8,7 +8,6 @@ import { MiddlewareEditor } from './MiddlewareEditor';
 import { InheritedValue, ResetButton, resolveScalar, resolvePermissions, permsToString } from './InheritedValue';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SchemaForm, getBuiltinSchema } from './SchemaForm';
-import { Minimap } from '../board/Minimap';
 
 const KNOWN_TRIGGER_TYPES = new Set(['manual', 'file']);
 const KNOWN_COMPLETION_TYPES = new Set(['exit_code', 'file_exists', 'output_check']);
@@ -596,10 +595,6 @@ export function TaskConfigPanel({
           </button>
         </div>
       </div>
-
-      {/* Minimap docked at the bottom of the panel (U15 — moved here from the
-          canvas so it no longer overlaps track rows). */}
-      <Minimap />
 
       {confirmDelete && (
         <ConfirmDialog
