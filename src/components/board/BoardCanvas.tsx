@@ -461,40 +461,24 @@ export function BoardCanvas({
             }
           }
 
-          const barColor = errorsByTrack.has(track.id) ? '#ef4444' : (track.color || 'transparent');
+          const barColor = track.color || 'transparent';
           return (
             <div
               key={track.id}
               className={`relative border-b border-tagma-border/60 overflow-hidden ${isDraggedTrack ? 'opacity-60 bg-tagma-accent/5' : ''}`}
               style={{
                 height: TRACK_H,
+                width: HEADER_W,
+                boxSizing: 'border-box',
+                borderLeft: `3px solid ${barColor}`,
                 transform: translateY ? `translateY(${translateY}px)` : undefined,
                 transition: trackDrag ? (isDraggedTrack ? 'none' : 'transform 150ms ease-out') : undefined,
                 zIndex: isDraggedTrack ? 10 : 0,
                 position: 'relative',
               }}
             >
-              {/* Color bar — absolutely positioned overlay on top of the
-                  lane so its width is guaranteed 3px regardless of any
-                  sibling/child content in the row. */}
-              <div
-                aria-hidden
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: 3,
-                  minWidth: 3,
-                  maxWidth: 3,
-                  backgroundColor: barColor,
-                  zIndex: 5,
-                  pointerEvents: 'none',
-                }}
-              />
               <div
                 className="h-full flex cursor-grab active:cursor-grabbing"
-                style={{ paddingLeft: 3 }}
                 onPointerDown={(e) => handleTrackDragStart(track.id, e)}
               >
                 <div className="flex-1 min-w-0 flex items-center">
