@@ -18,6 +18,7 @@ import { RunHistoryBrowser } from './RunHistoryBrowser';
 import { PipelineConfigPanel } from '../panels/PipelineConfigPanel';
 import type { RawPipelineConfig, DagEdge, TaskStatus, RunTaskState } from '../../api/client';
 import type { TaskPosition } from '../../store/pipeline-store';
+import { getZoom } from '../../utils/zoom';
 import {
   HEADER_W,
   TASK_W,
@@ -108,6 +109,36 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
     if (headerRef.current && contentRef.current) {
       headerRef.current.scrollTop = contentRef.current.scrollTop;
     }
+  }, []);
+
+  // Canvas pan: drag background to scroll (same as BoardCanvas).
+  const panDidDragRef = useRef(false);
+  const handlePanMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const el = contentRef.current;
+    if (!el) return;
+    const startX = e.clientX, startY = e.clientY;
+    const startSL = el.scrollLeft, startST = el.scrollTop;
+    let started = false;
+    panDidDragRef.current = false;
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      if (!started) { if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return; started = true; panDidDragRef.current = true; }
+      const z = getZoom();
+      el.scrollLeft = startSL - dx / z;
+      el.scrollTop = startST - dy / z;
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
   }, []);
 
   // First pending approval (FIFO by Map iteration order).
@@ -461,18 +492,21 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
               <div
                 ref={contentRef}
                 id={RUN_SCROLL_ID}
-                className="flex-1 overflow-auto timeline-grid"
+                className="flex-1 overflow-auto timeline-grid hide-scrollbar"
                 onScroll={syncScroll}
+                onMouseDown={handlePanMouseDown}
               >
-                <div className="relative" style={{ width: canvasWidth, height: canvasHeight }}
-                  onClick={() => selectTask(null)}>
+                <div className="relative cursor-grab active:cursor-grabbing" style={{ width: canvasWidth, height: canvasHeight }}
+                  onClick={() => { if (!panDidDragRef.current) selectTask(null); }}>
                   {/* Track row backgrounds — even/odd classes match the
                       editor so the zebra striping is identical. */}
                   {config.tracks.map((track, i) => (
                     <div
                       key={track.id}
-                      className={`absolute left-0 right-0 border-b border-tagma-border/40 ${i % 2 === 0 ? 'track-row-even' : 'track-row-odd'}`}
+                      className={`absolute left-0 right-0 border-b border-tagma-border/40 cursor-grab active:cursor-grabbing ${i % 2 === 0 ? 'track-row-even' : 'track-row-odd'}`}
                       style={{ top: i * TRACK_H, height: TRACK_H }}
+                      onMouseDown={handlePanMouseDown}
+                      onClick={() => { if (!panDidDragRef.current) selectTask(null); }}
                     />
                   ))}
 
