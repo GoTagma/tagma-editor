@@ -524,7 +524,8 @@ export interface RunSummary {
 // replaced — the client must decide what to do.
 export type ServerStateEvent =
   | { type: 'external-change'; newState: ServerState }
-  | { type: 'external-conflict'; path: string; error?: string };
+  | { type: 'external-conflict'; path: string; error?: string }
+  | { type: 'state_sync'; newState: ServerState; seq: number };
 
 export const api = {
   getState: () => request<ServerState>('/state'),
@@ -696,7 +697,7 @@ export const api = {
     es.addEventListener('state_event', (e) => {
       try {
         const event = JSON.parse((e as MessageEvent).data) as ServerStateEvent;
-        if (event.type === 'external-change' && event.newState?.revision !== undefined) {
+        if ((event.type === 'external-change' || event.type === 'state_sync') && event.newState?.revision !== undefined) {
           setClientRevision(event.newState.revision);
         }
         onEvent(event);

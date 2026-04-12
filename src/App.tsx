@@ -91,6 +91,10 @@ export function App() {
             'Your in-memory edits may conflict. Please save or reload manually.',
           ],
         });
+      } else if (event.type === 'state_sync') {
+        // B5: Server sends full state on SSE (re)connect. Silently sync
+        // without dialog — this is a reconnection catch-up, not a user action.
+        init();
       }
     });
     return unsubscribe;

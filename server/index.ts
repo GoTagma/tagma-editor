@@ -197,22 +197,20 @@ const TASK_REQUIRED_KEYS = new Set(['id']);
 const TRACK_REQUIRED_KEYS = new Set(['id', 'name', 'tasks']);
 
 /**
- * Delete keys whose value is '', undefined, or null — except required keys.
- * Arrays/objects with content are kept; empty arrays/objects are removed.
- * Mutates the object in place.
+ * Return a copy of `obj` with keys whose value is '', undefined, null,
+ * empty arrays, or empty objects removed — except keys in `required`.
+ * Pure function — the input is never mutated.
  */
-function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>) {
-  for (const key of Object.keys(obj)) {
-    if (required.has(key)) continue;
-    const v = obj[key];
-    if (v === '' || v === undefined || v === null) {
-      delete obj[key];
-    } else if (Array.isArray(v) && v.length === 0) {
-      delete obj[key];
-    } else if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) {
-      delete obj[key];
-    }
+function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(obj)) {
+    if (required.has(key)) { result[key] = v; continue; }
+    if (v === '' || v === undefined || v === null) continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) continue;
+    result[key] = v;
   }
+  return result;
 }
 
 function getState() {
@@ -434,10 +432,15 @@ interface StateEventClient {
 }
 const stateEventClients = new Set<StateEventClient>();
 
+// B5: Sequence counter for state events so reconnecting clients can detect
+// missed events. EventSource natively sends Last-Event-ID on reconnect.
+let stateEventSeq = 0;
+
 function broadcastStateEvent(payload: Record<string, unknown>): void {
-  const data = JSON.stringify(payload);
+  stateEventSeq++;
+  const data = JSON.stringify({ ...payload, seq: stateEventSeq });
   for (const client of stateEventClients) {
-    try { client.res.write(`event: state_event\ndata: ${data}\n\n`); } catch { /* best-effort */ }
+    try { client.res.write(`id: ${stateEventSeq}\nevent: state_event\ndata: ${data}\n\n`); } catch { /* best-effort */ }
   }
 }
 
@@ -448,6 +451,10 @@ app.get('/api/state/events', (req, res) => {
     Connection: 'keep-alive',
   });
   res.write('\n');
+  // B5: Send current state on connect so reconnecting clients are immediately
+  // up-to-date even if they missed prior state events during disconnection.
+  const syncData = JSON.stringify({ type: 'state_sync', newState: getState(), seq: stateEventSeq });
+  res.write(`id: ${stateEventSeq}\nevent: state_event\ndata: ${syncData}\n\n`);
   const client: StateEventClient = { res };
   stateEventClients.add(client);
   req.on('close', () => stateEventClients.delete(client));
@@ -988,9 +995,7 @@ app.post('/api/tracks', (req, res) => {
 
 app.patch('/api/tracks/:trackId', (req, res) => {
   const { trackId } = req.params;
-  const fields = { ...req.body };
-  // Strip empty optional fields
-  stripEmptyFields(fields, TRACK_REQUIRED_KEYS);
+  const fields = stripEmptyFields({ ...req.body }, TRACK_REQUIRED_KEYS);
   config = updateTrack(config, trackId, fields);
   res.json(getState());
 });
@@ -1031,7 +1036,7 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
     delete updated.command;
   }
   // Strip empty optional fields so they don't appear as '' in YAML
-  stripEmptyFields(updated, TASK_REQUIRED_KEYS);
+  updated = stripEmptyFields(updated, TASK_REQUIRED_KEYS) as RawTaskConfig;
   config = upsertTask(config, trackId, updated);
   res.json(getState());
 });
@@ -1287,6 +1292,10 @@ app.post('/api/save', (_req, res) => {
     savePath = join(tagmaDir, `pipeline-${randomId}.yaml`);
   }
   try {
+    // B4: Stop the existing watcher BEFORE writing so the old watcher's
+    // debounced check() can't fire between writeFileSync and beginWatching,
+    // which would falsely detect our own write as an external change.
+    stopFileWatching();
     const content = serializePipeline(config);
     writeFileSync(savePath, content, 'utf-8');
     yamlPath = savePath;
@@ -1303,6 +1312,8 @@ app.post('/api/save-as', (req, res) => {
   if (!filePath) return res.status(400).json({ error: 'path is required' });
   const absPath = resolve(filePath);
   try {
+    // B4: Stop watcher before write to prevent false external-change detection.
+    stopFileWatching();
     const yaml = serializePipeline(config);
     writeFileSync(absPath, yaml, 'utf-8');
     yamlPath = absPath;
