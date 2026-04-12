@@ -1730,6 +1730,22 @@ app.post('/api/run/start', async (_req, res) => {
   const content = serializePipeline(config);
   const cwd = workDir || process.cwd();
 
+  // Pre-load plugins from workDir's node_modules so the SDK engine doesn't
+  // fall back to Node's default resolution (which uses process.cwd(), not
+  // the user's workspace). After loading we strip `plugins` from the resolved
+  // config so the engine's own loadPlugins() is a no-op.
+  if (config.plugins?.length) {
+    for (const name of config.plugins) {
+      try {
+        await loadPluginFromWorkDir(name);
+      } catch (err: unknown) {
+        runStarting = false;
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(400).json({ error: `Plugin load error: ${message}` });
+      }
+    }
+  }
+
   let pipelineConfig;
   try {
     pipelineConfig = await loadPipeline(content, cwd);
@@ -1738,6 +1754,10 @@ app.post('/api/run/start', async (_req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     return res.status(400).json({ error: `Configuration error: ${message}` });
   }
+
+  // Clear plugins so the SDK engine skips its own import(name) resolution
+  // (plugins are already registered above from workDir's node_modules).
+  pipelineConfig = { ...pipelineConfig, plugins: [] };
 
   // Validate the resolved config (catches DAG errors introduced by template
   // expansion, e.g. duplicate qualified IDs, broken cross-template references).
