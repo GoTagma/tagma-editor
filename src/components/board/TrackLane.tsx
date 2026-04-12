@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from 'react';
+import { useState, useRef, useLayoutEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ShieldAlert, SkipForward, Ban } from 'lucide-react';
 import type { RawTrackConfig } from '../../api/client';
@@ -131,7 +131,7 @@ function FloatingPanel({ anchorRect, width, borderClass, children }: {
 }
 
 /* ── Main ── */
-export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages }: TrackLaneProps) {
+export const TrackLane = memo(function TrackLane({ track, taskCount, hasParallelWarning, errorMessages }: TrackLaneProps) {
   const hasError = errorMessages && errorMessages.length > 0;
   const perms = track.permissions;
   const fail = track.on_failure ? FAIL_CFG[track.on_failure] : null;
@@ -235,4 +235,4 @@ export function TrackLane({ track, taskCount, hasParallelWarning, errorMessages 
       )}
     </div>
   );
-}
+});

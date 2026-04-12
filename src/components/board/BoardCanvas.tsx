@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect, memo } from 'react';
 import { Plus, Trash2, Pencil, ListPlus } from 'lucide-react';
 import { TrackLane } from './TrackLane';
 import { TaskCard } from './TaskCard';
@@ -68,22 +68,82 @@ function flattenTasks(config: RawPipelineConfig): FlatTask[] {
 
 function buildPositions(
   tracks: readonly RawTrackConfig[],
-  allTasks: FlatTask[],
   storedPositions: Map<string, TaskPosition>,
 ) {
   const m = new Map<string, Pos>();
   let y = 0;
   for (const tr of tracks) {
-    const tasksInTrack = allTasks.filter((ft) => ft.trackId === tr.id);
-    tasksInTrack.forEach((ft, i) => {
-      const stored = storedPositions.get(ft.qid);
+    const centerY = y + (TRACK_H - TASK_H) / 2;
+    for (let i = 0; i < tr.tasks.length; i++) {
+      const task = tr.tasks[i];
+      const qid = `${tr.id}.${task.id}`;
+      const stored = storedPositions.get(qid);
       const x = stored ? stored.x : PAD_LEFT + i * (TASK_W + TASK_GAP);
-      m.set(ft.qid, { x, y: y + (TRACK_H - TASK_H) / 2 });
-    });
+      m.set(qid, { x, y: centerY });
+    }
     y += TRACK_H;
   }
   return m;
 }
+
+/* ── Memoized single edge ─────────────────────────────────────────────
+ * Each edge manages its own hover state internally so that mousing over
+ * one edge does NOT re-render siblings. The parent SVG only re-renders
+ * when positions, dagEdges, or selEdge change structurally.
+ */
+interface EdgeLineProps {
+  ek: string;
+  d: string;
+  sx: number; sy: number; tx: number; ty: number;
+  isContinue: boolean;
+  inCycle: boolean;
+  selected: boolean;
+  onSelect: (ek: string | null) => void;
+  onCtx: (ek: string, e: React.MouseEvent) => void;
+  onRemove: (ek: string) => void;
+}
+
+const EdgeLine = memo(function EdgeLine({
+  ek, d, sx, sy, tx, ty, isContinue, inCycle, selected, onSelect, onCtx, onRemove,
+}: EdgeLineProps) {
+  const [hovered, setHovered] = useState(false);
+  const highlighted = selected || hovered;
+  const midX = (sx + tx) / 2, midY = (sy + ty) / 2;
+
+  return (
+    <g>
+      <path d={d} fill="none" stroke="transparent" strokeWidth={14}
+        className="pointer-events-auto cursor-pointer"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onCtx(ek, e); }}
+        onClick={(e) => { e.stopPropagation(); onSelect(selected ? null : ek); }} />
+      <path d={d} fill="none"
+        stroke={inCycle
+          ? '#f87171'
+          : highlighted
+          ? (isContinue ? '#c4b5fd' : '#d4845a')
+          : (isContinue ? 'rgba(167, 139, 250, 0.5)' : 'rgba(100, 100, 100, 0.4)')}
+        strokeWidth={inCycle ? 2.2 : highlighted ? 2 : 1}
+        strokeDasharray={inCycle ? '4 3' : isContinue ? '6 3' : undefined}
+        markerEnd={inCycle
+          ? 'url(#ah-cycle)'
+          : highlighted
+          ? (isContinue ? 'url(#ah-cont-hi)' : 'url(#ah-hi)')
+          : (isContinue ? 'url(#ah-cont)' : 'url(#ah)')}
+        className="transition-[stroke,stroke-width] duration-75" />
+      {selected && (
+        <g className="pointer-events-auto cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); onRemove(ek); }}>
+          <rect x={midX - 8} y={midY - 8} width={16} height={16} rx={0}
+            fill="#1e1e1e" stroke="#f87171" strokeWidth={1.2} />
+          <line x1={midX - 3} y1={midY - 3} x2={midX + 3} y2={midY + 3} stroke="#f87171" strokeWidth={1.5} />
+          <line x1={midX + 3} y1={midY - 3} x2={midX - 3} y2={midY + 3} stroke="#f87171" strokeWidth={1.5} />
+        </g>
+      )}
+    </g>
+  );
+});
 
 function trackTopY(tracks: readonly RawTrackConfig[], trackId: string): number {
   let y = 0;
@@ -232,7 +292,6 @@ export function BoardCanvas({
   const [taskDrag, setTaskDrag] = useState<TaskDragState | null>(null);
   const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
   const [trackDrag, setTrackDrag] = useState<TrackDragState | null>(null);
-  const [hovEdge, setHovEdge] = useState<string | null>(null);
   const [selEdge, setSelEdge] = useState<string | null>(null);
   const [ctx, setCtx] = useState<CtxState | null>(null);
   const dropRef = useRef<{ trackId: string; positionX: number } | null>(null);
@@ -254,6 +313,19 @@ export function BoardCanvas({
     return m;
   }, [allTasks]);
 
+  // Build a lookup: taskId → FlatTask for O(1) callback lookups
+  const flatTaskById = useMemo(() => {
+    const m = new Map<string, FlatTask>();
+    for (const ft of allTasks) m.set(ft.task.id, ft);
+    return m;
+  }, [allTasks]);
+
+  // Convert selectedTaskIds to a Set for O(1) membership tests
+  const selectedIdSet = useMemo(
+    () => new Set(selectedTaskIds),
+    [selectedTaskIds],
+  );
+
   // Visual sort during track drag
   const visualTracks = useMemo(() => {
     if (!trackDrag) return tracks;
@@ -266,7 +338,7 @@ export function BoardCanvas({
     return result;
   }, [tracks, trackDrag]);
 
-  const staticPositions = useMemo(() => buildPositions(visualTracks, allTasks, storedPositions), [visualTracks, allTasks, storedPositions]);
+  const staticPositions = useMemo(() => buildPositions(visualTracks, storedPositions), [visualTracks, storedPositions]);
 
   const positionsMap = useMemo(() => {
     if (!taskDrag) return staticPositions;
@@ -332,7 +404,7 @@ export function BoardCanvas({
     if (!el) return;
     const isMultiKey = e.ctrlKey || e.metaKey;
     // Find which track this task belongs to
-    const ft = allTasks.find((t) => t.task.id === taskId);
+    const ft = flatTaskById.get(taskId);
     if (!ft) return;
     const qid = ft.qid;
     const pos = staticPositions.get(qid);
@@ -402,14 +474,14 @@ export function BoardCanvas({
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.body.style.userSelect = 'none';
-  }, [staticPositions, visualTracks, allTasks, onSelectTask, onToggleTaskSelection, onSetTaskPosition, onTransferTask]);
+  }, [staticPositions, visualTracks, flatTaskById, onSelectTask, onToggleTaskSelection, onSetTaskPosition, onTransferTask]);
 
   // ── Edge drag ──
   const handleHandlePointerDown = useCallback((taskId: string, _e: React.PointerEvent) => {
     _e.preventDefault();
     const el = contentRef.current;
     if (!el) return;
-    const ft = allTasks.find((t) => t.task.id === taskId);
+    const ft = flatTaskById.get(taskId);
     if (!ft) return;
     const srcQid = ft.qid;
 
@@ -435,14 +507,14 @@ export function BoardCanvas({
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.body.style.cursor = 'crosshair';
-  }, [allTasks, positionsMap, onAddDependency]);
+  }, [flatTaskById, positionsMap, onAddDependency]);
 
   const handleTargetPointerUp = useCallback((taskId: string) => {
     if (edgeDrag) {
-      const ft = allTasks.find((t) => t.task.id === taskId);
+      const ft = flatTaskById.get(taskId);
       if (ft && ft.qid !== edgeDrag.srcQid) nearRef.current = ft.qid;
     }
-  }, [edgeDrag, allTasks]);
+  }, [edgeDrag, flatTaskById]);
 
   // ── Track drag ──
   const handleTrackDragStart = useCallback((trackId: string, e: React.PointerEvent) => {
@@ -522,7 +594,7 @@ export function BoardCanvas({
   const handleTaskContextMenu = useCallback((taskId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const ft = allTasks.find((t) => t.task.id === taskId);
+    const ft = flatTaskById.get(taskId);
     if (!ft) return;
     setCtx({
       x: e.clientX, y: e.clientY,
@@ -530,7 +602,7 @@ export function BoardCanvas({
         { label: 'Delete Task', icon: <Trash2 size={12} />, danger: true, onAction: () => onDeleteTask(ft.trackId, taskId) },
       ],
     });
-  }, [allTasks, onDeleteTask]);
+  }, [flatTaskById, onDeleteTask]);
 
   const handleCanvasContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -583,6 +655,62 @@ export function BoardCanvas({
     }
     setSelEdge(null);
   }, [selEdge, config.tracks, onRemoveDependency]);
+
+  // ── Stable callbacks for memoized EdgeLine ──
+  const handleEdgeSelect = useCallback((ek: string | null) => {
+    setSelEdge(ek);
+  }, []);
+
+  const handleEdgeContextMenu = useCallback((ek: string, e: React.MouseEvent) => {
+    setSelEdge(ek);
+    const [fromQid, toQid] = ek.split('->');
+    setCtx({
+      x: e.clientX, y: e.clientY,
+      items: [{
+        label: 'Delete dependency',
+        icon: <Trash2 size={12} />,
+        danger: true,
+        onAction: () => {
+          if (!toQid) return;
+          const [toTrackId, toTaskId] = toQid.split('.');
+          const track = config.tracks.find((t) => t.id === toTrackId);
+          if (!track) return;
+          const task = track.tasks.find((t) => t.id === toTaskId);
+          if (!task?.depends_on) return;
+          for (const dep of task.depends_on) {
+            const resolved = dep.includes('.')
+              ? dep
+              : (track.tasks.some((t) => t.id === dep) ? `${toTrackId}.${dep}` : dep);
+            if (resolved === fromQid || `${toTrackId}.${dep}` === fromQid) {
+              onRemoveDependency(toTrackId, toTaskId, dep);
+              break;
+            }
+          }
+          setSelEdge(null);
+        },
+      }],
+    });
+  }, [config.tracks, onRemoveDependency]);
+
+  const handleEdgeRemove = useCallback((ek: string) => {
+    const [fromQid, toQid] = ek.split('->');
+    if (!fromQid || !toQid) return;
+    const [toTrack, toTaskId] = toQid.split('.');
+    const track = config.tracks.find((t) => t.id === toTrack);
+    if (!track) { setSelEdge(null); return; }
+    const task = track.tasks.find((t) => t.id === toTaskId);
+    if (!task?.depends_on) { setSelEdge(null); return; }
+    for (const dep of task.depends_on) {
+      const resolved = dep.includes('.')
+        ? dep
+        : (track.tasks.some((t) => t.id === dep) ? `${toTrack}.${dep}` : dep);
+      if (resolved === fromQid || `${toTrack}.${dep}` === fromQid) {
+        onRemoveDependency(toTrack, toTaskId, dep);
+        break;
+      }
+    }
+    setSelEdge(null);
+  }, [config.tracks, onRemoveDependency]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -804,7 +932,7 @@ export function BoardCanvas({
                 trackId={ft.trackId}
                 pipelineConfig={config}
                 x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
-                isSelected={selectedTaskIds.includes(ft.qid)}
+                isSelected={selectedIdSet.has(ft.qid)}
                 isInvalid={invalidTaskIds.has(ft.qid)}
                 errorMessages={errorsByTask.get(ft.qid)}
                 isDragging={taskDrag !== null && (taskDrag.qid === ft.qid || taskDrag.companions.some((c) => c.qid === ft.qid))}
@@ -844,15 +972,9 @@ export function BoardCanvas({
               if (!sp || !tp) return null;
               const d = stepPath(sp, tp);
               const ek = edgeKey(edge.from, edge.to);
-              const selected = selEdge === ek;
-              const hovered = hovEdge === ek;
-              const highlighted = selected || hovered;
               const sx = sp.x + TASK_W, sy = sp.y + TASK_H / 2;
               const tx = tp.x, ty = tp.y + TASK_H / 2;
-              const midX = (sx + tx) / 2, midY = (sy + ty) / 2;
               const toTask = taskByQid.get(edge.to);
-              // An edge is a "continue" edge when the downstream task's
-              // continue_from resolves to this specific upstream (edge.from).
               const cf = toTask?.continue_from;
               const isContinue = !!cf && (
                 cf === edge.from
@@ -861,91 +983,16 @@ export function BoardCanvas({
               const inCycle = cycleEdgeSet.has(ek);
 
               return (
-                <g key={ek}>
-                  <path d={d} fill="none" stroke="transparent" strokeWidth={14}
-                    className="pointer-events-auto cursor-pointer"
-                    onMouseEnter={() => { if (!selEdge) setHovEdge(ek); }}
-                    onMouseLeave={() => { if (!selEdge) setHovEdge(null); }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setSelEdge(ek);
-                      setHovEdge(null);
-                      setCtx({
-                        x: e.clientX, y: e.clientY,
-                        items: [
-                          {
-                            label: 'Delete dependency',
-                            icon: <Trash2 size={12} />,
-                            danger: true,
-                            onAction: () => {
-                              const [toTrackId, toTaskId] = edge.to.split('.');
-                              const track = config.tracks.find((t) => t.id === toTrackId);
-                              if (!track) return;
-                              const task = track.tasks.find((t) => t.id === toTaskId);
-                              if (!task?.depends_on) return;
-                              for (const dep of task.depends_on) {
-                                const resolved = dep.includes('.')
-                                  ? dep
-                                  : (track.tasks.some((t) => t.id === dep) ? `${toTrackId}.${dep}` : dep);
-                                if (resolved === edge.from || `${toTrackId}.${dep}` === edge.from) {
-                                  onRemoveDependency(toTrackId, toTaskId, dep);
-                                  break;
-                                }
-                              }
-                              setSelEdge(null);
-                            },
-                          },
-                        ],
-                      });
-                    }}
-                    onClick={(e) => { e.stopPropagation(); setSelEdge(selected ? null : ek); setHovEdge(null); }} />
-                  <path d={d} fill="none"
-                    stroke={inCycle
-                      ? '#f87171'
-                      : highlighted
-                      ? (isContinue ? '#c4b5fd' : '#d4845a')
-                      : (isContinue ? 'rgba(167, 139, 250, 0.5)' : 'rgba(100, 100, 100, 0.4)')}
-                    strokeWidth={inCycle ? 2.2 : highlighted ? 2 : 1}
-                    strokeDasharray={inCycle ? '4 3' : isContinue ? '6 3' : undefined}
-                    markerEnd={inCycle
-                      ? 'url(#ah-cycle)'
-                      : highlighted
-                      ? (isContinue ? 'url(#ah-cont-hi)' : 'url(#ah-hi)')
-                      : (isContinue ? 'url(#ah-cont)' : 'url(#ah)')}
-                    className="transition-[stroke,stroke-width] duration-75" />
-                  {selected && (
-                    <g className="pointer-events-auto cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelEdge(null);
-                        // Remove the dependency
-                        const [toTrack, toTask] = edge.to.split('.');
-                        // Find the dep ref used in the task. The track may
-                        // have been renamed/deleted or the task transferred
-                        // between render and click — guard every lookup.
-                        const track = config.tracks.find((t) => t.id === toTrack);
-                        if (!track) return;
-                        const task = track.tasks.find((t) => t.id === toTask);
-                        if (!task?.depends_on) return;
-                        // Find which ref resolves to edge.from
-                        for (const dep of task.depends_on) {
-                          const resolved = dep.includes('.')
-                            ? dep
-                            : (track.tasks.some((t) => t.id === dep) ? `${toTrack}.${dep}` : dep);
-                          if (resolved === edge.from || `${toTrack}.${dep}` === edge.from) {
-                            onRemoveDependency(toTrack, toTask, dep);
-                            break;
-                          }
-                        }
-                      }}>
-                      <rect x={midX - 8} y={midY - 8} width={16} height={16} rx={0}
-                        fill="#1e1e1e" stroke="#f87171" strokeWidth={1.2} />
-                      <line x1={midX - 3} y1={midY - 3} x2={midX + 3} y2={midY + 3} stroke="#f87171" strokeWidth={1.5} />
-                      <line x1={midX + 3} y1={midY - 3} x2={midX - 3} y2={midY + 3} stroke="#f87171" strokeWidth={1.5} />
-                    </g>
-                  )}
-                </g>
+                <EdgeLine
+                  key={ek}
+                  ek={ek} d={d}
+                  sx={sx} sy={sy} tx={tx} ty={ty}
+                  isContinue={isContinue} inCycle={inCycle}
+                  selected={selEdge === ek}
+                  onSelect={handleEdgeSelect}
+                  onCtx={handleEdgeContextMenu}
+                  onRemove={handleEdgeRemove}
+                />
               );
             })}
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from 'react';
+import { useState, useRef, useLayoutEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle, Terminal, MessageSquare, Lock, FileSearch,
@@ -225,7 +225,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
 }
 
 /* ── Main ── */
-export function TaskCard({
+export const TaskCard = memo(function TaskCard({
   task, trackId, pipelineConfig, x, y, w, h,
   isSelected, isInvalid, errorMessages, isDragging, isTrackDragging, isEdgeTarget,
   onPointerDown, onHandlePointerDown, onTargetPointerUp, onContextMenu,
@@ -441,4 +441,4 @@ export function TaskCard({
       )}
     </div>
   );
-}
+});
