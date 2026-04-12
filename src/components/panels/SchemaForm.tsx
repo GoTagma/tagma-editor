@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback } from 'react';
+import { FolderOpen } from 'lucide-react';
 import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
 import type { PluginSchemaDescriptor } from '../../api/client';
@@ -170,6 +171,7 @@ interface SchemaFormProps {
   schema: PluginSchema;
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }
 
 /**
@@ -177,7 +179,7 @@ interface SchemaFormProps {
  * input per declared field. Values not covered by the schema are preserved
  * verbatim in the output object (so round-tripping unknown keys is lossless).
  */
-export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, onBrowsePath }: SchemaFormProps) {
   const commit = useCallback((key: string, next: unknown) => {
     const updated = { ...value };
     if (next === undefined || next === '' || next === null) {
@@ -199,6 +201,7 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
           field={field}
           value={value[field.key]}
           onChange={(next) => commit(field.key, next)}
+          onBrowsePath={field.type === 'path' ? onBrowsePath : undefined}
         />
       ))}
     </div>
@@ -207,10 +210,11 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
 
 // ── Field row ───────────────────────────────────────────────────────────────
 
-function SchemaFieldRow({ field, value, onChange }: {
+function SchemaFieldRow({ field, value, onChange, onBrowsePath }: {
   field: SchemaField;
   value: unknown;
   onChange: (next: unknown) => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }) {
   const label = field.key;
   const defaultStr =
@@ -227,7 +231,7 @@ function SchemaFieldRow({ field, value, onChange }: {
           <span className="text-tagma-muted/60" title={field.description}>&nbsp;(?)</span>
         )}
       </label>
-      <SchemaFieldInput field={field} value={value} onChange={onChange} defaultStr={defaultStr} />
+      <SchemaFieldInput field={field} value={value} onChange={onChange} defaultStr={defaultStr} onBrowsePath={onBrowsePath} />
       {field.description && (
         <p className="text-[9px] text-tagma-muted/80 mt-0.5 leading-snug">{field.description}</p>
       )}
@@ -235,11 +239,12 @@ function SchemaFieldRow({ field, value, onChange }: {
   );
 }
 
-function SchemaFieldInput({ field, value, onChange, defaultStr }: {
+function SchemaFieldInput({ field, value, onChange, defaultStr, onBrowsePath }: {
   field: SchemaField;
   value: unknown;
   onChange: (next: unknown) => void;
   defaultStr: string | undefined;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }) {
   const strValue = value == null ? '' : String(value);
 
@@ -301,6 +306,28 @@ function SchemaFieldInput({ field, value, onChange, defaultStr }: {
         />
       );
     case 'path':
+      return (
+        <div className="flex gap-1">
+          <input
+            type="text"
+            className="field-input font-mono text-[11px] flex-1 min-w-0"
+            value={localStr}
+            onChange={(e) => setLocalStr(e.target.value)}
+            onBlur={blurStr}
+            placeholder={field.placeholder ?? defaultStr}
+          />
+          {onBrowsePath && (
+            <button
+              type="button"
+              onClick={() => onBrowsePath(localStr, (path) => setLocalStr(path))}
+              className="shrink-0 p-1.5 border border-tagma-border text-tagma-muted hover:text-tagma-accent hover:border-tagma-accent/40 transition-colors"
+              title="Browse..."
+            >
+              <FolderOpen size={13} />
+            </button>
+          )}
+        </div>
+      );
     case 'string':
     case 'duration':
     case 'number-or-list':

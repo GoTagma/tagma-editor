@@ -7,9 +7,10 @@ import { SchemaForm, getBuiltinSchema, type PluginSchema } from './SchemaForm';
 interface MiddlewareEditorProps {
   middlewares: MiddlewareConfig[];
   onChange: (middlewares: MiddlewareConfig[] | undefined) => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }
 
-export function MiddlewareEditor({ middlewares, onChange }: MiddlewareEditorProps) {
+export function MiddlewareEditor({ middlewares, onChange, onBrowsePath }: MiddlewareEditorProps) {
   const registry = usePipelineStore((s) => s.registry);
   const typeOptions = Array.from(new Set<string>(['static_context', ...registry.middlewares]));
 
@@ -41,18 +42,20 @@ export function MiddlewareEditor({ middlewares, onChange }: MiddlewareEditorProp
       <div className="space-y-2">
         {middlewares.map((m, i) => (
           <MiddlewareItem key={i} middleware={m} typeOptions={typeOptions}
-            onUpdate={(patch) => handleUpdate(i, patch)} onRemove={() => handleRemove(i)} />
+            onUpdate={(patch) => handleUpdate(i, patch)} onRemove={() => handleRemove(i)}
+            onBrowsePath={onBrowsePath} />
         ))}
       </div>
     </div>
   );
 }
 
-function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove }: {
+function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove, onBrowsePath }: {
   middleware: MiddlewareConfig;
   typeOptions: string[];
   onUpdate: (patch: Partial<MiddlewareConfig>) => void;
   onRemove: () => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }) {
   // F10: look up a schema for this middleware type. Falls back to a KV editor
   // for plugins with no known schema (see SchemaForm.tsx for discovery note).
@@ -83,7 +86,7 @@ function MiddlewareItem({ middleware, typeOptions, onUpdate, onRemove }: {
         </select>
       </div>
       {schema ? (
-        <SchemaForm schema={schema} value={fieldValues} onChange={handleSchemaChange} />
+        <SchemaForm schema={schema} value={fieldValues} onChange={handleSchemaChange} onBrowsePath={onBrowsePath} />
       ) : (
         <div className="space-y-1">
           <p className="text-[10px] text-tagma-muted">

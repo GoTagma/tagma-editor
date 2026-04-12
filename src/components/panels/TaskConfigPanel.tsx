@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
-import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert, FolderOpen } from 'lucide-react';
 import type { RawTaskConfig, RawPipelineConfig, RawTrackConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
@@ -8,6 +9,8 @@ import { MiddlewareEditor } from './MiddlewareEditor';
 import { InheritedValue, ResetButton, resolveScalar, resolvePermissions, permsToString } from './InheritedValue';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SchemaForm, getBuiltinSchema } from './SchemaForm';
+import { FileExplorer } from '../FileExplorer';
+import type { FileExplorerMode } from '../FileExplorer';
 
 const KNOWN_TRIGGER_TYPES = new Set(['manual', 'file']);
 const KNOWN_COMPLETION_TYPES = new Set(['exit_code', 'file_exists', 'output_check']);
@@ -43,6 +46,12 @@ export function TaskConfigPanel({
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showTrackProfile, setShowTrackProfile] = useState(false);
+  const [fileBrowser, setFileBrowser] = useState<{
+    mode: FileExplorerMode;
+    initialPath?: string;
+    onSelect: (path: string) => void;
+  } | null>(null);
 
   const track = findTrack(trackId, pipelineConfig);
   const trackName = track?.name ?? trackId;
@@ -87,6 +96,14 @@ export function TaskConfigPanel({
   const commitField = useCallback((patch: Partial<RawTaskConfig>) => {
     onUpdateTask(trackId, task.id, patch);
   }, [trackId, task.id, onUpdateTask]);
+
+  const openFileBrowser = useCallback((
+    mode: FileExplorerMode,
+    currentValue: string,
+    onSelect: (path: string) => void,
+  ) => {
+    setFileBrowser({ mode, initialPath: currentValue || undefined, onSelect });
+  }, []);
 
   const [name, setName, blurName] = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
   const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
@@ -283,7 +300,30 @@ export function TaskConfigPanel({
                   </span>
                 </p>
               )}
-              <InheritedValue isOverridden={!!task.agent_profile} resolved={resolvedAgentProfile} trackName={trackName} pipelineName={pipelineConfig.name} />
+              {/* Track profile inheritance — collapsible block for multi-line readability */}
+              {track?.agent_profile ? (
+                <div className="mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowTrackProfile((v) => !v)}
+                    className="text-[10px] text-tagma-muted hover:text-tagma-text flex items-center gap-1 transition-colors"
+                  >
+                    {showTrackProfile ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                    <span>
+                      {task.agent_profile
+                        ? <>Overrides track "<span className="text-tagma-text/70">{trackName}</span>" profile</>
+                        : <>Inherited from track "<span className="text-tagma-text/70">{trackName}</span>"</>}
+                    </span>
+                  </button>
+                  {showTrackProfile && (
+                    <pre className="mt-1 text-[10px] font-mono text-tagma-muted/80 bg-tagma-bg border border-tagma-border rounded px-2 py-1.5 max-h-[120px] overflow-auto whitespace-pre-wrap break-words">
+                      {track.agent_profile}
+                    </pre>
+                  )}
+                </div>
+              ) : (
+                <InheritedValue isOverridden={!!task.agent_profile} resolved={resolvedAgentProfile} trackName={trackName} pipelineName={pipelineConfig.name} />
+              )}
             </div>
 
             {/* Permissions */}
@@ -330,7 +370,13 @@ export function TaskConfigPanel({
         {/* Output path */}
         <div>
           <label className="field-label">Output Path</label>
-          <input type="text" className="field-input font-mono text-[11px]" value={output} onChange={(e) => setOutput(e.target.value)} onBlur={blurOutput} placeholder="./tmp/output.md" />
+          <div className="flex gap-1">
+            <input type="text" className="field-input font-mono text-[11px] flex-1 min-w-0" value={output} onChange={(e) => setOutput(e.target.value)} onBlur={blurOutput} placeholder="./tmp/output.md" />
+            <button type="button" onClick={() => openFileBrowser('open', output, (path) => setOutput(path))}
+              className="shrink-0 p-1.5 border border-tagma-border text-tagma-muted hover:text-tagma-accent hover:border-tagma-accent/40 transition-colors" title="Browse...">
+              <FolderOpen size={13} />
+            </button>
+          </div>
         </div>
 
         {/* CWD */}
@@ -339,7 +385,13 @@ export function TaskConfigPanel({
             <label className="field-label">Working Directory</label>
             <ResetButton visible={!!task.cwd} onReset={() => commitField({ cwd: undefined })} />
           </div>
-          <input type="text" className="field-input font-mono text-[11px]" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
+          <div className="flex gap-1">
+            <input type="text" className="field-input font-mono text-[11px] flex-1 min-w-0" value={cwd} onChange={(e) => setCwd(e.target.value)} onBlur={blurCwd} placeholder="./path (relative, inherited)" />
+            <button type="button" onClick={() => openFileBrowser('directory', cwd, (path) => setCwd(path))}
+              className="shrink-0 p-1.5 border border-tagma-border text-tagma-muted hover:text-tagma-accent hover:border-tagma-accent/40 transition-colors" title="Browse...">
+              <FolderOpen size={13} />
+            </button>
+          </div>
           <InheritedValue isOverridden={!!task.cwd} resolved={resolvedCwd} trackName={trackName} pipelineName={pipelineConfig.name} />
         </div>
 
@@ -430,7 +482,8 @@ export function TaskConfigPanel({
 
             {task.trigger?.type === 'file' && (
               <div className="pl-3 border-l-2 border-tagma-border space-y-2">
-                <TriggerField label="Path *" value={task.trigger.path} onChange={(v) => handleTriggerField('path', v)} placeholder="./path/to/watch" />
+                <TriggerField label="Path *" value={task.trigger.path} onChange={(v) => handleTriggerField('path', v)} placeholder="./path/to/watch"
+                  onBrowse={(currentVal, setVal) => openFileBrowser('open', currentVal, setVal)} />
                 <TriggerField label="Timeout" value={task.trigger.timeout} onChange={(v) => handleTriggerField('timeout', v)} placeholder="e.g. 5m" />
               </div>
             )}
@@ -452,6 +505,7 @@ export function TaskConfigPanel({
                       schema={schema}
                       value={fieldValues}
                       onChange={(kv) => commitField({ trigger: { type: triggerType, ...kv } as TriggerConfig })}
+                      onBrowsePath={(currentValue, onSelect) => openFileBrowser('open', currentValue, onSelect)}
                     />
                   ) : (
                     <>
@@ -499,7 +553,8 @@ export function TaskConfigPanel({
 
             {task.completion?.type === 'file_exists' && (
               <div className="pl-3 border-l-2 border-tagma-border space-y-2">
-                <TriggerField label="Path *" value={task.completion.path} onChange={(v) => handleCompletionField('path', v)} placeholder="./path/to/check" />
+                <TriggerField label="Path *" value={task.completion.path} onChange={(v) => handleCompletionField('path', v)} placeholder="./path/to/check"
+                  onBrowse={(currentVal, setVal) => openFileBrowser(task.completion?.kind === 'dir' ? 'directory' : 'open', currentVal, setVal)} />
                 <div>
                   <label className="text-[10px] text-tagma-muted">Kind</label>
                   <select className="field-input" value={task.completion.kind ?? ''} onChange={(e) => handleCompletionField('kind', e.target.value || undefined)}>
@@ -541,6 +596,7 @@ export function TaskConfigPanel({
                       schema={schema}
                       value={fieldValues}
                       onChange={(kv) => commitField({ completion: { type: completionType, ...kv } as CompletionConfig })}
+                      onBrowsePath={(currentValue, onSelect) => openFileBrowser('open', currentValue, onSelect)}
                     />
                   ) : (
                     <>
@@ -570,13 +626,15 @@ export function TaskConfigPanel({
               setUseTemplate={setUseTemplate}
               blurUseTemplate={blurUseTemplate}
               commitField={commitField}
+              onBrowsePath={(currentValue, onSelect) => openFileBrowser('open', currentValue, onSelect)}
             />
             {/* Legacy fallback when the chosen template isn't discoverable — */}
             {/* rendered inside TemplateSection. */}
 
             {/* Middlewares */}
             <MiddlewareEditor middlewares={task.middlewares ?? []}
-              onChange={(mws) => commitField({ middlewares: mws })} />
+              onChange={(mws) => commitField({ middlewares: mws })}
+              onBrowsePath={(currentValue, onSelect) => openFileBrowser('open', currentValue, onSelect)} />
           </>
         )}
 
@@ -622,6 +680,18 @@ export function TaskConfigPanel({
           }
         />
       )}
+      {fileBrowser && createPortal(
+        <FileExplorer
+          mode={fileBrowser.mode}
+          initialPath={fileBrowser.initialPath}
+          onConfirm={(path) => {
+            fileBrowser.onSelect(path);
+            setFileBrowser(null);
+          }}
+          onCancel={() => setFileBrowser(null)}
+        />,
+        document.body,
+      )}
     </div>
   );
 }
@@ -639,12 +709,14 @@ function TemplateSection({
   setUseTemplate,
   blurUseTemplate,
   commitField,
+  onBrowsePath,
 }: {
   task: RawTaskConfig;
   useTemplate: string;
   setUseTemplate: (v: string) => void;
   blurUseTemplate: () => void;
   commitField: (patch: Partial<RawTaskConfig>) => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }) {
   const templates = usePipelineStore((s) => s.registry.templates ?? []);
   const selectedTemplate = useMemo(
@@ -701,6 +773,7 @@ function TemplateSection({
             onChange={(next) => {
               commitField({ with: Object.keys(next).length > 0 ? next : undefined });
             }}
+            onBrowsePath={onBrowsePath}
           />
         </div>
       )}
@@ -736,10 +809,12 @@ function TemplateParamsForm({
   params,
   value,
   onChange,
+  onBrowsePath,
 }: {
   params: Record<string, import('../../api/client').TemplateParamDef>;
   value: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
+  onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }) {
   const commit = useCallback((key: string, next: unknown) => {
     const updated = { ...value };
@@ -786,6 +861,27 @@ function TemplateParamsForm({
                   commit(key, v === '' ? undefined : Number(v));
                 }}
               />
+            ) : type === 'path' && onBrowsePath ? (
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  className="field-input font-mono text-[11px] flex-1 min-w-0"
+                  value={current === undefined ? '' : String(current)}
+                  onChange={(e) => commit(key, e.target.value || undefined)}
+                  placeholder="./path/..."
+                />
+                <button
+                  type="button"
+                  onClick={() => onBrowsePath(
+                    current === undefined ? '' : String(current),
+                    (path) => commit(key, path || undefined),
+                  )}
+                  className="shrink-0 p-1.5 border border-tagma-border text-tagma-muted hover:text-tagma-accent hover:border-tagma-accent/40 transition-colors"
+                  title="Browse..."
+                >
+                  <FolderOpen size={13} />
+                </button>
+              </div>
             ) : (
               <input
                 type="text"
@@ -806,17 +902,28 @@ function TemplateParamsForm({
 }
 
 /** Reusable small text field for trigger/completion sub-fields */
-function TriggerField({ label, value, onChange, placeholder }: {
+function TriggerField({ label, value, onChange, placeholder, onBrowse }: {
   label: string;
   value: string | undefined;
   onChange: (v: string) => void;
   placeholder?: string;
+  onBrowse?: (currentValue: string, setVal: (v: string) => void) => void;
 }) {
   const [val, setVal, blurVal] = useLocalField(value ?? '', onChange);
   return (
     <div>
       <label className="text-[10px] text-tagma-muted">{label}</label>
-      <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
+      {onBrowse ? (
+        <div className="flex gap-1">
+          <input type="text" className="field-input font-mono text-[11px] flex-1 min-w-0" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
+          <button type="button" onClick={() => onBrowse(val, setVal)}
+            className="shrink-0 p-1.5 border border-tagma-border text-tagma-muted hover:text-tagma-accent hover:border-tagma-accent/40 transition-colors" title="Browse...">
+            <FolderOpen size={13} />
+          </button>
+        </div>
+      ) : (
+        <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
+      )}
     </div>
   );
 }
