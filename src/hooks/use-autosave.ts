@@ -25,13 +25,9 @@
 //    sentinel key `:unsaved`.
 //
 // 3. Activation — this module exports a React hook `useAutosave()` and a
-//    plain function `loadDraft()`. The hook should be invoked once from a
-//    top-level component (e.g. App). Because App.tsx is owned by a different
-//    refactor group in this cycle, Group 8 cannot wire the hook in directly.
-//    TODO(wire-up): call `useAutosave()` once from App.tsx so the effect
-//    subscribes on mount. Until that one-line change lands, this module is
-//    inert — `loadDraft` still works for any caller that wants to opportun-
-//    istically surface drafts on load. See the Group 8 report for context.
+//    plain function `loadDraft()`. The hook is invoked once from App.tsx
+//    so the effect subscribes on mount. `loadDraft` is also available for
+//    any caller that wants to opportunistically surface drafts on load.
 //
 // 4. Clearing — drafts are cleared via `clearDraft()`; callers should invoke
 //    this on successful save. App.tsx can subscribe to store state changes

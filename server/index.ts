@@ -23,6 +23,9 @@ import {
   listRegistered,
   loadPlugins,
   loadPipeline,
+  validateConfig,
+  setPipelineField,
+  clip,
   runPipeline,
   InMemoryApprovalGateway,
   hasHandler,
@@ -71,6 +74,10 @@ app.use(express.json({ limit: '5mb' }));
 let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
 let workDir: string = '';
+
+/** Max number of run log directories to keep. Shared with the SDK's engine
+ *  (maxLogRuns) and the history listing endpoint so both agree on the cap. */
+const MAX_LOG_RUNS = 20;
 
 // ── Revision / ETag (C6) ──
 //
@@ -201,8 +208,17 @@ function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>) {
 function getState() {
   let validationErrors: ValidationError[] = [];
   let dag: RawDag = { nodes: new Map(), edges: [] };
-  try { validationErrors = validateRaw(config); } catch {}
-  try { dag = buildRawDag(config); } catch {}
+  try {
+    validationErrors = validateRaw(config);
+  } catch (err) {
+    console.error('[getState] validateRaw threw:', err);
+    validationErrors = [{ path: '', message: 'Internal validation error' }];
+  }
+  try {
+    dag = buildRawDag(config);
+  } catch (err) {
+    console.error('[getState] buildRawDag threw:', err);
+  }
   // Serialize dag for JSON (Map → object)
   const dagNodes: Record<string, any> = {};
   for (const [k, v] of dag.nodes) dagNodes[k] = v;
@@ -927,7 +943,7 @@ app.patch('/api/pipeline', (req, res) => {
   if (timeout !== undefined) patch.timeout = timeout || undefined;
   if (plugins !== undefined) patch.plugins = Array.isArray(plugins) && plugins.length > 0 ? plugins : undefined;
   if (hooks !== undefined) patch.hooks = hooks && Object.keys(hooks).length > 0 ? hooks : undefined;
-  config = { ...config, ...patch };
+  config = setPipelineField(config, patch);
   res.json(getState());
 });
 
@@ -949,7 +965,9 @@ app.patch('/api/tracks/:trackId', (req, res) => {
 });
 
 app.delete('/api/tracks/:trackId', (_req, res) => {
+  const prev = config;
   config = removeTrack(config, _req.params.trackId);
+  if (config === prev) return res.status(404).json({ error: 'Track not found' });
   res.json(getState());
 });
 
@@ -989,7 +1007,9 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
 
 app.delete('/api/tasks/:trackId/:taskId', (req, res) => {
   const { trackId, taskId } = req.params;
+  const prev = config;
   config = removeTask(config, trackId, taskId, true);
+  if (config === prev) return res.status(404).json({ error: 'Task not found' });
   res.json(getState());
 });
 
@@ -1001,7 +1021,9 @@ app.post('/api/tasks/move', (req, res) => {
 
 app.post('/api/tasks/transfer', (req, res) => {
   const { fromTrackId, taskId, toTrackId } = req.body;
+  const prev = config;
   config = transferTask(config, fromTrackId, taskId, toTrackId);
+  if (config === prev) return res.status(404).json({ error: 'Task or track not found' });
   res.json(getState());
 });
 
@@ -1043,6 +1065,11 @@ app.delete('/api/dependencies', (req, res) => {
 });
 
 // ── YAML Import/Export ──
+// INVARIANT: The editor's in-memory `config` is always a *raw* (unresolved)
+// pipeline config. Resolution and template expansion happen only at run time
+// via `loadPipeline()`. Exporting the raw config directly is therefore correct.
+// If a future feature stores a *resolved* config, use `deresolvePipeline()`
+// from the SDK to strip inherited/expanded values before serializing.
 app.get('/api/export', (_req, res) => {
   res.type('text/yaml').send(serializePipeline(config));
 });
@@ -1559,6 +1586,13 @@ app.post('/api/run/start', async (_req, res) => {
     return res.status(400).json({ error: `Configuration error: ${message}` });
   }
 
+  // Validate the resolved config (catches DAG errors introduced by template
+  // expansion, e.g. duplicate qualified IDs, broken cross-template references).
+  const configErrors = validateConfig(pipelineConfig);
+  if (configErrors.length > 0) {
+    return res.status(400).json({ error: configErrors.join('; ') });
+  }
+
   // Build initial task list from the raw (editor-side) config. This keeps
   // the qualified taskIds aligned with the pipeline DAG that the SDK
   // produces internally (`{trackId}.{taskId}`).
@@ -1654,6 +1688,8 @@ app.post('/api/run/start', async (_req, res) => {
   runPipeline(pipelineConfig, cwd, {
     approvalGateway: gateway,
     signal: abortController.signal,
+    maxLogRuns: MAX_LOG_RUNS,
+    runId,
     onEvent: (event: PipelineEvent) => {
       if (event.type === 'task_status_change') {
         // Update local snapshot for summary persistence.
@@ -1930,7 +1966,7 @@ app.get('/api/run/history', (_req, res) => {
       })
       .filter((x): x is RunHistoryEntry => x !== null)
       .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
-      .slice(0, 20);
+      .slice(0, MAX_LOG_RUNS);
     res.json({ runs: entries });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1948,7 +1984,10 @@ app.get('/api/run/history/:runId', (req, res) => {
     return res.status(404).json({ error: 'log not found' });
   }
   try {
-    const content = readFileSync(logFile, 'utf-8');
+    const MAX_LOG_BYTES = 1024 * 1024; // 1 MB cap
+    const stat = statSync(logFile);
+    const raw = readFileSync(logFile, 'utf-8');
+    const content = stat.size > MAX_LOG_BYTES ? clip(raw, MAX_LOG_BYTES) : raw;
     res.json({ runId, content });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
