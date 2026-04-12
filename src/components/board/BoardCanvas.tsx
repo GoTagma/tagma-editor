@@ -806,9 +806,14 @@ export function BoardCanvas({
               const sx = sp.x + TASK_W, sy = sp.y + TASK_H / 2;
               const tx = tp.x, ty = tp.y + TASK_H / 2;
               const midX = (sx + tx) / 2, midY = (sy + ty) / 2;
-              const fromTask = taskByQid.get(edge.from);
               const toTask = taskByQid.get(edge.to);
-              const isContinue = !!fromTask?.prompt && !fromTask?.command && !!toTask?.prompt && !toTask?.command;
+              // An edge is a "continue" edge when the downstream task's
+              // continue_from resolves to this specific upstream (edge.from).
+              const cf = toTask?.continue_from;
+              const isContinue = !!cf && (
+                cf === edge.from
+                || (cf.includes('.') ? false : `${edge.to.split('.')[0]}.${cf}` === edge.from)
+              );
               const inCycle = cycleEdgeSet.has(ek);
 
               return (
