@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { ShieldCheck, X, Check, Terminal, MessageSquare } from 'lucide-react';
 import type { ApprovalRequestInfo, RawPipelineConfig } from '../../api/client';
 
 interface ApprovalDialogProps {
   request: ApprovalRequestInfo;
-  onApprove: (choice?: string) => void;
+  onApprove: () => void;
   onReject: (reason?: string) => void;
   /**
    * The pipeline snapshot used to render task context around the approval
@@ -50,11 +50,6 @@ function resolveTaskContext(qualifiedId: string, config: RawPipelineConfig): Res
  * when one or more approvals are pending.
  */
 export function ApprovalDialog({ request, onApprove, onReject, config }: ApprovalDialogProps) {
-  const [selectedChoice, setSelectedChoice] = useState<string | undefined>(
-    request.options?.[0],
-  );
-  const hasOptions = request.options && request.options.length > 0;
-
   // Resolve the task context from the pipeline snapshot so the user can see
   // what task is actually asking for approval — just showing the qualified
   // id (track_1.task_3) is not enough to make an informed decision.
@@ -122,35 +117,6 @@ export function ApprovalDialog({ request, onApprove, onReject, config }: Approva
             </div>
           </div>
 
-          {hasOptions && (
-            <div>
-              <label className="field-label">Choose an option</label>
-              <div className="flex flex-col gap-1.5">
-                {request.options.map((opt) => (
-                  <label
-                    key={opt}
-                    className={`
-                      flex items-center gap-2 px-2.5 py-1.5 border cursor-pointer text-[11px]
-                      ${selectedChoice === opt
-                        ? 'border-tagma-accent bg-tagma-accent/6 text-tagma-text'
-                        : 'border-tagma-border text-tagma-muted hover:text-tagma-text'}
-                    `}
-                  >
-                    <input
-                      type="radio"
-                      name={`approval-${request.id}`}
-                      value={opt}
-                      checked={selectedChoice === opt}
-                      onChange={() => setSelectedChoice(opt)}
-                      className="accent-tagma-accent"
-                    />
-                    <span className="font-mono">{opt}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
           {request.metadata && Object.keys(request.metadata).length > 0 && (
             <div>
               <label className="field-label">Metadata</label>
@@ -176,7 +142,7 @@ export function ApprovalDialog({ request, onApprove, onReject, config }: Approva
           </button>
           <button
             type="button"
-            onClick={() => onApprove(selectedChoice)}
+            onClick={() => onApprove()}
             className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-tagma-success border border-tagma-success/30 hover:bg-tagma-success/10 transition-colors"
           >
             <Check size={11} />

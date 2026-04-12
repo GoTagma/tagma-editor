@@ -417,13 +417,6 @@ export function TaskConfigPanel({
             {task.trigger?.type === 'manual' && (
               <div className="pl-3 border-l-2 border-tagma-border space-y-2">
                 <TriggerField label="Message" value={task.trigger.message} onChange={(v) => handleTriggerField('message', v)} placeholder="Approval message..." />
-                <div>
-                  <label className="text-[10px] text-tagma-muted">Options</label>
-                  <OptionsField value={task.trigger.options} onChange={(opts) => {
-                    const current = task.trigger ?? { type: 'manual' };
-                    commitField({ trigger: { ...current, options: opts && opts.length > 0 ? opts : undefined } });
-                  }} />
-                </div>
                 <TriggerField label="Timeout" value={task.trigger.timeout} onChange={(v) => handleTriggerField('timeout', v)} placeholder="e.g. 5m" />
                 <div>
                   <label className="text-[10px] text-tagma-muted">Metadata</label>
@@ -824,24 +817,6 @@ function TriggerField({ label, value, onChange, placeholder }: {
     <div>
       <label className="text-[10px] text-tagma-muted">{label}</label>
       <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal} placeholder={placeholder} />
-    </div>
-  );
-}
-
-/** Comma-separated string[] editor for trigger options */
-function OptionsField({ value, onChange }: {
-  value: string[] | undefined;
-  onChange: (opts: string[] | undefined) => void;
-}) {
-  const [val, setVal, blurVal] = useLocalField(
-    (value ?? []).join(', '),
-    (v) => onChange(v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined),
-  );
-  return (
-    <div>
-      <input type="text" className="field-input font-mono text-[11px]" value={val} onChange={(e) => setVal(e.target.value)} onBlur={blurVal}
-        placeholder="approve, reject" />
-      <p className="text-[10px] text-tagma-muted mt-0.5">Comma-separated choices</p>
     </div>
   );
 }

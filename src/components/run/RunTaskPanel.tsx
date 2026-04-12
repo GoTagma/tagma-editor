@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import {
   X, Clock, Check, AlertCircle, Loader2, SkipForward, ShieldOff,
   FileText, ExternalLink, Hash, Link2, FileOutput, Lock, FileSearch,
-  CheckCircle2, Layers, Terminal, MessageSquare, Package,
+  CheckCircle2, Layers, Terminal, MessageSquare, Package, Activity,
 } from 'lucide-react';
-import type { RunTaskState, TaskStatus, RawPipelineConfig, RawTaskConfig, RawTrackConfig, Permissions } from '../../api/client';
+import type { RunTaskState, TaskStatus, RawPipelineConfig, RawTaskConfig, RawTrackConfig, Permissions, TaskLogLevel } from '../../api/client';
 
 interface RunTaskPanelProps {
   task: RunTaskState;
@@ -42,6 +42,18 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
+// Color-code process log lines by severity. Debug/section/quiet are the
+// common "verbose diagnostics" levels and share a muted tone so the eye is
+// drawn to info/warn/error transitions.
+const LOG_LEVEL_COLOR: Record<TaskLogLevel, string> = {
+  info: 'text-tagma-text/80',
+  warn: 'text-tagma-warning/90',
+  error: 'text-tagma-error/90',
+  debug: 'text-tagma-muted/70',
+  section: 'text-tagma-accent/80',
+  quiet: 'text-tagma-muted/60',
+};
+
 function resolveTask(task: RunTaskState, config: RawPipelineConfig): { track: RawTrackConfig; taskConfig: RawTaskConfig } | null {
   const [trackId, ...rest] = task.taskId.split('.');
   const taskId = rest.join('.');
@@ -77,6 +89,25 @@ export function RunTaskPanel({ task, config, onClose }: RunTaskPanelProps) {
   const resolved = useMemo(() => resolveTask(task, config), [task, config]);
   const taskConfig = resolved?.taskConfig;
   const track = resolved?.track;
+
+  // Auto-scroll the process log pane to the bottom when new lines arrive so
+  // the user always sees the latest state without having to scroll manually.
+  // Skip the scroll-follow when the user has scrolled up — that's a signal
+  // they want to read earlier lines and we shouldn't yank them back.
+  const logRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || !followTailRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [task.logs.length]);
+  const handleLogScroll = () => {
+    const el = logRef.current;
+    if (!el) return;
+    // "Near bottom" tolerance — account for fractional pixels under HiDPI.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 16;
+    followTailRef.current = nearBottom;
+  };
 
   const isCommand = !!taskConfig?.command;
   const isTemplate = !!taskConfig?.use;
@@ -260,7 +291,32 @@ export function RunTaskPanel({ task, config, onClose }: RunTaskPanelProps) {
           </div>
         </section>
 
-        {/* ─── Section 2: Task configuration (read-only snapshot) ─── */}
+        {/* ─── Section 2: Process log (live stream from SDK Logger) ─── */}
+        {task.logs.length > 0 && (
+          <section>
+            <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 pb-1.5 border-b border-tagma-border/40 flex items-center gap-1.5">
+              <Activity size={9} />
+              <span>Process</span>
+              <span className="text-tagma-muted/40 font-normal normal-case tracking-normal">({task.logs.length} lines)</span>
+            </div>
+            <div
+              ref={logRef}
+              onScroll={handleLogScroll}
+              className="mt-2 text-[10px] font-mono bg-tagma-bg border border-tagma-border max-h-[320px] overflow-auto"
+            >
+              {task.logs.map((line, i) => (
+                <div
+                  key={i}
+                  className={`px-2.5 py-[2px] whitespace-pre-wrap break-words leading-snug ${LOG_LEVEL_COLOR[line.level]}`}
+                >
+                  {line.text}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ─── Section 3: Task configuration (read-only snapshot) ─── */}
         {taskConfig && (
           <section>
             <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 pb-1.5 border-b border-tagma-border/40">
@@ -325,9 +381,6 @@ export function RunTaskPanel({ task, config, onClose }: RunTaskPanelProps) {
                   <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
                     <ConfigRow label="Type">{taskConfig.trigger.type}</ConfigRow>
                     {taskConfig.trigger.message && <ConfigRow label="Message" mono={false}>{taskConfig.trigger.message}</ConfigRow>}
-                    {taskConfig.trigger.options && taskConfig.trigger.options.length > 0 && (
-                      <ConfigRow label="Options">{taskConfig.trigger.options.join(', ')}</ConfigRow>
-                    )}
                     {taskConfig.trigger.path && <ConfigRow label="Path">{taskConfig.trigger.path}</ConfigRow>}
                     {taskConfig.trigger.timeout && <ConfigRow label="Timeout">{taskConfig.trigger.timeout}</ConfigRow>}
                   </div>

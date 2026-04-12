@@ -42,6 +42,7 @@ function makeTask(overrides: Partial<RunTaskState> = {}): RunTaskState {
     resolvedDriver: null,
     resolvedModelTier: null,
     resolvedPermissions: null,
+    logs: [],
     ...overrides,
   };
 }
@@ -179,7 +180,6 @@ test('approval_request adds to pending map', () => {
     taskId: 'track_a.task_1',
     trackId: 'track_a',
     message: 'Proceed?',
-    options: ['yes', 'no'],
     createdAt: '2026-04-11T10:00:01.000Z',
     timeoutMs: 60000,
   };
@@ -194,7 +194,6 @@ test('approval_resolved with timeout surfaces an error banner', () => {
     id: 'req_1',
     taskId: 'track_a.task_1',
     message: 'Proceed?',
-    options: ['yes', 'no'],
     createdAt: '2026-04-11T10:00:01.000Z',
     timeoutMs: 60000,
   };
@@ -216,7 +215,6 @@ test('approval_resolved with approved does NOT set an error banner', () => {
     id: 'req_1',
     taskId: 'track_a.task_1',
     message: 'Proceed?',
-    options: ['yes', 'no'],
     createdAt: '2026-04-11T10:00:01.000Z',
     timeoutMs: 60000,
   };
@@ -226,7 +224,6 @@ test('approval_resolved with approved does NOT set an error banner', () => {
     runId: 'run_test',
     requestId: 'req_1',
     outcome: 'approved',
-    choice: 'yes',
     seq: 3,
   });
   expect(state.pendingApprovals.size).toBe(0);
@@ -250,6 +247,114 @@ test('run_error sets status=error and surfaces the message', () => {
   state = foldRunEvent(state, { type: 'run_error', runId: 'run_test', error: 'engine boom', seq: 2 });
   expect(state.status).toBe('error');
   expect(state.error).toBe('engine boom');
+});
+
+test('task_log events append to the target task logs buffer', () => {
+  let state = foldRunEvent(initialRunFoldState(), runStart(1));
+  state = foldRunEvent(state, {
+    type: 'task_log',
+    runId: 'run_test',
+    taskId: 'track_a.task_1',
+    level: 'debug',
+    timestamp: '10:00:00.000',
+    text: '10:00:00.000 [task:track_a.task_1] DEBUG: type=ai track=track_a deps=[(root)]',
+    seq: 2,
+  });
+  state = foldRunEvent(state, {
+    type: 'task_log',
+    runId: 'run_test',
+    taskId: 'track_a.task_1',
+    level: 'info',
+    timestamp: '10:00:00.050',
+    text: '10:00:00.050 [task:track_a.task_1] running (driver task)',
+    seq: 3,
+  });
+
+  const task = state.tasks.get('track_a.task_1')!;
+  expect(task.logs).toHaveLength(2);
+  expect(task.logs[0].level).toBe('debug');
+  expect(task.logs[0].text).toContain('deps=[(root)]');
+  expect(task.logs[1].level).toBe('info');
+  expect(task.logs[1].text).toContain('running (driver task)');
+  expect(state.lastEventSeq).toBe(3);
+});
+
+test('task_log with unknown taskId or null leaves the tasks map untouched', () => {
+  const state = foldRunEvent(initialRunFoldState(), runStart(1));
+  // Pipeline-level (taskId=null) — per-task panel ignores these. The seq
+  // still advances, but the tasks map must keep its identity so selectors
+  // don't re-render unnecessarily.
+  const afterPipeline = foldRunEvent(state, {
+    type: 'task_log',
+    runId: 'run_test',
+    taskId: null,
+    level: 'info',
+    timestamp: '10:00:00.000',
+    text: '[pipeline] start',
+    seq: 2,
+  });
+  expect(afterPipeline.tasks).toBe(state.tasks);
+  expect(afterPipeline.lastEventSeq).toBe(2);
+
+  // Unknown task id — not in the state map, reducer drops the event.
+  const afterMissing = foldRunEvent(state, {
+    type: 'task_log',
+    runId: 'run_test',
+    taskId: 'ghost.task',
+    level: 'debug',
+    timestamp: '10:00:00.001',
+    text: 'ghost',
+    seq: 2,
+  });
+  expect(afterMissing.tasks).toBe(state.tasks);
+  expect(afterMissing.lastEventSeq).toBe(2);
+});
+
+test('task_log buffer is capped and keeps the most recent lines', () => {
+  let state = foldRunEvent(initialRunFoldState(), runStart(1));
+  // 600 lines — above the 500 cap the reducer enforces.
+  for (let i = 0; i < 600; i++) {
+    state = foldRunEvent(state, {
+      type: 'task_log',
+      runId: 'run_test',
+      taskId: 'track_a.task_1',
+      level: 'debug',
+      timestamp: '10:00:00.000',
+      text: `line ${i}`,
+      seq: 2 + i,
+    });
+  }
+  const logs = state.tasks.get('track_a.task_1')!.logs;
+  expect(logs).toHaveLength(500);
+  // Cap trimming keeps the tail — oldest line in the buffer should be #100.
+  expect(logs[0].text).toBe('line 100');
+  expect(logs[logs.length - 1].text).toBe('line 599');
+});
+
+test('task_update preserves streamed logs', () => {
+  let state = foldRunEvent(initialRunFoldState(), runStart(1));
+  state = foldRunEvent(state, {
+    type: 'task_log',
+    runId: 'run_test',
+    taskId: 'track_a.task_1',
+    level: 'debug',
+    timestamp: '10:00:00.000',
+    text: 'early diag',
+    seq: 2,
+  });
+  state = foldRunEvent(state, {
+    type: 'task_update',
+    runId: 'run_test',
+    taskId: 'track_a.task_1',
+    status: 'success',
+    exitCode: 0,
+    stdout: 'done',
+    seq: 3,
+  });
+  const task = state.tasks.get('track_a.task_1')!;
+  expect(task.status).toBe('success');
+  expect(task.logs).toHaveLength(1);
+  expect(task.logs[0].text).toBe('early diag');
 });
 
 test('events without seq never advance lastEventSeq', () => {

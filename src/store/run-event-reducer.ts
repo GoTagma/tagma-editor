@@ -8,7 +8,13 @@ import type {
   RunEvent,
   RunTaskState,
   ApprovalRequestInfo,
+  TaskLogLine,
 } from '../api/client';
+
+// Upper bound on per-task log buffer. A single AI task typically emits
+// 15-25 debug lines; shell tasks emit ~5. 500 gives plenty of headroom for
+// very chatty drivers while keeping memory bounded on long runs.
+const TASK_LOG_CAP = 500;
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'done' | 'aborted' | 'error';
 
@@ -52,7 +58,11 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
   // run_start always creates/resets the active run context.
   if (event.type === 'run_start') {
     const tasks = new Map<string, RunTaskState>();
-    for (const t of event.tasks) tasks.set(t.taskId, t);
+    for (const t of event.tasks) {
+      // Normalize: older server versions may omit `logs`. Guarantee an
+      // empty array so the reducer never has to null-check on append.
+      tasks.set(t.taskId, { ...t, logs: Array.isArray(t.logs) ? t.logs : [] });
+    }
     return {
       ...state,
       runId: event.runId,
@@ -100,8 +110,38 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
           resolvedDriver: event.resolvedDriver ?? existing.resolvedDriver,
           resolvedModelTier: event.resolvedModelTier ?? existing.resolvedModelTier,
           resolvedPermissions: event.resolvedPermissions ?? existing.resolvedPermissions,
+          // logs are owned by the task_log case; task_update never touches them.
+          logs: existing.logs,
         });
       }
+      next = { ...state, tasks };
+      break;
+    }
+    case 'task_log': {
+      // Route the line to its task's per-task buffer. Pipeline-level lines
+      // (taskId=null) are intentionally dropped for the per-task panel —
+      // the RunView can surface them elsewhere in the future.
+      if (!event.taskId) {
+        next = state;
+        break;
+      }
+      const existing = state.tasks.get(event.taskId);
+      if (!existing) {
+        next = state;
+        break;
+      }
+      const line: TaskLogLine = {
+        level: event.level,
+        timestamp: event.timestamp,
+        text: event.text,
+      };
+      const baseLogs = existing.logs ?? [];
+      // Append then trim to cap: keep the most recent TASK_LOG_CAP lines.
+      const appended = baseLogs.length >= TASK_LOG_CAP
+        ? [...baseLogs.slice(baseLogs.length - TASK_LOG_CAP + 1), line]
+        : [...baseLogs, line];
+      const tasks = new Map(state.tasks);
+      tasks.set(event.taskId, { ...existing, logs: appended });
       next = { ...state, tasks };
       break;
     }

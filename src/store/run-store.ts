@@ -23,7 +23,7 @@ interface RunStoreState extends RunFoldState {
   abortRun: () => Promise<void>;
   selectTask: (taskId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
-  resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) => Promise<void>;
+  resolveApproval: (requestId: string, outcome: ApprovalOutcome) => Promise<void>;
   /**
    * Hide the RunView without stopping the run. SSE stays subscribed,
    * tasks / snapshot / pendingApprovals are preserved, and `showView()`
@@ -118,7 +118,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
 
     selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
 
-    resolveApproval: async (requestId, outcome, choice) => {
+    resolveApproval: async (requestId, outcome) => {
       // Optimistically remove from queue; if the server fails we can
       // surface the error but keep UX snappy.
       const state = get();
@@ -126,7 +126,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       pending.delete(requestId);
       set({ pendingApprovals: pending });
       try {
-        await api.resolveApproval(requestId, outcome, choice);
+        await api.resolveApproval(requestId, outcome);
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Failed to resolve approval';
         set({ error: message });

@@ -214,6 +214,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
       resolvedDriver: null,
       resolvedModelTier: null,
       resolvedPermissions: null,
+      logs: [],
     };
   }, [selectedTaskId, tasks, config]);
 
@@ -492,7 +493,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         <ApprovalDialog
           request={firstApproval}
           config={config}
-          onApprove={(choice) => resolveApproval(firstApproval.id, 'approved', choice)}
+          onApprove={() => resolveApproval(firstApproval.id, 'approved')}
           onReject={() => resolveApproval(firstApproval.id, 'rejected')}
         />
       )}

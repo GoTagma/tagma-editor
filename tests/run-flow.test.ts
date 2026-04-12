@@ -49,7 +49,6 @@ test('full run flow: start → task transitions → approval → stdout visible 
     taskId: 'track_a.task_3',
     trackId: 'track_a',
     message: 'Deploy to production?',
-    options: ['yes', 'no'],
     createdAt: '2026-04-11T10:05:00.000Z',
     timeoutMs: 120000,
   };
@@ -108,7 +107,6 @@ test('full run flow: start → task transitions → approval → stdout visible 
       runId: 'run_1',
       requestId: 'req_ship',
       outcome: 'approved',
-      choice: 'yes',
       seq: 7,
     },
     // task_3 runs to completion

@@ -1435,6 +1435,7 @@ interface RunInitialTask {
   resolvedDriver: null;
   resolvedModelTier: null;
   resolvedPermissions: null;
+  logs: never[];
 }
 
 type RunEvent =
@@ -1461,8 +1462,16 @@ type RunEvent =
   | { type: 'run_end'; runId: string; success: boolean }
   | { type: 'run_error'; runId: string; error: string }
   | { type: 'log'; runId: string; line: string }
-  | { type: 'approval_request'; runId: string; request: { id: string; taskId: string; trackId?: string; message: string; options: string[]; createdAt: string; timeoutMs: number; metadata?: Record<string, unknown> } }
-  | { type: 'approval_resolved'; runId: string; requestId: string; outcome: 'approved' | 'rejected' | 'timeout' | 'aborted'; choice?: string };
+  | {
+      type: 'task_log';
+      runId: string;
+      taskId: string | null;
+      level: 'info' | 'warn' | 'error' | 'debug' | 'section' | 'quiet';
+      timestamp: string;
+      text: string;
+    }
+  | { type: 'approval_request'; runId: string; request: { id: string; taskId: string; trackId?: string; message: string; createdAt: string; timeoutMs: number; metadata?: Record<string, unknown> } }
+  | { type: 'approval_resolved'; runId: string; requestId: string; outcome: 'approved' | 'rejected' | 'timeout' | 'aborted' };
 
 // ── In-process pipeline run state ──
 // We embed the SDK directly instead of spawning `tagma-cli` as a subprocess
@@ -1511,14 +1520,21 @@ app.get('/api/run/events', (req, res) => {
   // automatic reconnect. We replay every buffered event with seq > that
   // value so the client's task map can be brought back up to date
   // without refetching anything.
-  const lastSeen = parseInt(String(req.header('Last-Event-ID') ?? ''), 10);
+  //
+  // First-connect race fix: even when no Last-Event-ID is present, replay
+  // the entire current-run buffer. The browser's `runStore.startRun`
+  // creates the EventSource and immediately POSTs `/api/run/start`, so
+  // the server may emit `run_start` + `approval_request` before this
+  // GET handler has added `res` to `sseClients`. Replaying lastSeen=0
+  // closes the gap; the reducer's `seq <= lastEventSeq` dedupe makes
+  // duplicates harmless.
+  const lastSeenRaw = parseInt(String(req.header('Last-Event-ID') ?? ''), 10);
+  const lastSeen = Number.isFinite(lastSeenRaw) && lastSeenRaw > 0 ? lastSeenRaw : 0;
   res.write('\n');
   sseClients.add(res);
-  if (Number.isFinite(lastSeen) && lastSeen > 0) {
-    const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
-    for (const e of missed) {
-      res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
-    }
+  const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
+  for (const e of missed) {
+    res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
   }
   req.on('close', () => sseClients.delete(res));
 });
@@ -1565,6 +1581,7 @@ app.post('/api/run/start', async (_req, res) => {
       resolvedDriver: null,
       resolvedModelTier: null,
       resolvedPermissions: null,
+      logs: [],
     })),
   );
 
@@ -1623,7 +1640,6 @@ app.post('/api/run/start', async (_req, res) => {
         runId,
         requestId: event.request.id,
         outcome: outcome as 'approved' | 'rejected' | 'timeout' | 'aborted',
-        choice: event.type === 'resolved' ? event.decision.choice : undefined,
       });
     }
   });
@@ -1657,6 +1673,17 @@ app.post('/api/run/start', async (_req, res) => {
           });
         }
         broadcast(taskStateChangeToWire(runId, event.taskId, event.status, event.state));
+      } else if (event.type === 'task_log') {
+        // Stream every pipeline.log line out to SSE clients so the RunTaskPanel
+        // can show the same process detail the log file has.
+        broadcast({
+          type: 'task_log',
+          runId,
+          taskId: event.taskId,
+          level: event.level,
+          timestamp: event.timestamp,
+          text: event.text,
+        });
       }
       // pipeline_start and pipeline_end are implicit in run_start / run_end
       // — we already broadcast run_start above, and run_end is emitted in
@@ -1768,7 +1795,6 @@ function approvalRequestToWire(req: ApprovalRequest): {
   taskId: string;
   trackId?: string;
   message: string;
-  options: string[];
   createdAt: string;
   timeoutMs: number;
   metadata?: Record<string, unknown>;
@@ -1778,7 +1804,6 @@ function approvalRequestToWire(req: ApprovalRequest): {
     taskId: req.taskId,
     trackId: req.trackId,
     message: req.message,
-    options: Array.from(req.options),
     createdAt: req.createdAt,
     timeoutMs: req.timeoutMs,
     metadata: req.metadata ? { ...req.metadata } : undefined,
@@ -1824,7 +1849,7 @@ function taskStateChangeToWire(
 // we resolve it directly — no IPC bridge, no stdout parsing.
 app.post('/api/run/approval/:requestId', (req, res) => {
   const { requestId } = req.params;
-  const { outcome, choice, reason, actor } = req.body ?? {};
+  const { outcome, reason, actor } = req.body ?? {};
   if (outcome !== 'approved' && outcome !== 'rejected') {
     return res.status(400).json({ error: 'outcome must be approved|rejected' });
   }
@@ -1835,7 +1860,6 @@ app.post('/api/run/approval/:requestId', (req, res) => {
   }
   const ok = activeRunGateway.resolve(requestId, {
     outcome,
-    choice,
     reason,
     actor: actor ?? 'editor',
   });

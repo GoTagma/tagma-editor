@@ -152,7 +152,6 @@ export interface MiddlewareConfig {
 export interface TriggerConfig {
   type: string;
   message?: string;
-  options?: string[];
   timeout?: string;
   path?: string;
   metadata?: Record<string, unknown>;
@@ -370,6 +369,14 @@ export interface FsListResult {
 
 export type TaskStatus = 'idle' | 'waiting' | 'running' | 'success' | 'failed' | 'timeout' | 'skipped' | 'blocked';
 
+export type TaskLogLevel = 'info' | 'warn' | 'error' | 'debug' | 'section' | 'quiet';
+
+export interface TaskLogLine {
+  level: TaskLogLevel;
+  timestamp: string; // HH:MM:SS.mmm — mirrors pipeline.log formatting
+  text: string;       // fully-formatted line as written to the log file
+}
+
 export interface RunTaskState {
   taskId: string;
   trackId: string;
@@ -395,6 +402,10 @@ export interface RunTaskState {
   resolvedDriver: string | null;
   resolvedModelTier: string | null;
   resolvedPermissions: Permissions | null;
+  // Streamed process log lines sourced from the SDK Logger (same content as
+  // pipeline.log). Capped by the reducer so an excessively chatty task does
+  // not grow the store without bound.
+  logs: TaskLogLine[];
 }
 
 export interface RunState {
@@ -411,7 +422,6 @@ export interface ApprovalRequestInfo {
   taskId: string;
   trackId?: string;
   message: string;
-  options: string[];
   createdAt: string;
   timeoutMs: number;
   metadata?: Record<string, unknown>;
@@ -444,8 +454,17 @@ export type RunEvent =
   | { type: 'run_end'; runId?: string; success: boolean; seq?: number }
   | { type: 'run_error'; runId?: string; error: string; seq?: number }
   | { type: 'log'; runId?: string; line: string; seq?: number }
+  | {
+      type: 'task_log';
+      runId?: string;
+      taskId: string | null;
+      level: TaskLogLevel;
+      timestamp: string;
+      text: string;
+      seq?: number;
+    }
   | { type: 'approval_request'; runId?: string; request: ApprovalRequestInfo; seq?: number }
-  | { type: 'approval_resolved'; runId?: string; requestId: string; outcome: ApprovalOutcome; choice?: string; seq?: number };
+  | { type: 'approval_resolved'; runId?: string; requestId: string; outcome: ApprovalOutcome; seq?: number };
 
 export interface RunHistoryTaskCounts {
   total: number;
@@ -645,10 +664,10 @@ export const api = {
     request<RunSummary>(`/run/history/${encodeURIComponent(runId)}/summary`),
 
   // ── Approvals (F3) ──
-  resolveApproval: (requestId: string, outcome: ApprovalOutcome, choice?: string) =>
+  resolveApproval: (requestId: string, outcome: ApprovalOutcome) =>
     request<{ ok: boolean; stubbed?: boolean }>(`/run/approval/${encodeURIComponent(requestId)}`, {
       method: 'POST',
-      body: jsonBody({ outcome, choice }),
+      body: jsonBody({ outcome }),
     }),
 
   // ── State events (C5) ──
