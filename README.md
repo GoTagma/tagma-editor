@@ -26,7 +26,7 @@ curl -fsSL https://bun.sh/install | bash
 
 ## Getting Started
 
-1. Install dependencies (uses `bun.lock` for reproducible installs):
+1. Install dependencies:
 
    ```bash
    bun install

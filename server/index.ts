@@ -12,7 +12,6 @@ import {
   updateTrack,
   upsertTask,
   removeTask,
-  moveTask,
   transferTask,
   moveTrack,
   validateRaw,
@@ -393,13 +392,8 @@ app.get('/api/registry', (_req, res) => {
 });
 
 // ── F1: Templates ──
-// Discovery endpoint — returns the list of `@tagma/template-*` packages
-// installed in the current workspace along with each manifest's name,
-// description, and parameter definitions. The UI template browser in
-// TaskConfigPanel populates from here.
-app.get('/api/templates', (_req, res) => {
-  res.json({ templates: getTemplatesSnapshot() });
-});
+// NOTE: GET /api/templates list endpoint removed — same data is included in
+// GET /api/registry (registry.templates). Kept single-template lookup below.
 
 // Single-template lookup for deeper form generation (one task at a time).
 app.get('/api/templates/*ref', (req, res) => {
@@ -1049,11 +1043,9 @@ app.delete('/api/tasks/:trackId/:taskId', (req, res) => {
   res.json(getState());
 });
 
-app.post('/api/tasks/move', (req, res) => {
-  const { trackId, taskId, toIndex } = req.body;
-  config = moveTask(config, trackId, taskId, toIndex);
-  res.json(getState());
-});
+// NOTE: /api/tasks/move removed — no client caller; task reorder within a
+// track is not exposed in the UI. The SDK's `moveTask` is still available
+// if needed in the future.
 
 app.post('/api/tasks/transfer', (req, res) => {
   const { fromTrackId, taskId, toTrackId } = req.body;
@@ -1121,9 +1113,7 @@ app.post('/api/import', (req, res) => {
 });
 
 // ── Workspace ──
-app.get('/api/workspace', (_req, res) => {
-  res.json({ yamlPath, workDir });
-});
+// NOTE: GET /api/workspace removed — same data is included in GET /api/state.
 
 app.patch('/api/workspace', (req, res) => {
   const { workDir: wd } = req.body;
