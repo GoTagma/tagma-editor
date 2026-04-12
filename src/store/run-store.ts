@@ -51,15 +51,44 @@ function pickFoldState(s: RunStoreState): RunFoldState {
 export const useRunStore = create<RunStoreState>((set, get) => {
   let unsubscribe: (() => void) | null = null;
 
-  function handleEvent(event: RunEvent) {
-    const current = pickFoldState(get());
-    const next = foldRunEvent(current, event);
-    // foldRunEvent returns the same reference when the event is a no-op
-    // (dropped by seq dedupe / runId mismatch) — skip the zustand set
-    // call in that case to avoid a spurious re-render.
-    if (next !== current) {
-      set(next);
+  // Batch SSE events and flush once per animation frame to prevent
+  // high-frequency task_log lines from flooding React with re-renders.
+  let pendingEvents: RunEvent[] = [];
+  let rafId: number | null = null;
+
+  function flushEvents() {
+    rafId = null;
+    if (pendingEvents.length === 0) return;
+    const batch = pendingEvents;
+    pendingEvents = [];
+    let state = pickFoldState(get());
+    const original = state;
+    for (const event of batch) {
+      const next = foldRunEvent(state, event);
+      if (next !== state) state = next;
     }
+    if (state !== original) set(state);
+  }
+
+  function handleEvent(event: RunEvent) {
+    // High-priority events (run lifecycle, approvals) flush immediately
+    // so the UI transitions without waiting for the next frame.
+    if (event.type === 'run_start' || event.type === 'run_end' ||
+        event.type === 'run_error' || event.type === 'approval_request' ||
+        event.type === 'approval_resolved') {
+      // Fold any pending batch first to preserve ordering
+      if (pendingEvents.length > 0) {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+        flushEvents();
+      }
+      const current = pickFoldState(get());
+      const next = foldRunEvent(current, event);
+      if (next !== current) set(next);
+      return;
+    }
+    // Buffer task_update / task_log and flush once per frame
+    pendingEvents.push(event);
+    if (rafId === null) rafId = requestAnimationFrame(flushEvents);
   }
 
   return {
@@ -80,6 +109,8 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       // Defensive: a previous run may have been minimized (still alive
       // server-side). Close its SSE subscription before starting the new
       // one so we don't leak listeners / get stray events.
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+      pendingEvents = [];
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       set({
         active: true,
@@ -144,6 +175,8 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     },
 
     reset: () => {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+      pendingEvents = [];
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       set({
         active: false,
