@@ -70,7 +70,7 @@ app.use(express.json({ limit: '5mb' }));
 // ── In-memory state ──
 let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
-let workDir: string = process.cwd();
+let workDir: string = '';
 
 // ── Revision / ETag (C6) ──
 //
