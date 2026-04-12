@@ -45,6 +45,7 @@ interface PipelineState {
   config: RawPipelineConfig;
   positions: Map<string, TaskPosition>;
   selectedTaskId: string | null;
+  selectedTaskIds: string[];
   selectedTrackId: string | null;
   validationErrors: ValidationError[];
   dagEdges: DagEdge[];
@@ -79,6 +80,7 @@ interface PipelineState {
   removeDependency: (trackId: string, taskId: string, depRef: string) => void;
   setRegistry: (registry: PluginRegistry) => void;
   selectTask: (qualifiedId: string | null) => void;
+  toggleTaskSelection: (qualifiedId: string) => void;
   selectTrack: (trackId: string | null) => void;
   setTaskPosition: (qualifiedId: string, x: number) => void;
   setWorkDir: (workDir: string) => Promise<void>;
@@ -139,6 +141,7 @@ interface Snapshot {
   dagEdges: DagEdge[];
   validationErrors: ValidationError[];
   selectedTaskId: string | null;
+  selectedTaskIds: string[];
   selectedTrackId: string | null;
   pinnedTaskId: string | null;
   pinnedTrackId: string | null;
@@ -155,6 +158,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       dagEdges: s.dagEdges,
       validationErrors: s.validationErrors,
       selectedTaskId: s.selectedTaskId,
+      selectedTaskIds: s.selectedTaskIds,
       selectedTrackId: s.selectedTrackId,
       pinnedTaskId: s.pinnedTaskId,
       pinnedTrackId: s.pinnedTrackId,
@@ -170,6 +174,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       dagEdges: snap.dagEdges,
       validationErrors: snap.validationErrors,
       selectedTaskId: snap.selectedTaskId,
+      selectedTaskIds: snap.selectedTaskIds,
       selectedTrackId: snap.selectedTrackId,
       pinnedTaskId: snap.pinnedTaskId,
       pinnedTrackId: snap.pinnedTrackId,
@@ -347,6 +352,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     config: { name: 'Loading...', tracks: [] },
     positions: new Map(),
     selectedTaskId: null,
+    selectedTaskIds: [],
     selectedTrackId: null,
     validationErrors: [],
     dagEdges: [],
@@ -399,6 +405,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         return {
           positions,
           selectedTaskId: s.selectedTaskId?.startsWith(trackId + '.') ? null : s.selectedTaskId,
+          selectedTaskIds: s.selectedTaskIds.filter((id) => !id.startsWith(trackId + '.')),
           pinnedTaskId: s.pinnedTaskId?.startsWith(trackId + '.') ? null : s.pinnedTaskId,
           pinnedTrackId: s.pinnedTrackId === trackId ? null : s.pinnedTrackId,
         };
@@ -449,6 +456,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       const snapshot = takeSnapshot();
       set((s) => ({
         selectedTaskId: s.selectedTaskId === qid ? null : s.selectedTaskId,
+        selectedTaskIds: s.selectedTaskIds.filter((id) => id !== qid),
         pinnedTaskId: s.pinnedTaskId === qid ? null : s.pinnedTaskId,
         positions: (() => { const p = new Map(s.positions); p.delete(qid); return p; })(),
       }));
@@ -492,6 +500,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
           config: { ...s.config, tracks: newTracks },
           positions,
           selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId,
+          selectedTaskIds: s.selectedTaskIds.map((id) => id === qidOld ? qidNew : id),
           pinnedTaskId: s.pinnedTaskId === qidOld ? qidNew : s.pinnedTaskId,
           layoutDirty: true,
         };
@@ -517,8 +526,22 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     setRegistry: (registry) => set({ registry }),
 
-    selectTask: (qualifiedId) => set({ selectedTaskId: qualifiedId, selectedTrackId: null }),
-    selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
+    selectTask: (qualifiedId) => set({
+      selectedTaskId: qualifiedId,
+      selectedTaskIds: qualifiedId ? [qualifiedId] : [],
+      selectedTrackId: null,
+    }),
+    toggleTaskSelection: (qualifiedId) => set((s) => {
+      const ids = s.selectedTaskIds.includes(qualifiedId)
+        ? s.selectedTaskIds.filter((id) => id !== qualifiedId)
+        : [...s.selectedTaskIds, qualifiedId];
+      return {
+        selectedTaskId: ids.length > 0 ? ids[ids.length - 1] : null,
+        selectedTaskIds: ids,
+        selectedTrackId: null,
+      };
+    }),
+    selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null, selectedTaskIds: [] }),
     pinTask: (qualifiedId) => set({ pinnedTaskId: qualifiedId, pinnedTrackId: null }),
     unpinTask: () => set({ pinnedTaskId: null }),
     pinTrack: (trackId) => set({ pinnedTrackId: trackId, pinnedTaskId: null }),
@@ -564,7 +587,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     openFile: async (path) => {
       try {
         const state = await api.openFile(path);
-        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
+        set({ selectedTaskId: null, selectedTaskIds: [], selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -600,7 +623,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     newPipeline: async (name) => {
       try {
-        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
+        set({ selectedTaskId: null, selectedTaskIds: [], selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         const state = await api.newPipeline(name);
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
@@ -612,7 +635,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     importFile: async (sourcePath) => {
       try {
         const state = await api.importFile(sourcePath);
-        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
+        set({ selectedTaskId: null, selectedTaskIds: [], selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -635,7 +658,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     importYaml: async (yaml) => {
       try {
         const state = await api.importYaml(yaml);
-        set({ selectedTaskId: null, pinnedTaskId: null, pinnedTrackId: null });
+        set({ selectedTaskId: null, selectedTaskIds: [], pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -646,7 +669,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     loadDemo: async () => {
       try {
         const state = await api.loadDemo();
-        set({ selectedTaskId: null, pinnedTaskId: null, pinnedTrackId: null });
+        set({ selectedTaskId: null, selectedTaskIds: [], pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {

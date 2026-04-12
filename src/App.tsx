@@ -32,12 +32,12 @@ type ConfirmInfo = {
 
 export function App() {
   const {
-    config, positions, selectedTaskId, selectedTrackId, pinnedTaskId, pinnedTrackId, validationErrors, dagEdges,
+    config, positions, selectedTaskId, selectedTaskIds, selectedTrackId, pinnedTaskId, pinnedTrackId, validationErrors, dagEdges,
     yamlPath, workDir, isDirty, layoutDirty, loading, registry,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
-    selectTask, selectTrack, pinTask, unpinTask, pinTrack, unpinTrack, setTaskPosition, setRegistry,
+    selectTask, toggleTaskSelection, selectTrack, pinTask, unpinTask, pinTrack, unpinTrack, setTaskPosition, setRegistry,
     setWorkDir, saveFile, saveFileAs, newPipeline, importFile, exportFile, openFile,
     exportYaml, importYaml, init,
   } = usePipelineStore();
@@ -678,9 +678,9 @@ export function App() {
           <div className={showYamlPreview ? 'flex-1 min-w-0 overflow-hidden' : 'h-full'}>
             <BoardCanvas
               config={config} dagEdges={dagEdges} positions={positions}
-              selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
+              selectedTaskIds={selectedTaskIds} invalidTaskIds={invalidTaskIds}
               errorsByTask={errorsByTask} errorsByTrack={errorsByTrack}
-              onSelectTask={selectTask}
+              onSelectTask={selectTask} onToggleTaskSelection={toggleTaskSelection}
               onSelectTrack={selectTrack}
               onAddTask={addTask} onAddTrack={addTrack}
               onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}

@@ -30,11 +30,12 @@ interface BoardCanvasProps {
   config: RawPipelineConfig;
   dagEdges: DagEdge[];
   positions: Map<string, TaskPosition>;
-  selectedTaskId: string | null;
+  selectedTaskIds: string[];
   invalidTaskIds: Set<string>;
   errorsByTask: Map<string, string[]>;
   errorsByTrack: Map<string, string[]>;
   onSelectTask: (qualifiedId: string | null) => void;
+  onToggleTaskSelection: (qualifiedId: string) => void;
   onSelectTrack: (trackId: string | null) => void;
   onAddTask: (trackId: string, name: string, positionX?: number) => void;
   onAddTrack: (name: string) => void;
@@ -128,7 +129,11 @@ function findNearestTarget(mx: number, my: number, positions: Map<string, Pos>, 
 }
 
 interface CtxState { x: number; y: number; items: MenuEntry[] }
-interface TaskDragState { qid: string; taskId: string; trackId: string; contentX: number; targetTrackId: string }
+interface DragCompanion { qid: string; taskId: string; trackId: string; startX: number }
+interface TaskDragState {
+  qid: string; taskId: string; trackId: string; contentX: number; targetTrackId: string;
+  startX: number; companions: DragCompanion[];
+}
 interface EdgeDragState { srcQid: string; mx: number; my: number; target: string | null }
 interface TrackDragState { trackId: string; startIndex: number; dropIndex: number; deltaY: number }
 
@@ -206,8 +211,8 @@ function computeParallelZones(
 }
 
 export function BoardCanvas({
-  config, dagEdges, positions: storedPositions, selectedTaskId, invalidTaskIds, errorsByTask, errorsByTrack,
-  onSelectTask, onSelectTrack, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
+  config, dagEdges, positions: storedPositions, selectedTaskIds, invalidTaskIds, errorsByTask, errorsByTrack,
+  onSelectTask, onToggleTaskSelection, onSelectTrack, onAddTask, onAddTrack, onDeleteTask, onDeleteTrack,
   onRenameTrack, onMoveTrackTo, onAddDependency, onRemoveDependency,
   onSetTaskPosition, onTransferTask,
 }: BoardCanvasProps) {
@@ -268,6 +273,13 @@ export function BoardCanvas({
     const result = new Map(staticPositions);
     const targetY = trackTopY(visualTracks, taskDrag.targetTrackId);
     result.set(taskDrag.qid, { x: Math.max(PAD_LEFT, taskDrag.contentX), y: targetY + (TRACK_H - TASK_H) / 2 });
+    // Move companion tasks by the same horizontal delta (stay on own track)
+    const dx = taskDrag.contentX - taskDrag.startX;
+    for (const c of taskDrag.companions) {
+      const cx = Math.max(PAD_LEFT, c.startX + dx);
+      const cy = trackTopY(visualTracks, c.trackId);
+      result.set(c.qid, { x: cx, y: cy + (TRACK_H - TASK_H) / 2 });
+    }
     return result;
   }, [taskDrag, staticPositions, visualTracks]);
 
@@ -310,11 +322,15 @@ export function BoardCanvas({
     document.body.style.userSelect = 'none';
   }, []);
 
-  // ── Task drag ──
+  // ── Task drag (supports multi-select) ──
+  const selectedIdsRef = useRef(selectedTaskIds);
+  selectedIdsRef.current = selectedTaskIds;
+
   const handleTaskPointerDown = useCallback((taskId: string, e: React.PointerEvent) => {
     e.preventDefault();
     const el = contentRef.current;
     if (!el) return;
+    const isMultiKey = e.ctrlKey || e.metaKey;
     // Find which track this task belongs to
     const ft = allTasks.find((t) => t.task.id === taskId);
     if (!ft) return;
@@ -326,13 +342,31 @@ export function BoardCanvas({
     const startCX = e.clientX, startCY = e.clientY;
     let started = false;
 
+    // Build companion list: other selected tasks that will move together.
+    // If the grabbed task is already selected, drag all selected; otherwise
+    // just drag the single grabbed task (selection updates on pointerup).
+    const curSel = selectedIdsRef.current;
+    const isAlreadySelected = curSel.includes(qid);
+    const companionQids = (isAlreadySelected && !isMultiKey)
+      ? curSel.filter((id) => id !== qid)
+      : [];
+    const companions: DragCompanion[] = companionQids.map((cqid) => {
+      const [trkId, tskId] = cqid.split('.');
+      const cPos = staticPositions.get(cqid);
+      return { qid: cqid, taskId: tskId, trackId: trkId, startX: cPos?.x ?? 0 };
+    });
+    const startX = pos.x;
+
+    const hasCompanions = companions.length > 0;
+
     const onMove = (ev: PointerEvent) => {
       if (!started) { if (Math.abs(ev.clientX - startCX) + Math.abs(ev.clientY - startCY) < DRAG_THRESHOLD) return; started = true; }
       const c = toContent(ev, el);
       const cx = Math.max(PAD_LEFT, c.x - offX);
-      const trkId = trackAtY(visualTracks, c.y) ?? ft.trackId;
+      // Multi-drag is horizontal only — lock to original track
+      const trkId = hasCompanions ? ft.trackId : (trackAtY(visualTracks, c.y) ?? ft.trackId);
       dropRef.current = { trackId: trkId, positionX: cx };
-      setTaskDrag({ qid, taskId, trackId: ft.trackId, contentX: cx, targetTrackId: trkId });
+      setTaskDrag({ qid, taskId, trackId: ft.trackId, contentX: cx, targetTrackId: trkId, startX, companions });
     };
 
     const onUp = () => {
@@ -341,13 +375,23 @@ export function BoardCanvas({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       if (!started) {
-        onSelectTask(qid);
+        // Click: Ctrl/Cmd toggles selection, plain click selects single
+        if (isMultiKey) {
+          onToggleTaskSelection(qid);
+        } else {
+          onSelectTask(qid);
+        }
       } else {
         const d = dropRef.current;
         if (d) {
+          const dx = d.positionX - startX;
+          // Commit position for grabbed task
           onSetTaskPosition(`${d.trackId}.${taskId}`, d.positionX);
-          if (d.trackId !== ft.trackId) {
-            onTransferTask(ft.trackId, taskId, d.trackId);
+          if (d.trackId !== ft.trackId) onTransferTask(ft.trackId, taskId, d.trackId);
+          // Commit horizontal positions for companions (no cross-track)
+          for (const c of companions) {
+            const cx = Math.max(PAD_LEFT, c.startX + dx);
+            onSetTaskPosition(`${c.trackId}.${c.taskId}`, cx);
           }
         }
       }
@@ -358,7 +402,7 @@ export function BoardCanvas({
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.body.style.userSelect = 'none';
-  }, [staticPositions, visualTracks, allTasks, onSelectTask, onSetTaskPosition, onTransferTask]);
+  }, [staticPositions, visualTracks, allTasks, onSelectTask, onToggleTaskSelection, onSetTaskPosition, onTransferTask]);
 
   // ── Edge drag ──
   const handleHandlePointerDown = useCallback((taskId: string, _e: React.PointerEvent) => {
@@ -562,11 +606,11 @@ export function BoardCanvas({
           removeSelectedEdge();
           return;
         }
-        if (selectedTaskId) {
-          const [trkId, taskId] = selectedTaskId.split('.');
-          if (trkId && taskId) {
-            e.preventDefault();
-            deleteTaskAction(trkId, taskId);
+        if (selectedTaskIds.length > 0) {
+          e.preventDefault();
+          for (const qid of selectedTaskIds) {
+            const [trkId, tskId] = qid.split('.');
+            if (trkId && tskId) deleteTaskAction(trkId, tskId);
           }
           return;
         }
@@ -578,7 +622,7 @@ export function BoardCanvas({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selEdge, selectedTaskId, selectedTrackId, removeSelectedEdge, deleteTaskAction, deleteTrackAction]);
+  }, [selEdge, selectedTaskIds, selectedTrackId, removeSelectedEdge, deleteTaskAction, deleteTrackAction]);
 
   // ── Cycle edge highlighting (L3) ──
   const cycleEdgeSet = useMemo(() => {
@@ -760,10 +804,10 @@ export function BoardCanvas({
                 trackId={ft.trackId}
                 pipelineConfig={config}
                 x={pos.x} y={pos.y} w={TASK_W} h={TASK_H}
-                isSelected={selectedTaskId === ft.qid}
+                isSelected={selectedTaskIds.includes(ft.qid)}
                 isInvalid={invalidTaskIds.has(ft.qid)}
                 errorMessages={errorsByTask.get(ft.qid)}
-                isDragging={taskDrag?.qid === ft.qid}
+                isDragging={taskDrag !== null && (taskDrag.qid === ft.qid || taskDrag.companions.some((c) => c.qid === ft.qid))}
                 isTrackDragging={trackDrag !== null}
                 isEdgeTarget={edgeDrag !== null && edgeDrag.srcQid !== ft.qid && edgeDrag.target === ft.qid}
                 onPointerDown={handleTaskPointerDown}
