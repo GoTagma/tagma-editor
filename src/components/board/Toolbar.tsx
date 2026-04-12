@@ -112,7 +112,7 @@ export function Toolbar({
       </div>
 
       {/* Status badges — separated from path to prevent overlap */}
-      {(isDirty || errorCount > 0) && (
+      {yamlPath && (isDirty || errorCount > 0) && (
         <div className="flex items-center gap-1.5 shrink-0 ml-1">
           {isDirty && (
             <span className="text-[9px] font-medium tracking-wider uppercase text-tagma-warning/80 bg-tagma-warning/8 px-1.5 py-px rounded-sm">
