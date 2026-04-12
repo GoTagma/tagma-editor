@@ -45,6 +45,7 @@ const RUN_STATUS_LABEL: Record<string, string> = {
   starting: 'Starting...',
   running: 'Running',
   done: 'Completed',
+  failed: 'Failed',
   aborted: 'Aborted',
   error: 'Error',
 };
@@ -77,7 +78,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   // only when no snapshot exists (e.g. idle state showing history).
   const config = snapshot ?? liveConfig;
 
-  const isTerminal = status === 'done' || status === 'aborted' || status === 'error';
+  const isTerminal = status === 'done' || status === 'failed' || status === 'aborted' || status === 'error';
   const isActive = status !== 'idle';
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
@@ -288,11 +289,11 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         <div className="flex items-center gap-2 text-[10px] font-mono">
           {status === 'running' && <Loader2 size={11} className="text-tagma-ready animate-spin" />}
           {status === 'done' && <Check size={11} className="text-tagma-success" />}
-          {(status === 'error' || status === 'aborted') && <X size={11} className="text-tagma-error" />}
+          {(status === 'error' || status === 'aborted' || status === 'failed') && <X size={11} className="text-tagma-error" />}
           <span className={`
             ${status === 'running' ? 'text-tagma-ready' : ''}
             ${status === 'done' ? 'text-tagma-success' : ''}
-            ${status === 'error' || status === 'aborted' ? 'text-tagma-error' : ''}
+            ${status === 'error' || status === 'aborted' || status === 'failed' ? 'text-tagma-error' : ''}
             ${status === 'starting' ? 'text-tagma-muted' : ''}
           `}>
             {RUN_STATUS_LABEL[status] ?? status}

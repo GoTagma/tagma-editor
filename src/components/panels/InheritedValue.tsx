@@ -34,7 +34,7 @@ export function resolvePermissions(
 ): { value: Permissions; source: ResolvedValue['source'] } {
   if (taskPerms) return { value: taskPerms, source: 'task' };
   if (trackPerms) return { value: trackPerms, source: 'track' };
-  return { value: { read: true }, source: 'default' };
+  return { value: { read: true, write: false, execute: false }, source: 'default' };
 }
 
 export function permsToString(p: Permissions | undefined): string {

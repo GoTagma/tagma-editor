@@ -16,7 +16,7 @@ import type {
 // very chatty drivers while keeping memory bounded on long runs.
 const TASK_LOG_CAP = 500;
 
-export type RunStatus = 'idle' | 'starting' | 'running' | 'done' | 'aborted' | 'error';
+export type RunStatus = 'idle' | 'starting' | 'running' | 'done' | 'failed' | 'aborted' | 'error';
 
 export interface RunFoldState {
   runId: string | null;
@@ -94,22 +94,26 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
       const tasks = new Map(state.tasks);
       const existing = tasks.get(event.taskId);
       if (existing) {
+        // Use explicit undefined checks instead of ?? so that null/0/""
+        // values from the SDK are applied rather than preserving stale data.
+        const pick = <T,>(incoming: T | undefined, previous: T): T =>
+          incoming !== undefined ? incoming : previous;
         tasks.set(event.taskId, {
           ...existing,
           status: event.status,
-          startedAt: event.startedAt ?? existing.startedAt,
-          finishedAt: event.finishedAt ?? existing.finishedAt,
-          durationMs: event.durationMs ?? existing.durationMs,
-          exitCode: event.exitCode ?? existing.exitCode,
-          stdout: event.stdout ?? existing.stdout,
-          stderr: event.stderr ?? existing.stderr,
-          outputPath: event.outputPath ?? existing.outputPath,
-          stderrPath: event.stderrPath ?? existing.stderrPath,
-          sessionId: event.sessionId ?? existing.sessionId,
-          normalizedOutput: event.normalizedOutput ?? existing.normalizedOutput,
-          resolvedDriver: event.resolvedDriver ?? existing.resolvedDriver,
-          resolvedModelTier: event.resolvedModelTier ?? existing.resolvedModelTier,
-          resolvedPermissions: event.resolvedPermissions ?? existing.resolvedPermissions,
+          startedAt: pick(event.startedAt, existing.startedAt),
+          finishedAt: pick(event.finishedAt, existing.finishedAt),
+          durationMs: pick(event.durationMs, existing.durationMs),
+          exitCode: pick(event.exitCode, existing.exitCode),
+          stdout: pick(event.stdout, existing.stdout),
+          stderr: pick(event.stderr, existing.stderr),
+          outputPath: pick(event.outputPath, existing.outputPath),
+          stderrPath: pick(event.stderrPath, existing.stderrPath),
+          sessionId: pick(event.sessionId, existing.sessionId),
+          normalizedOutput: pick(event.normalizedOutput, existing.normalizedOutput),
+          resolvedDriver: pick(event.resolvedDriver, existing.resolvedDriver),
+          resolvedModelTier: pick(event.resolvedModelTier, existing.resolvedModelTier),
+          resolvedPermissions: pick(event.resolvedPermissions, existing.resolvedPermissions),
           // logs are owned by the task_log case; task_update never touches them.
           logs: existing.logs,
         });
@@ -146,7 +150,16 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
       break;
     }
     case 'run_end':
-      next = { ...state, status: event.success ? 'done' : 'aborted' };
+      // Distinguish completed-with-failures ('failed') from user-initiated abort ('aborted').
+      // The store's abortRun() action sets status='aborted' directly before the run_end event
+      // arrives, so if we're already 'aborted' we preserve that. Otherwise success:false means
+      // the pipeline ran to completion but had task failures.
+      next = {
+        ...state,
+        status: event.success
+          ? 'done'
+          : state.status === 'aborted' ? 'aborted' : 'failed',
+      };
       break;
     case 'run_error':
       next = { ...state, status: 'error', error: event.error };

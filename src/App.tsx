@@ -514,6 +514,7 @@ export function App() {
         ? `Running ${runTaskCounts.success + runTaskCounts.failed + runTaskCounts.timeout + runTaskCounts.skipped}/${runTasks.size}`
         : 'Running')
       : runStatus === 'done' ? 'View run'
+      : runStatus === 'failed' ? 'Run failed'
       : runStatus === 'aborted' ? 'Run aborted'
       : 'Run error';
     const borderClass =
@@ -530,7 +531,7 @@ export function App() {
         >
           {runIsLive && <Loader2 size={10} className="animate-spin" />}
           {runStatus === 'done' && <Check size={10} />}
-          {(runStatus === 'aborted' || runStatus === 'error') && <XIcon size={10} />}
+          {(runStatus === 'aborted' || runStatus === 'failed' || runStatus === 'error') && <XIcon size={10} />}
           <span>{label}</span>
           {runPendingApprovals.size > 0 && (
             <span className="flex items-center gap-0.5 text-tagma-warning animate-pulse-slow">

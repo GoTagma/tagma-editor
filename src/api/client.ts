@@ -137,9 +137,9 @@ export interface HooksConfig {
 }
 
 export interface Permissions {
-  read?: boolean;
-  write?: boolean;
-  execute?: boolean;
+  read: boolean;
+  write: boolean;
+  execute: boolean;
 }
 
 export interface MiddlewareConfig {
@@ -410,7 +410,7 @@ export interface RunTaskState {
 
 export interface RunState {
   runId: string | null;
-  status: 'idle' | 'starting' | 'running' | 'done' | 'aborted' | 'error';
+  status: 'idle' | 'starting' | 'running' | 'done' | 'failed' | 'aborted' | 'error';
   tasks: RunTaskState[];
   error: string | null;
 }
@@ -664,7 +664,7 @@ export const api = {
     request<RunSummary>(`/run/history/${encodeURIComponent(runId)}/summary`),
 
   // ── Approvals (F3) ──
-  resolveApproval: (requestId: string, outcome: ApprovalOutcome) =>
+  resolveApproval: (requestId: string, outcome: 'approved' | 'rejected') =>
     request<{ ok: boolean; stubbed?: boolean }>(`/run/approval/${encodeURIComponent(requestId)}`, {
       method: 'POST',
       body: jsonBody({ outcome }),
