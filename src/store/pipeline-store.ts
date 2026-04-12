@@ -58,6 +58,8 @@ interface PipelineState {
   past: HistoryEntry[];
   future: HistoryEntry[];
   clipboard: ClipboardSlot;
+  pinnedTaskId: string | null;
+  pinnedTrackId: string | null;
 
   applyState: (state: ServerState) => void;
   clearError: () => void;
@@ -100,6 +102,10 @@ interface PipelineState {
   copySelection: () => boolean;
   pasteClipboard: () => boolean;
   duplicateSelection: () => boolean;
+  pinTask: (qualifiedId: string) => void;
+  unpinTask: () => void;
+  pinTrack: (trackId: string) => void;
+  unpinTrack: () => void;
 }
 
 function generateId(): string {
@@ -134,6 +140,8 @@ interface Snapshot {
   validationErrors: ValidationError[];
   selectedTaskId: string | null;
   selectedTrackId: string | null;
+  pinnedTaskId: string | null;
+  pinnedTrackId: string | null;
   isDirty: boolean;
   layoutDirty: boolean;
 }
@@ -148,6 +156,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       validationErrors: s.validationErrors,
       selectedTaskId: s.selectedTaskId,
       selectedTrackId: s.selectedTrackId,
+      pinnedTaskId: s.pinnedTaskId,
+      pinnedTrackId: s.pinnedTrackId,
       isDirty: s.isDirty,
       layoutDirty: s.layoutDirty,
     };
@@ -161,6 +171,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       validationErrors: snap.validationErrors,
       selectedTaskId: snap.selectedTaskId,
       selectedTrackId: snap.selectedTrackId,
+      pinnedTaskId: snap.pinnedTaskId,
+      pinnedTrackId: snap.pinnedTrackId,
       isDirty: snap.isDirty,
       layoutDirty: snap.layoutDirty,
     });
@@ -185,7 +197,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         // authoritative state, drop history, and surface the conflict toast.
         // We do NOT rethrow here: callers (e.g. saveFile) treat a resolved
         // conflict as a terminal state, not a transient failure to retry.
-        applyState(e.currentState);
+        applyStateWithLayout(e.currentState);
         set({
           isDirty: false,
           layoutDirty: false,
@@ -348,6 +360,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     past: [],
     future: [],
     clipboard: null,
+    pinnedTaskId: null,
+    pinnedTrackId: null,
 
     applyState,
     clearError: () => set({ errorMessage: null }),
@@ -385,6 +399,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         return {
           positions,
           selectedTaskId: s.selectedTaskId?.startsWith(trackId + '.') ? null : s.selectedTaskId,
+          pinnedTaskId: s.pinnedTaskId?.startsWith(trackId + '.') ? null : s.pinnedTaskId,
+          pinnedTrackId: s.pinnedTrackId === trackId ? null : s.pinnedTrackId,
         };
       });
 
@@ -433,6 +449,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       const snapshot = takeSnapshot();
       set((s) => ({
         selectedTaskId: s.selectedTaskId === qid ? null : s.selectedTaskId,
+        pinnedTaskId: s.pinnedTaskId === qid ? null : s.pinnedTaskId,
         positions: (() => { const p = new Map(s.positions); p.delete(qid); return p; })(),
       }));
 
@@ -475,6 +492,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
           config: { ...s.config, tracks: newTracks },
           positions,
           selectedTaskId: s.selectedTaskId === qidOld ? qidNew : s.selectedTaskId,
+          pinnedTaskId: s.pinnedTaskId === qidOld ? qidNew : s.pinnedTaskId,
           layoutDirty: true,
         };
       });
@@ -501,6 +519,10 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     selectTask: (qualifiedId) => set({ selectedTaskId: qualifiedId, selectedTrackId: null }),
     selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
+    pinTask: (qualifiedId) => set({ pinnedTaskId: qualifiedId, pinnedTrackId: null }),
+    unpinTask: () => set({ pinnedTaskId: null }),
+    pinTrack: (trackId) => set({ pinnedTrackId: trackId, pinnedTaskId: null }),
+    unpinTrack: () => set({ pinnedTrackId: null }),
 
     setTaskPosition: (qualifiedId, x) => {
       set((s) => {
@@ -542,7 +564,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     openFile: async (path) => {
       try {
         const state = await api.openFile(path);
-        set({ selectedTaskId: null, selectedTrackId: null });
+        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -578,7 +600,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     newPipeline: async (name) => {
       try {
-        set({ selectedTaskId: null, selectedTrackId: null });
+        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         const state = await api.newPipeline(name);
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
@@ -590,7 +612,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     importFile: async (sourcePath) => {
       try {
         const state = await api.importFile(sourcePath);
-        set({ selectedTaskId: null, selectedTrackId: null });
+        set({ selectedTaskId: null, selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -613,7 +635,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     importYaml: async (yaml) => {
       try {
         const state = await api.importYaml(yaml);
-        set({ selectedTaskId: null });
+        set({ selectedTaskId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -624,7 +646,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     loadDemo: async () => {
       try {
         const state = await api.loadDemo();
-        set({ selectedTaskId: null });
+        set({ selectedTaskId: null, pinnedTaskId: null, pinnedTrackId: null });
         applyStateWithLayout(state);
         set({ isDirty: false, layoutDirty: false, past: [], future: [] });
       } catch (e) {
@@ -750,16 +772,20 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
           id: generateId(),
           depends_on: undefined,
         }));
+        const myEpoch = ++fireEpoch;
         const preSnapshot = takeSnapshot();
         set({ isDirty: true });
         api.addTrack(newTrackId, newName, clip.track.color)
           .then(async (state) => {
+            if (myEpoch !== fireEpoch) return;
             applyState(state);
             for (const task of tasksToClone) {
               try {
                 const next = await api.addTask(newTrackId, task);
+                if (myEpoch !== fireEpoch) return;
                 applyState(next);
               } catch (e) {
+                if (myEpoch !== fireEpoch) return;
                 set({ errorMessage: 'Failed to paste task in cloned track: ' + errorToMessage(e) });
                 return;
               }
@@ -767,6 +793,13 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
             pushHistory(snapshotToHistory(preSnapshot));
           })
           .catch((e) => {
+            if (myEpoch !== fireEpoch) return;
+            if (e instanceof RevisionConflictError) {
+              applyState(e.currentState);
+              set({ isDirty: false, layoutDirty: false, past: [], future: [], errorMessage: REVISION_CONFLICT_MESSAGE });
+              return;
+            }
+            restoreSnapshot(preSnapshot);
             set({ errorMessage: 'Failed to paste track: ' + errorToMessage(e) });
           });
         return true;

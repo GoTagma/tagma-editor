@@ -134,8 +134,9 @@ export function useLocalField(
     debounceTimer.current = setTimeout(() => {
       debounceTimer.current = null;
       if (localRef.current !== committedRef.current) {
-        committedRef.current = localRef.current;
-        commitRef.current(localRef.current);
+        const val = localRef.current;
+        committedRef.current = val;
+        try { commitRef.current(val); } catch { /* commit errors surfaced by API layer */ }
       }
     }, COMMIT_DEBOUNCE_MS);
   }, [clearDebounce]);

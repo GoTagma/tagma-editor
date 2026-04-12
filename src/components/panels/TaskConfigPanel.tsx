@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert, FolderOpen } from 'lucide-react';
+import { X, Trash2, Terminal, MessageSquare, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert, FolderOpen, Pin } from 'lucide-react';
 import type { RawTaskConfig, RawPipelineConfig, RawTrackConfig, TriggerConfig, CompletionConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
@@ -32,6 +32,8 @@ interface TaskConfigPanelProps {
   onUpdateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
   onRemoveDependency: (trackId: string, taskId: string, depRef: string) => void;
+  isPinned: boolean;
+  onTogglePin: () => void;
 }
 
 /** Find the enclosing track for a task panel. */
@@ -41,7 +43,7 @@ function findTrack(trackId: string, config: RawPipelineConfig): RawTrackConfig |
 
 export function TaskConfigPanel({
   task, trackId, qualifiedId, pipelineConfig, dependencies, drivers, errors,
-  onUpdateTask, onDeleteTask, onRemoveDependency,
+  onUpdateTask, onDeleteTask, onRemoveDependency, isPinned, onTogglePin,
 }: TaskConfigPanelProps) {
   const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -199,8 +201,18 @@ export function TaskConfigPanel({
   }, [pipelineConfig.tracks, trackId, task.id]);
 
   return (
-    <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
+    <div className={`w-80 h-full bg-tagma-surface border-l flex flex-col animate-slide-in-right ${isPinned ? 'border-tagma-accent/50' : 'border-tagma-border'}`}
       onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between px-3 h-7 border-b border-tagma-border shrink-0">
+        <span className="text-[10px] font-medium text-tagma-muted uppercase tracking-wider">Task Inspector</span>
+        <button
+          onClick={onTogglePin}
+          className={`p-1 rounded transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
+          title={isPinned ? 'Unpin panel (allow switching)' : 'Pin panel (lock to this task)'}
+        >
+          <Pin size={12} />
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {errors.length > 0 && (
           <div className="bg-tagma-error/8 border border-tagma-error/30 px-2.5 py-1.5 space-y-1">

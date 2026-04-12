@@ -467,13 +467,13 @@ function broadcastStateEvent(payload: Record<string, unknown>): void {
   stateEventSeq++;
   const data = JSON.stringify({ ...payload, seq: stateEventSeq });
   for (const client of stateEventClients) {
-    try { client.res.write(`id: ${stateEventSeq}\nevent: state_event\ndata: ${data}\n\n`); } catch { /* best-effort */ }
+    try { client.res.write(`id: ${stateEventSeq}\nevent: state_event\ndata: ${data}\n\n`); } catch { stateEventClients.delete(client); }
   }
 }
 
 app.get('/api/state/events', (req, res) => {
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
+    'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
@@ -899,7 +899,7 @@ async function autoLoadInstalledPlugins(): Promise<string[]> {
       await loadPluginFromWorkDir(name);
       loadedPlugins.add(name);
       loaded.push(name);
-    } catch { /* skip — don't block other plugins */ }
+    } catch (e) { console.warn(`Failed to load plugin "${name}":`, e); }
   }
   return loaded;
 }
@@ -1118,7 +1118,8 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   // jsonBody converts undefined → null, so check for truthy or explicit empty string
   if ('command' in patch && patch.command != null) {
     delete updated.prompt;
-  } else if ('prompt' in patch && patch.prompt != null) {
+  }
+  if ('prompt' in patch && patch.prompt != null) {
     delete updated.command;
   }
   // Strip empty optional fields so they don't appear as '' in YAML
@@ -1452,6 +1453,10 @@ app.post('/api/import-file', async (req, res) => {
   if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
   const absSource = resolve(sourcePath);
   if (!existsSync(absSource)) return res.status(404).json({ error: `File not found: ${absSource}` });
+  // Security: prevent importing arbitrary files from outside the workspace
+  if (!isPathWithin(absSource, workDir) && !isPathWithin(absSource, join(workDir, '.tagma'))) {
+    return res.status(403).json({ error: 'Source path is outside the workspace directory' });
+  }
   const tagmaDir = join(workDir, '.tagma');
   mkdirSync(tagmaDir, { recursive: true });
   const destPath = join(tagmaDir, basename(absSource));
@@ -1683,7 +1688,7 @@ function resetRunEventBuffer() {
 
 app.get('/api/run/events', (req, res) => {
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
+    'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
@@ -1806,24 +1811,28 @@ app.post('/api/run/start', async (_req, res) => {
   // clients. This replaces the old WebSocket-bridge-to-CLI path — the
   // gateway lives in-process now so there's no IPC hop.
   const unsubscribeApprovals = gateway.subscribe((event: ApprovalEvent) => {
-    if (event.type === 'requested') {
-      broadcast({
-        type: 'approval_request',
-        runId,
-        request: approvalRequestToWire(event.request),
-      });
-      return;
-    }
-    if (event.type === 'resolved' || event.type === 'expired' || event.type === 'aborted') {
-      const outcome = event.type === 'resolved'
-        ? event.decision.outcome
-        : event.type === 'expired' ? 'timeout' : 'aborted';
-      broadcast({
-        type: 'approval_resolved',
-        runId,
-        requestId: event.request.id,
-        outcome: outcome as 'approved' | 'rejected' | 'timeout' | 'aborted',
-      });
+    try {
+      if (event.type === 'requested') {
+        broadcast({
+          type: 'approval_request',
+          runId,
+          request: approvalRequestToWire(event.request),
+        });
+        return;
+      }
+      if (event.type === 'resolved' || event.type === 'expired' || event.type === 'aborted') {
+        const outcome = event.type === 'resolved'
+          ? event.decision.outcome
+          : event.type === 'expired' ? 'timeout' : 'aborted';
+        broadcast({
+          type: 'approval_resolved',
+          runId,
+          requestId: event.request.id,
+          outcome: outcome as 'approved' | 'rejected' | 'timeout' | 'aborted',
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to broadcast approval event:', e);
     }
   });
 

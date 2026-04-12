@@ -125,7 +125,8 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
         // Task not in the initial run_start snapshot (e.g. template expansion
         // added tasks, or a task_update arrived before run_start on reconnect).
         // Create an entry with sensible defaults so the update isn't lost.
-        const [trackId] = event.taskId.includes('.') ? event.taskId.split('.') : ['', event.taskId];
+        const dotIdx = event.taskId.indexOf('.');
+        const trackId = dotIdx >= 0 ? event.taskId.slice(0, dotIdx) : '';
         tasks.set(event.taskId, {
           taskId: event.taskId,
           trackId,

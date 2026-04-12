@@ -59,7 +59,7 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
   useEffect(() => {
     loadDir(initialPath);
     api.listRoots().then((r) => setRoots(r.roots)).catch(() => {});
-  }, []);
+  }, [loadDir]);
 
   const handleEntryClick = useCallback((entry: FsEntry) => {
     if (entry.type === 'directory') {

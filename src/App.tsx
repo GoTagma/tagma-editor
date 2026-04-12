@@ -32,12 +32,12 @@ type ConfirmInfo = {
 
 export function App() {
   const {
-    config, positions, selectedTaskId, selectedTrackId, validationErrors, dagEdges,
+    config, positions, selectedTaskId, selectedTrackId, pinnedTaskId, pinnedTrackId, validationErrors, dagEdges,
     yamlPath, workDir, isDirty, layoutDirty, loading, registry,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
-    selectTask, selectTrack, setTaskPosition, setRegistry,
+    selectTask, selectTrack, pinTask, unpinTask, pinTrack, unpinTrack, setTaskPosition, setRegistry,
     setWorkDir, saveFile, saveFileAs, newPipeline, importFile, exportFile, openFile,
     exportYaml, importYaml, init,
   } = usePipelineStore();
@@ -256,19 +256,23 @@ export function App() {
     [errorsByTask],
   );
 
+  const sidebarTaskId = pinnedTaskId ?? selectedTaskId;
+
   const selectedInfo = useMemo(() => {
-    if (!selectedTaskId) return null;
-    const [trackId, taskId] = selectedTaskId.split('.');
+    if (!sidebarTaskId) return null;
+    const [trackId, taskId] = sidebarTaskId.split('.');
     const track = config.tracks.find((t) => t.id === trackId);
     const task = track?.tasks.find((t) => t.id === taskId);
     if (!track || !task) return null;
     return { track, task, trackId, taskId };
-  }, [selectedTaskId, config]);
+  }, [sidebarTaskId, config]);
+
+  const sidebarTrackId = pinnedTrackId ?? selectedTrackId;
 
   const selectedTrack = useMemo(() => {
-    if (!selectedTrackId) return null;
-    return config.tracks.find((t) => t.id === selectedTrackId) ?? null;
-  }, [selectedTrackId, config]);
+    if (!sidebarTrackId) return null;
+    return config.tracks.find((t) => t.id === sidebarTrackId) ?? null;
+  }, [sidebarTrackId, config]);
 
   const [pendingRun, setPendingRun] = useState(false);
 
@@ -457,13 +461,13 @@ export function App() {
   useAutosave();
 
   // Global undo/redo/copy/paste/duplicate/search/escape shortcuts (U1).
-  useShortcuts({
+  const shortcutHandlers = useMemo(() => ({
     onFocusSearch: () => {
       setSearchVisible(true);
-      // Defer focus until after the input is in the DOM.
       requestAnimationFrame(() => searchInputRef.current?.focus());
     },
-  });
+  }), []);
+  useShortcuts(shortcutHandlers);
 
   // U3: beforeunload warning when the document has unsaved changes.
   useEffect(() => {
@@ -658,7 +662,7 @@ export function App() {
 
   return (
     <div className="h-full flex flex-col bg-tagma-bg">
-      <div onClick={() => { selectTask(null); selectTrack(null); }}>
+      <div onClick={() => { if (!pinnedTaskId && !pinnedTrackId) { selectTask(null); selectTrack(null); } }}>
         <Toolbar
           pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
           menus={menus} workspaceItems={workspaceItems}
@@ -692,27 +696,31 @@ export function App() {
           )}
         </div>
 
-        {selectedInfo && (
+        {!pinnedTrackId && selectedInfo && (
           <TaskConfigPanel
-            key={selectedTaskId}
-            task={selectedInfo.task} trackId={selectedInfo.trackId} qualifiedId={selectedTaskId!}
+            key={sidebarTaskId}
+            task={selectedInfo.task} trackId={selectedInfo.trackId} qualifiedId={sidebarTaskId!}
             pipelineConfig={config}
             dependencies={[...(selectedInfo.task.depends_on ?? [])]}
             drivers={registry.drivers}
-            errors={errorsByTask.get(selectedTaskId!) ?? []}
+            errors={errorsByTask.get(sidebarTaskId!) ?? []}
             onUpdateTask={updateTask} onDeleteTask={deleteTask}
             onRemoveDependency={removeDependency}
+            isPinned={!!pinnedTaskId}
+            onTogglePin={() => pinnedTaskId ? unpinTask() : pinTask(sidebarTaskId!)}
           />
         )}
 
-        {selectedTrack && (
+        {!pinnedTaskId && selectedTrack && (
           <TrackConfigPanel
-            key={selectedTrackId}
+            key={sidebarTrackId}
             track={selectedTrack}
             drivers={registry.drivers}
-            errors={errorsByTrack.get(selectedTrackId!) ?? []}
+            errors={errorsByTrack.get(sidebarTrackId!) ?? []}
             onUpdateTrack={updateTrackFields}
             onDeleteTrack={deleteTrack}
+            isPinned={!!pinnedTrackId}
+            onTogglePin={() => pinnedTrackId ? unpinTrack() : pinTrack(sidebarTrackId!)}
           />
         )}
       </div>

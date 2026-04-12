@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Trash2, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { Trash2, AlertTriangle, ShieldAlert, Pin } from 'lucide-react';
 import type { RawTrackConfig } from '../../api/client';
 import { useLocalField } from '../../hooks/use-local-field';
 import { usePipelineStore } from '../../store/pipeline-store';
@@ -13,6 +13,8 @@ interface TrackConfigPanelProps {
   errors: string[];
   onUpdateTrack: (trackId: string, fields: Record<string, unknown>) => void;
   onDeleteTrack: (trackId: string) => void;
+  isPinned: boolean;
+  onTogglePin: () => void;
 }
 
 const ON_FAILURE_DESCRIPTIONS: Record<string, string> = {
@@ -22,7 +24,7 @@ const ON_FAILURE_DESCRIPTIONS: Record<string, string> = {
   stop_all: '\u26a0 Skip ALL remaining tasks in the entire pipeline.',
 };
 
-export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDeleteTrack }: TrackConfigPanelProps) {
+export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDeleteTrack, isPinned, onTogglePin }: TrackConfigPanelProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Read pipeline-level config from the store so we can resolve the inheritance
   // chain (track → pipeline). App.tsx doesn't need to thread anything new.
@@ -76,8 +78,18 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
   }, [track.permissions, commit]);
 
   return (
-    <div className="w-80 h-full bg-tagma-surface border-l border-tagma-border flex flex-col animate-slide-in-right"
+    <div className={`w-80 h-full bg-tagma-surface border-l flex flex-col animate-slide-in-right ${isPinned ? 'border-tagma-accent/50' : 'border-tagma-border'}`}
       onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between px-3 h-7 border-b border-tagma-border shrink-0">
+        <span className="text-[10px] font-medium text-tagma-muted uppercase tracking-wider">Track Inspector</span>
+        <button
+          onClick={onTogglePin}
+          className={`p-1 rounded transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
+          title={isPinned ? 'Unpin panel (allow switching)' : 'Pin panel (lock to this track)'}
+        >
+          <Pin size={12} />
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {errors.length > 0 && (
           <div className="bg-tagma-error/8 border border-tagma-error/30 px-2.5 py-1.5 space-y-1">
