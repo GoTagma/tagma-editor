@@ -5,6 +5,7 @@ import {
   CheckCircle2, Layers, Terminal, MessageSquare, Package, Activity,
 } from 'lucide-react';
 import type { RunTaskState, TaskStatus, RawPipelineConfig, RawTaskConfig, RawTrackConfig, Permissions, TaskLogLevel } from '../../api/client';
+import { TASK_LOG_CAP } from '../../store/run-event-reducer';
 
 interface RunTaskPanelProps {
   task: RunTaskState;
@@ -297,7 +298,14 @@ export function RunTaskPanel({ task, config, onClose }: RunTaskPanelProps) {
             <div className="text-[9px] font-mono uppercase tracking-wider text-tagma-muted/60 pb-1.5 border-b border-tagma-border/40 flex items-center gap-1.5">
               <Activity size={9} />
               <span>Process</span>
-              <span className="text-tagma-muted/40 font-normal normal-case tracking-normal">({task.logs.length} lines)</span>
+              <span className="text-tagma-muted/40 font-normal normal-case tracking-normal">
+                ({task.totalLogCount > task.logs.length
+                  ? `${task.logs.length} of ${task.totalLogCount} lines — oldest truncated`
+                  : `${task.logs.length} lines`})
+              </span>
+              {task.totalLogCount > TASK_LOG_CAP && (
+                <span className="text-amber-400/70 font-normal normal-case tracking-normal ml-1">(capped at {TASK_LOG_CAP})</span>
+              )}
             </div>
             <div
               ref={logRef}

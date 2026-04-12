@@ -406,6 +406,9 @@ export interface RunTaskState {
   // pipeline.log). Capped by the reducer so an excessively chatty task does
   // not grow the store without bound.
   logs: TaskLogLine[];
+  // C6: Total number of log lines received (including those truncated from
+  // the buffer). Used to show "showing N of M lines" when truncated.
+  totalLogCount: number;
 }
 
 export interface RunState {
@@ -618,7 +621,13 @@ export const api = {
   abortRun: () =>
     request<{ ok: boolean }>('/run/abort', { method: 'POST' }),
 
-  subscribeRunEvents: (onEvent: (event: RunEvent) => void): (() => void) => {
+  subscribeRunEvents: (
+    onEvent: (event: RunEvent) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ): (() => void) => {
+    // C8: EventSource natively sends Last-Event-ID on reconnect when the
+    // server stamps events with `id:` fields (which our server does).
+    // We just need to track connection state for UI feedback.
     const es = new EventSource(`${BASE}/run/events`);
     es.addEventListener('run_event', (e) => {
       try {
@@ -626,8 +635,12 @@ export const api = {
         onEvent(event);
       } catch {}
     });
+    es.onopen = () => {
+      onConnectionChange?.(true);
+    };
     es.onerror = () => {
-      // EventSource auto-reconnects
+      // EventSource auto-reconnects; notify UI of disconnect.
+      onConnectionChange?.(false);
     };
     return () => es.close();
   },
@@ -675,7 +688,10 @@ export const api = {
 
   // SSE subscription: returns an unsubscribe function. Fires for every
   // external-change / external-conflict event emitted server-side.
-  subscribeStateEvents: (onEvent: (event: ServerStateEvent) => void): (() => void) => {
+  subscribeStateEvents: (
+    onEvent: (event: ServerStateEvent) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ): (() => void) => {
     const es = new EventSource(`${BASE}/state/events`);
     es.addEventListener('state_event', (e) => {
       try {
@@ -688,8 +704,12 @@ export const api = {
         // malformed payload — ignore
       }
     });
+    es.onopen = () => {
+      onConnectionChange?.(true);
+    };
     es.onerror = () => {
-      // EventSource auto-reconnects
+      // EventSource auto-reconnects; notify UI of disconnect.
+      onConnectionChange?.(false);
     };
     return () => es.close();
   },

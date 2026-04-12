@@ -14,7 +14,7 @@ import type {
 // Upper bound on per-task log buffer. A single AI task typically emits
 // 15-25 debug lines; shell tasks emit ~5. 500 gives plenty of headroom for
 // very chatty drivers while keeping memory bounded on long runs.
-const TASK_LOG_CAP = 500;
+export const TASK_LOG_CAP = 500;
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'done' | 'failed' | 'aborted' | 'error';
 
@@ -63,7 +63,8 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
     for (const t of event.tasks) {
       // Normalize: older server versions may omit `logs`. Guarantee an
       // empty array so the reducer never has to null-check on append.
-      tasks.set(t.taskId, { ...t, logs: Array.isArray(t.logs) ? t.logs : [] });
+      const logs = Array.isArray(t.logs) ? t.logs : [];
+      tasks.set(t.taskId, { ...t, logs, totalLogCount: logs.length });
     }
     return {
       ...state,
@@ -144,6 +145,7 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
           resolvedModelTier: event.resolvedModelTier ?? null,
           resolvedPermissions: event.resolvedPermissions ?? null,
           logs: [],
+          totalLogCount: 0,
         });
       }
       next = { ...state, tasks };
@@ -174,12 +176,13 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
         text: event.text,
       };
       const baseLogs = existing.logs ?? [];
+      const newTotal = (existing.totalLogCount ?? baseLogs.length) + 1;
       // Append then trim to cap: keep the most recent TASK_LOG_CAP lines.
       const appended = baseLogs.length >= TASK_LOG_CAP
         ? [...baseLogs.slice(baseLogs.length - TASK_LOG_CAP + 1), line]
         : [...baseLogs, line];
       const tasks = new Map(state.tasks);
-      tasks.set(event.taskId, { ...existing, logs: appended });
+      tasks.set(event.taskId, { ...existing, logs: appended, totalLogCount: newTotal });
       next = { ...state, tasks };
       break;
     }

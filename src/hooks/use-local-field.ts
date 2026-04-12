@@ -38,6 +38,21 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 const COMMIT_DEBOUNCE_MS = 250;
 
+// C3: Global registry of active local-field flush functions. When saveFile()
+// is triggered (Ctrl+S), it calls flushAllLocalFields() to ensure every
+// pending debounced commit is applied before the YAML is written to disk.
+const activeFlushFns = new Set<() => void>();
+
+/**
+ * Synchronously flush all pending debounced local-field commits so the
+ * server state includes the user's latest keystrokes before a save.
+ */
+export function flushAllLocalFields(): void {
+  for (const flush of activeFlushFns) {
+    flush();
+  }
+}
+
 export interface LocalFieldExtras {
   /** True when serverValue changed while the user had uncommitted edits. */
   serverChanged: boolean;
@@ -147,9 +162,13 @@ export function useLocalField(
     setServerChanged(false);
   }, [flushCommit]);
 
-  // Flush on unmount so we don't lose a pending debounced edit.
+  // C3: Register this field's flush function globally so flushAllLocalFields()
+  // can drain all pending debounced edits before a save.
   useEffect(() => {
+    activeFlushFns.add(flushCommit);
     return () => {
+      activeFlushFns.delete(flushCommit);
+      // Flush on unmount so we don't lose a pending debounced edit.
       if (debounceTimer.current !== null) {
         clearTimeout(debounceTimer.current);
         debounceTimer.current = null;
@@ -158,7 +177,7 @@ export function useLocalField(
         commitRef.current(localRef.current);
       }
     };
-  }, []);
+  }, [flushCommit]);
 
   // Build a tuple that *also* carries the extras as named properties. Existing
   // callers `const [v, set, blur] = useLocalField(...)` keep working; new

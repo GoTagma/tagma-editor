@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, RevisionConflictError } from '../api/client';
 import type { ServerState, RawPipelineConfig, RawTrackConfig, RawTaskConfig, ValidationError, DagEdge, PluginRegistry } from '../api/client';
+import { flushAllLocalFields } from '../hooks/use-local-field';
 
 /**
  * User-facing toast shown when a mutation is rejected with HTTP 409 because
@@ -551,6 +552,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
 
     saveFile: async () => {
       try {
+        // C3: Flush all pending debounced field commits so the server's
+        // in-memory config includes the user's latest keystrokes.
+        flushAllLocalFields();
         // Flush layout first so the layout file lands on disk alongside the
         // YAML. Awaiting surfaces any layout error before we commit the save.
         await flushLayout();

@@ -7,7 +7,7 @@ import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
-import { api } from './api/client';
+import { api, type ServerStateEvent } from './api/client';
 import {
   Loader2, AlertCircle, CheckCircle2, X as XIcon,
   Check, Square, ShieldCheck,
@@ -70,6 +70,42 @@ export function App() {
   // to `errorMessage` and handles auto-dismiss. No effect needed here.
 
   useEffect(() => { init(); }, []);
+
+  // C1: Subscribe to external file change events and show a dialog.
+  useEffect(() => {
+    const unsubscribe = api.subscribeStateEvents((event: ServerStateEvent) => {
+      if (event.type === 'external-change') {
+        // Server already reloaded — re-fetch state so the UI picks up changes.
+        init();
+        setDialog({
+          type: 'success',
+          title: 'File reloaded',
+          details: ['The pipeline file was changed externally and has been reloaded.'],
+        });
+      } else if (event.type === 'external-conflict') {
+        setDialog({
+          type: 'error',
+          title: 'External conflict',
+          details: [
+            `The file "${event.path}" was changed outside the editor.`,
+            'Your in-memory edits may conflict. Please save or reload manually.',
+          ],
+        });
+      }
+    });
+    return unsubscribe;
+  }, [init]);
+
+  // C2: Warn on browser close when there are unsaved changes.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
 
   const refreshWorkspaceYamls = useCallback(async (): Promise<{ name: string; path: string; pipelineName: string | null }[]> => {
     if (!workDir) {

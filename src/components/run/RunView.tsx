@@ -80,6 +80,15 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   const config = snapshot ?? liveConfig;
 
   const isTerminal = status === 'done' || status === 'failed' || status === 'aborted' || status === 'error';
+
+  // C7: Abort confirmation state
+  const [showAbortConfirm, setShowAbortConfirm] = useState(false);
+  const handleAbortClick = useCallback(() => setShowAbortConfirm(true), []);
+  const handleAbortConfirm = useCallback(() => {
+    setShowAbortConfirm(false);
+    abortRun();
+  }, [abortRun]);
+  const handleAbortCancel = useCallback(() => setShowAbortConfirm(false), []);
   const isActive = status !== 'idle';
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
@@ -218,6 +227,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
       resolvedModelTier: null,
       resolvedPermissions: null,
       logs: [],
+      totalLogCount: 0,
     };
   }, [selectedTaskId, tasks, config]);
 
@@ -347,12 +357,23 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           <Search size={12} />
         </button>
 
-        {/* Abort */}
-        {!isTerminal && status !== 'idle' && (
-          <button onClick={abortRun} className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-tagma-error border border-tagma-error/20 hover:bg-tagma-error/10 transition-colors mr-1">
+        {/* Abort with confirmation (C7) */}
+        {!isTerminal && status !== 'idle' && !showAbortConfirm && (
+          <button onClick={handleAbortClick} className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-tagma-error border border-tagma-error/20 hover:bg-tagma-error/10 transition-colors mr-1">
             <Square size={10} />
             <span>Abort</span>
           </button>
+        )}
+        {showAbortConfirm && (
+          <div className="flex items-center gap-1.5 mr-1">
+            <span className="text-xs text-tagma-error">Stop all tasks?</span>
+            <button onClick={handleAbortConfirm} className="px-2 py-1 text-[10px] bg-tagma-error/20 text-tagma-error border border-tagma-error/30 hover:bg-tagma-error/30 transition-colors">
+              Confirm
+            </button>
+            <button onClick={handleAbortCancel} className="px-2 py-1 text-[10px] text-tagma-muted border border-tagma-border hover:bg-tagma-surface transition-colors">
+              Cancel
+            </button>
+          </div>
         )}
       </header>
 

@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
-import { resolve, dirname, basename, sep, join } from 'node:path';
+import { resolve, relative, dirname, basename, sep, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as tar from 'tar';
 import yaml from 'js-yaml';
@@ -74,6 +74,16 @@ app.use(express.json({ limit: '5mb' }));
 let config: RawPipelineConfig = createEmptyPipeline('Untitled Pipeline');
 let yamlPath: string | null = null;
 let workDir: string = '';
+
+/**
+ * B1: Validate that a resolved path is within a given root directory.
+ * Prevents path traversal attacks (e.g. /api/fs/list?path=/etc).
+ * Returns the resolved absolute path if safe, or null if it escapes.
+ */
+function isPathWithin(child: string, root: string): boolean {
+  const rel = relative(root, child);
+  return !rel.startsWith('..') && !resolve(root, rel).includes('..' + sep);
+}
 
 /** Max number of run log directories to keep. Shared with the SDK's engine
  *  (maxLogRuns) and the history listing endpoint so both agree on the cap. */
@@ -325,7 +335,13 @@ app.use((req, res, next) => {
       ? Number(headerMatch)
       : bodyExpected;
 
-  if (expected !== undefined && Number.isFinite(expected) && expected !== stateRevision) {
+  // B3: Reject non-numeric If-Match values with 400 instead of silently
+  // bypassing the revision check (NaN is not finite → check was skipped).
+  if (expected !== undefined && !Number.isFinite(expected)) {
+    return res.status(400).json({ error: 'If-Match header must be a numeric revision' });
+  }
+
+  if (expected !== undefined && expected !== stateRevision) {
     return res.status(409).json({
       error: 'revision mismatch',
       expected,
@@ -746,6 +762,14 @@ async function loadPluginFromWorkDir(name: string): Promise<void> {
   const pluginDir = resolve(workDir, 'node_modules', ...name.split('/'));
   const modulePath = resolve(pluginDir, entryPoint);
 
+  // B2: Validate the resolved entry point is within the plugin directory to
+  // prevent a malicious plugin's "main" field from escaping (e.g. "../../../evil.js").
+  if (!isPathWithin(modulePath, pluginDir)) {
+    throw new Error(
+      `Plugin "${name}" entry point "${entryPoint}" resolves outside its package directory. Refusing to load.`
+    );
+  }
+
   // Use file:// URL for Windows compatibility with dynamic import
   const fileUrl = `file:///${modulePath.replace(/\\/g, '/')}`;
   const mod = await import(fileUrl);
@@ -818,11 +842,18 @@ app.get('/api/plugins/info', async (req, res) => {
   }
 });
 
+// B9: Validate plugin name format — must be a scoped npm package or tagma-plugin-*.
+// Reuse the SDK's regex to stay in sync.
+const EDITOR_PLUGIN_NAME_RE = /^@[a-z0-9-]+\/[a-z0-9._-]+$|^tagma-plugin-[a-z0-9._-]+$/;
+
 /** Install a plugin into workDir and load it into the registry */
 app.post('/api/plugins/install', async (req, res) => {
   const { name } = req.body;
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'name is required' });
+  }
+  if (!EDITOR_PLUGIN_NAME_RE.test(name)) {
+    return res.status(400).json({ error: `Invalid plugin name "${name}". Must be a scoped npm package (e.g. @tagma/trigger-xyz) or tagma-plugin-*.` });
   }
   if (!workDir) {
     return res.status(400).json({ error: 'Set a working directory first' });
@@ -1101,16 +1132,17 @@ app.patch('/api/workspace', (req, res) => {
 // ── Filesystem browsing ──
 app.get('/api/fs/list', (req, res) => {
   let dirPath = resolve((req.query.path as string) || workDir);
+  // B1: Allow browsing outside workDir (for file picker / drive roots) but
+  // still resolve the path to prevent relative traversal tricks.
+  dirPath = resolve(dirPath);
   try {
     if (!existsSync(dirPath)) {
-      // If path doesn't exist, try its parent (e.g. when path is a new file)
       dirPath = dirname(dirPath);
       if (!existsSync(dirPath)) {
         return res.status(404).json({ error: `Directory not found: ${dirPath}` });
       }
     }
     if (!statSync(dirPath).isDirectory()) {
-      // If path is a file, list its parent directory
       dirPath = dirname(dirPath);
     }
     const entries = readdirSync(dirPath, { withFileTypes: true })
@@ -1176,6 +1208,10 @@ app.post('/api/fs/mkdir', (req, res) => {
   const { path: dirPath } = req.body;
   if (!dirPath) return res.status(400).json({ error: 'path is required' });
   const absPath = resolve(dirPath);
+  // B1: mkdir must stay within workDir to prevent creating directories anywhere on the filesystem.
+  if (workDir && !isPathWithin(absPath, workDir)) {
+    return res.status(403).json({ error: 'Path is outside the workspace directory' });
+  }
   try {
     mkdirSync(absPath, { recursive: true });
     res.json({ path: absPath });
@@ -1188,6 +1224,10 @@ app.post('/api/fs/reveal', (req, res) => {
   const { path: filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
   const absPath = resolve(filePath);
+  // B1: reveal must stay within workDir to prevent revealing arbitrary filesystem paths.
+  if (workDir && !isPathWithin(absPath, workDir)) {
+    return res.status(403).json({ error: 'Path is outside the workspace directory' });
+  }
   if (!existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
   try {
     const dir = statSync(absPath).isDirectory() ? absPath : dirname(absPath);
@@ -1359,6 +1399,10 @@ app.post('/api/export-file', (req, res) => {
   if (!yamlPath) return res.status(400).json({ error: 'No pipeline file to export' });
   const absDestDir = resolve(destDir);
   if (!existsSync(absDestDir)) return res.status(404).json({ error: `Directory not found: ${absDestDir}` });
+  // B1: Ensure export destination is within workDir.
+  if (workDir && !isPathWithin(absDestDir, workDir)) {
+    return res.status(403).json({ error: 'Export destination is outside the workspace directory' });
+  }
   try {
     const content = serializePipeline(config);
     writeFileSync(yamlPath, content, 'utf-8');
@@ -1508,6 +1552,9 @@ type RunEvent =
 let activeRunAbort: AbortController | null = null;
 let activeRunGateway: InMemoryApprovalGateway | null = null;
 let activeRunId: string | null = null;
+// B4: Synchronous lock to prevent TOCTOU race between checking activeRunAbort
+// and setting it (loadPipeline + validateConfig are async).
+let runStarting = false;
 const sseClients = new Set<import('express').Response>();
 
 // ── Event seq + replay buffer (§1.3 / §4.5) ──
@@ -1567,9 +1614,12 @@ app.get('/api/run/events', (req, res) => {
 });
 
 app.post('/api/run/start', async (_req, res) => {
-  if (activeRunAbort) {
+  // B4: Check both the active controller AND the synchronous lock so two
+  // concurrent POST requests can't both pass the check before either sets it.
+  if (activeRunAbort || runStarting) {
     return res.status(409).json({ error: 'A run is already in progress' });
   }
+  runStarting = true;
 
   // Serialize the in-memory editor config to YAML and hand it to the SDK.
   // The round-trip is intentional: it exercises the same load path the CLI
@@ -1582,6 +1632,7 @@ app.post('/api/run/start', async (_req, res) => {
   try {
     pipelineConfig = await loadPipeline(content, cwd);
   } catch (err: unknown) {
+    runStarting = false; // B4: release lock on error
     const message = err instanceof Error ? err.message : String(err);
     return res.status(400).json({ error: `Configuration error: ${message}` });
   }
@@ -1590,6 +1641,7 @@ app.post('/api/run/start', async (_req, res) => {
   // expansion, e.g. duplicate qualified IDs, broken cross-template references).
   const configErrors = validateConfig(pipelineConfig);
   if (configErrors.length > 0) {
+    runStarting = false; // B4: release lock on error
     return res.status(400).json({ error: configErrors.join('; ') });
   }
 
@@ -1765,6 +1817,7 @@ app.post('/api/run/start', async (_req, res) => {
       activeRunGateway = null;
       activeRunId = null;
     }
+    runStarting = false; // B4: release lock when run completes
   });
 
   res.json({ ok: true, runId });
@@ -2009,7 +2062,52 @@ app.get('/api/run/history/:runId/summary', (req, res) => {
   res.json(summary);
 });
 
+// ── B5: Global error handler ──
+// Catches unhandled errors in route handlers so the process doesn't crash.
+// Must be registered after all routes (Express identifies error handlers by
+// their 4-parameter signature).
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[server] unhandled error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 const PORT = parseInt(process.env.PORT ?? '3001');
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Tagma Editor server running on http://localhost:${PORT}`);
 });
+
+// ── B6: Graceful shutdown ──
+function gracefulShutdown() {
+  console.log('[server] shutting down...');
+  // Abort any active pipeline run
+  if (activeRunAbort) {
+    activeRunAbort.abort();
+    activeRunAbort = null;
+    activeRunGateway = null;
+    activeRunId = null;
+    runStarting = false;
+  }
+  // Close file watcher
+  stopFileWatching();
+  // Close all SSE connections
+  for (const client of sseClients) {
+    try { client.end(); } catch { /* best-effort */ }
+  }
+  sseClients.clear();
+  for (const client of stateEventClients) {
+    try { client.res.end(); } catch { /* best-effort */ }
+  }
+  stateEventClients.clear();
+  // Close HTTP server
+  server.close(() => {
+    console.log('[server] shutdown complete');
+    process.exit(0);
+  });
+  // Force exit after 5s if connections don't close
+  setTimeout(() => process.exit(1), 5000);
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
