@@ -212,6 +212,39 @@ function stripEmptyFields(obj: Record<string, unknown>, required: Set<string>): 
   return result;
 }
 
+const BUILTIN_DRIVERS = new Set(['claude-code']);
+
+/**
+ * Sync `config.plugins` with actually-referenced non-built-in drivers.
+ * Adds `@tagma/driver-{name}` when a driver is used, removes it when
+ * no track/task references that driver any more. Non-driver plugins
+ * (triggers, middlewares, etc.) are left untouched.
+ */
+function ensureDriverPlugins(cfg: RawPipelineConfig): RawPipelineConfig {
+  // Collect non-built-in drivers actually referenced
+  const usedDrivers = new Set<string>();
+  if (cfg.driver && !BUILTIN_DRIVERS.has(cfg.driver)) usedDrivers.add(cfg.driver);
+  for (const track of cfg.tracks) {
+    if (track.driver && !BUILTIN_DRIVERS.has(track.driver)) usedDrivers.add(track.driver);
+    for (const task of track.tasks) {
+      if (task.driver && !BUILTIN_DRIVERS.has(task.driver)) usedDrivers.add(task.driver);
+    }
+  }
+
+  const requiredDriverPlugins = new Set([...usedDrivers].map((d) => `@tagma/driver-${d}`));
+  const existing = cfg.plugins ?? [];
+
+  // Keep non-driver plugins as-is, replace driver plugins with only the required set
+  const kept = existing.filter((p) => !/^@tagma\/driver-/.test(p));
+  const added = [...requiredDriverPlugins].filter((p) => !existing.includes(p));
+  const newPlugins = [...kept, ...existing.filter((p) => requiredDriverPlugins.has(p)), ...added];
+
+  // No change needed?
+  if (newPlugins.length === existing.length && existing.every((p, i) => p === newPlugins[i])) return cfg;
+
+  return { ...cfg, plugins: newPlugins.length > 0 ? newPlugins : undefined };
+}
+
 function getState() {
   let validationErrors: ValidationError[] = [];
   let dag: RawDag = { nodes: new Map(), edges: [] };
@@ -814,6 +847,63 @@ function removeFromPluginManifest(name: string): void {
   }
 }
 
+/**
+ * Discover installed tagma plugin packages under workDir/node_modules.
+ * Scans workspace package.json dependencies, then checks each installed
+ * package for `@tagma/types` in peerDependencies or dependencies —
+ * the reliable marker for any tagma plugin regardless of package scope.
+ */
+function discoverInstalledPlugins(): string[] {
+  if (!workDir) return [];
+  const pkgPath = resolve(workDir, 'package.json');
+  if (!existsSync(pkgPath)) return [];
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const plugins: string[] = [];
+    for (const name of Object.keys(allDeps)) {
+      try {
+        const depPkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
+        if (!existsSync(depPkgPath)) continue;
+        const depPkg = JSON.parse(readFileSync(depPkgPath, 'utf-8'));
+        const peer = depPkg.peerDependencies ?? {};
+        const deps = depPkg.dependencies ?? {};
+        if ('@tagma/types' in peer || '@tagma/types' in deps) {
+          plugins.push(name);
+        }
+      } catch { /* skip unreadable packages */ }
+    }
+    return plugins;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Auto-load all installed plugins into the registry.
+ * Sources: node_modules scan + manifest + config.plugins.
+ * Skips already-loaded plugins. Errors are silently skipped
+ * so one bad plugin doesn't block the rest.
+ */
+async function autoLoadInstalledPlugins(): Promise<string[]> {
+  const manifest = readPluginManifest();
+  const declared = config.plugins ?? [];
+  const discovered = discoverInstalledPlugins();
+  const candidates = [...new Set([...discovered, ...manifest, ...declared])];
+  const loaded: string[] = [];
+  for (const name of candidates) {
+    if (loadedPlugins.has(name)) continue;
+    const info = getPluginInfo(name);
+    if (!info.installed) continue;
+    try {
+      await loadPluginFromWorkDir(name);
+      loadedPlugins.add(name);
+      loaded.push(name);
+    } catch { /* skip — don't block other plugins */ }
+  }
+  return loaded;
+}
+
 /** List all managed plugins (from pipeline config + manifest + loaded this session) */
 app.get('/api/plugins', (_req, res) => {
   const declared = config.plugins ?? [];
@@ -976,6 +1066,7 @@ app.patch('/api/pipeline', (req, res) => {
   if (plugins !== undefined) patch.plugins = Array.isArray(plugins) && plugins.length > 0 ? plugins : undefined;
   if (hooks !== undefined) patch.hooks = hooks && Object.keys(hooks).length > 0 ? hooks : undefined;
   config = setPipelineField(config, patch);
+  config = ensureDriverPlugins(config);
   res.json(getState());
 });
 
@@ -991,6 +1082,7 @@ app.patch('/api/tracks/:trackId', (req, res) => {
   const { trackId } = req.params;
   const fields = stripEmptyFields({ ...req.body }, TRACK_REQUIRED_KEYS);
   config = updateTrack(config, trackId, fields);
+  config = ensureDriverPlugins(config);
   res.json(getState());
 });
 
@@ -1032,6 +1124,7 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   // Strip empty optional fields so they don't appear as '' in YAML
   updated = stripEmptyFields(updated, TASK_REQUIRED_KEYS) as RawTaskConfig;
   config = upsertTask(config, trackId, updated);
+  config = ensureDriverPlugins(config);
   res.json(getState());
 });
 
@@ -1115,11 +1208,12 @@ app.post('/api/import', (req, res) => {
 // ── Workspace ──
 // NOTE: GET /api/workspace removed — same data is included in GET /api/state.
 
-app.patch('/api/workspace', (req, res) => {
+app.patch('/api/workspace', async (req, res) => {
   const { workDir: wd } = req.body;
   if (wd !== undefined) {
     workDir = resolve(wd);
     mkdirSync(join(workDir, '.tagma'), { recursive: true });
+    await autoLoadInstalledPlugins();
   }
   res.json(getState());
 });
@@ -1241,7 +1335,7 @@ app.post('/api/fs/reveal', (req, res) => {
 });
 
 // ── File operations ──
-app.post('/api/open', (req, res) => {
+app.post('/api/open', async (req, res) => {
   const { path: filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
   const absPath = resolve(filePath);
@@ -1266,6 +1360,7 @@ app.post('/api/open', (req, res) => {
     yamlPath = absPath;
     loadLayout();
     beginWatching(absPath, content);
+    await autoLoadInstalledPlugins();
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to open file' });
@@ -1351,7 +1446,7 @@ function companionLayoutPath(yamlFilePath: string): string {
 
 // Import: copy external YAML (and its companion .layout.json, if present)
 // into .tagma/ and open the copy
-app.post('/api/import-file', (req, res) => {
+app.post('/api/import-file', async (req, res) => {
   const { sourcePath } = req.body;
   if (!sourcePath) return res.status(400).json({ error: 'sourcePath is required' });
   if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
@@ -1386,6 +1481,7 @@ app.post('/api/import-file', (req, res) => {
     yamlPath = destPath;
     loadLayout();
     beginWatching(destPath, content);
+    await autoLoadInstalledPlugins();
     res.json(getState());
   } catch (e: any) {
     res.status(400).json({ error: e.message ?? 'Failed to import file' });

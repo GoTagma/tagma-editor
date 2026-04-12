@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 
 import { RunView } from './components/run/RunView';
+import { YamlPreview } from './components/panels/YamlPreview';
 import { useRunStore } from './store/run-store';
 import { ErrorToast } from './components/ErrorToast';
 import { useShortcuts } from './hooks/use-shortcuts';
@@ -61,6 +62,7 @@ export function App() {
   const [saveAsInput, setSaveAsInput] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchVisible, setSearchVisible] = useState(false);
+  const [showYamlPreview, setShowYamlPreview] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Pending action to execute after workspace is set
@@ -661,25 +663,33 @@ export function App() {
           pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
           menus={menus} workspaceItems={workspaceItems}
           onUpdateName={setPipelineName} onRun={handleRun}
+          yamlPreviewOpen={showYamlPreview} onToggleYamlPreview={() => setShowYamlPreview((v) => !v)}
           runStatusSlot={runStatusSlot}
         />
 
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 min-w-0 overflow-hidden">
-          <BoardCanvas
-            config={config} dagEdges={dagEdges} positions={positions}
-            selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
-            errorsByTask={errorsByTask} errorsByTrack={errorsByTrack}
-            onSelectTask={selectTask}
-            onSelectTrack={selectTrack}
-            onAddTask={addTask} onAddTrack={addTrack}
-            onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}
-            onRenameTrack={renameTrack} onMoveTrackTo={moveTrackTo}
-            onAddDependency={addDependency} onRemoveDependency={removeDependency}
-            onSetTaskPosition={setTaskPosition} onTransferTask={transferTaskToTrack}
-          />
+        <div className={`flex-1 min-w-0 overflow-hidden ${showYamlPreview ? 'flex' : ''}`}>
+          <div className={showYamlPreview ? 'flex-1 min-w-0 overflow-hidden' : 'h-full'}>
+            <BoardCanvas
+              config={config} dagEdges={dagEdges} positions={positions}
+              selectedTaskId={selectedTaskId} invalidTaskIds={invalidTaskIds}
+              errorsByTask={errorsByTask} errorsByTrack={errorsByTrack}
+              onSelectTask={selectTask}
+              onSelectTrack={selectTrack}
+              onAddTask={addTask} onAddTrack={addTrack}
+              onDeleteTask={deleteTask} onDeleteTrack={deleteTrack}
+              onRenameTrack={renameTrack} onMoveTrackTo={moveTrackTo}
+              onAddDependency={addDependency} onRemoveDependency={removeDependency}
+              onSetTaskPosition={setTaskPosition} onTransferTask={transferTaskToTrack}
+            />
+          </div>
+          {showYamlPreview && (
+            <div className="w-[380px] shrink-0 overflow-hidden border-l border-tagma-border">
+              <YamlPreview config={config} onClose={() => setShowYamlPreview(false)} />
+            </div>
+          )}
         </div>
 
         {selectedInfo && (

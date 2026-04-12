@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react';
-import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink, ChevronDown } from 'lucide-react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink, ChevronDown, Code } from 'lucide-react';
 import { MenuBar } from '../MenuBar';
 import { DropdownMenu, type DropdownItem } from '../DropdownMenu';
 import { api } from '../../api/client';
@@ -14,6 +14,10 @@ interface ToolbarProps {
   workspaceItems: DropdownItem[];
   onUpdateName: (name: string) => void;
   onRun: () => void;
+  /** Whether the YAML preview panel is currently open. */
+  yamlPreviewOpen: boolean;
+  /** Toggle the YAML preview panel visibility. */
+  onToggleYamlPreview: () => void;
   /**
    * Optional slot rendered in place of the primary Run button. The
    * Run view uses this while a run is minimized so the user gets a
@@ -25,7 +29,7 @@ interface ToolbarProps {
 
 export function Toolbar({
   pipelineName, yamlPath, workDir, isDirty, errorCount, menus, workspaceItems,
-  onUpdateName, onRun, runStatusSlot,
+  onUpdateName, onRun, yamlPreviewOpen, onToggleYamlPreview, runStatusSlot,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -162,6 +166,19 @@ export function Toolbar({
         )}
 
         {workDir && <div className="w-px h-4 bg-tagma-border/60 shrink-0" />}
+
+        <button
+          onClick={onToggleYamlPreview}
+          className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded border transition-colors shrink-0 ${
+            yamlPreviewOpen
+              ? 'border-tagma-accent/50 bg-tagma-accent/10 text-tagma-accent'
+              : 'border-tagma-border text-tagma-muted hover:text-tagma-text hover:border-tagma-accent/30'
+          }`}
+          title="Toggle YAML Preview"
+        >
+          <Code size={11} />
+          <span>YAML</span>
+        </button>
 
         {runStatusSlot ?? (
           <button onClick={onRun} className="btn-primary group shrink-0 rounded">
