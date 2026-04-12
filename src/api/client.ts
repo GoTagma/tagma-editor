@@ -453,7 +453,6 @@ export type RunEvent =
     }
   | { type: 'run_end'; runId?: string; success: boolean; seq?: number }
   | { type: 'run_error'; runId?: string; error: string; seq?: number }
-  | { type: 'log'; runId?: string; line: string; seq?: number }
   | {
       type: 'task_log';
       runId?: string;

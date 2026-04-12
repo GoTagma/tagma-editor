@@ -4,7 +4,7 @@
 // consistent with the editor.
 
 import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package } from 'lucide-react';
+import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package, ChevronDown, ChevronRight } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
 import { TaskCard } from '../board/TaskCard';
 import { TrackLane } from '../board/TrackLane';
@@ -63,6 +63,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
     status,
     tasks,
     error,
+    pipelineLogs,
     selectedTaskId,
     selectedTrackId,
     selectTask,
@@ -85,6 +86,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   const [showPlugins, setShowPlugins] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pipelineLogExpanded, setPipelineLogExpanded] = useState(false);
 
   // Scroll sync between the track-header column and the task canvas.
   // Same pattern as BoardCanvas: the header column is `overflow-hidden`
@@ -357,6 +359,33 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
       {error && (
         <div className="px-4 py-2 bg-tagma-error/5 border-b border-tagma-error/20 text-[11px] text-tagma-error font-mono">
           {error}
+        </div>
+      )}
+
+      {/* Pipeline log (hook execution, lifecycle events) */}
+      {pipelineLogs.length > 0 && (
+        <div className="border-b border-tagma-border">
+          <button
+            onClick={() => setPipelineLogExpanded(!pipelineLogExpanded)}
+            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono text-tagma-muted hover:text-tagma-text transition-colors"
+          >
+            {pipelineLogExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            <span>Pipeline Log ({pipelineLogs.length})</span>
+          </button>
+          {pipelineLogExpanded && (
+            <div className="max-h-[120px] overflow-y-auto px-3 pb-2">
+              {pipelineLogs.map((line, i) => (
+                <div key={i} className={`text-[10px] font-mono leading-relaxed ${
+                  line.level === 'error' ? 'text-tagma-error' :
+                  line.level === 'warn' ? 'text-tagma-warning' :
+                  'text-tagma-muted/80'
+                }`}>
+                  <span className="text-tagma-muted/50">{line.timestamp}</span>{' '}
+                  {line.text}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

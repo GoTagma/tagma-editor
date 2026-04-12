@@ -41,6 +41,7 @@ function pickFoldState(s: RunStoreState): RunFoldState {
     status: s.status,
     tasks: s.tasks,
     logs: s.logs,
+    pipelineLogs: s.pipelineLogs,
     error: s.error,
     pendingApprovals: s.pendingApprovals,
     lastEventSeq: s.lastEventSeq,
@@ -67,6 +68,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     status: 'idle',
     tasks: new Map<string, RunTaskState>(),
     logs: [],
+    pipelineLogs: [],
     error: null,
     selectedTaskId: null,
     selectedTrackId: null,
@@ -84,6 +86,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         status: 'starting',
         tasks: new Map(),
         logs: [],
+        pipelineLogs: [],
         error: null,
         selectedTaskId: null,
         selectedTrackId: null,
@@ -119,9 +122,9 @@ export const useRunStore = create<RunStoreState>((set, get) => {
     selectTrack: (trackId) => set({ selectedTrackId: trackId, selectedTaskId: null }),
 
     resolveApproval: async (requestId, outcome) => {
-      // Optimistically remove from queue; if the server fails we can
-      // surface the error but keep UX snappy.
+      // Optimistically remove from queue; restore on failure so user can retry.
       const state = get();
+      const savedApproval = state.pendingApprovals.get(requestId);
       const pending = new Map(state.pendingApprovals);
       pending.delete(requestId);
       set({ pendingApprovals: pending });
@@ -129,7 +132,14 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         await api.resolveApproval(requestId, outcome);
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Failed to resolve approval';
-        set({ error: message });
+        // Restore the approval so the user can retry
+        if (savedApproval) {
+          const restored = new Map(get().pendingApprovals);
+          restored.set(requestId, savedApproval);
+          set({ pendingApprovals: restored, error: message });
+        } else {
+          set({ error: message });
+        }
       }
     },
 
@@ -141,6 +151,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
         status: 'idle',
         tasks: new Map(),
         logs: [],
+        pipelineLogs: [],
         error: null,
         selectedTaskId: null,
         selectedTrackId: null,

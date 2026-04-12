@@ -33,7 +33,6 @@ export type SchemaFieldType =
 
 export interface SchemaField {
   readonly key: string;
-  readonly label?: string;
   readonly type: SchemaFieldType;
   readonly required?: boolean;
   readonly description?: string;
@@ -45,6 +44,7 @@ export interface SchemaField {
 }
 
 export interface PluginSchema {
+  readonly description?: string;
   readonly fields: readonly SchemaField[];
 }
 
@@ -131,7 +131,8 @@ function fromWireDescriptor(wire: PluginSchemaDescriptor): PluginSchema | null {
     max: f.max,
     placeholder: (f as { placeholder?: string }).placeholder,
   }));
-  return { fields };
+  const description = typeof wire.description === 'string' ? wire.description : undefined;
+  return { description, fields };
 }
 
 /**
@@ -189,6 +190,9 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
 
   return (
     <div className="space-y-2">
+      {schema.description && (
+        <p className="text-[10px] text-tagma-muted/80 leading-snug mb-1">{schema.description}</p>
+      )}
       {schema.fields.map((field) => (
         <SchemaFieldRow
           key={field.key}
@@ -208,7 +212,7 @@ function SchemaFieldRow({ field, value, onChange }: {
   value: unknown;
   onChange: (next: unknown) => void;
 }) {
-  const label = field.label ?? field.key;
+  const label = field.key;
   const defaultStr =
     field.default !== undefined && field.default !== null ? String(field.default) : undefined;
 

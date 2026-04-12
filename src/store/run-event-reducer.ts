@@ -23,6 +23,7 @@ export interface RunFoldState {
   status: RunStatus;
   tasks: Map<string, RunTaskState>;
   logs: string[];
+  pipelineLogs: TaskLogLine[];
   error: string | null;
   pendingApprovals: Map<string, ApprovalRequestInfo>;
   lastEventSeq: number;
@@ -34,6 +35,7 @@ export function initialRunFoldState(): RunFoldState {
     status: 'idle',
     tasks: new Map(),
     logs: [],
+    pipelineLogs: [],
     error: null,
     pendingApprovals: new Map(),
     lastEventSeq: 0,
@@ -68,6 +70,7 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
       runId: event.runId,
       status: 'running',
       tasks,
+      pipelineLogs: [],
       error: null,
       pendingApprovals: new Map(),
       lastEventSeq: typeof event.seq === 'number' ? event.seq : 0,
@@ -93,11 +96,11 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
     case 'task_update': {
       const tasks = new Map(state.tasks);
       const existing = tasks.get(event.taskId);
+      // Use explicit undefined checks instead of ?? so that null/0/""
+      // values from the SDK are applied rather than preserving stale data.
+      const pick = <T,>(incoming: T | undefined, previous: T): T =>
+        incoming !== undefined ? incoming : previous;
       if (existing) {
-        // Use explicit undefined checks instead of ?? so that null/0/""
-        // values from the SDK are applied rather than preserving stale data.
-        const pick = <T,>(incoming: T | undefined, previous: T): T =>
-          incoming !== undefined ? incoming : previous;
         tasks.set(event.taskId, {
           ...existing,
           status: event.status,
@@ -117,16 +120,47 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
           // logs are owned by the task_log case; task_update never touches them.
           logs: existing.logs,
         });
+      } else {
+        // Task not in the initial run_start snapshot (e.g. template expansion
+        // added tasks, or a task_update arrived before run_start on reconnect).
+        // Create an entry with sensible defaults so the update isn't lost.
+        const [trackId] = event.taskId.includes('.') ? event.taskId.split('.') : ['', event.taskId];
+        tasks.set(event.taskId, {
+          taskId: event.taskId,
+          trackId,
+          taskName: event.taskId,
+          status: event.status,
+          startedAt: event.startedAt ?? null,
+          finishedAt: event.finishedAt ?? null,
+          durationMs: event.durationMs ?? null,
+          exitCode: event.exitCode ?? null,
+          stdout: event.stdout ?? '',
+          stderr: event.stderr ?? '',
+          outputPath: event.outputPath ?? null,
+          stderrPath: event.stderrPath ?? null,
+          sessionId: event.sessionId ?? null,
+          normalizedOutput: event.normalizedOutput ?? null,
+          resolvedDriver: event.resolvedDriver ?? null,
+          resolvedModelTier: event.resolvedModelTier ?? null,
+          resolvedPermissions: event.resolvedPermissions ?? null,
+          logs: [],
+        });
       }
       next = { ...state, tasks };
       break;
     }
     case 'task_log': {
-      // Route the line to its task's per-task buffer. Pipeline-level lines
-      // (taskId=null) are intentionally dropped for the per-task panel —
-      // the RunView can surface them elsewhere in the future.
+      // Pipeline-level lines (taskId=null) go to the pipelineLogs buffer.
       if (!event.taskId) {
-        next = state;
+        const line: TaskLogLine = {
+          level: event.level,
+          timestamp: event.timestamp,
+          text: event.text,
+        };
+        const pipelineLogs = state.pipelineLogs.length >= TASK_LOG_CAP
+          ? [...state.pipelineLogs.slice(state.pipelineLogs.length - TASK_LOG_CAP + 1), line]
+          : [...state.pipelineLogs, line];
+        next = { ...state, pipelineLogs };
         break;
       }
       const existing = state.tasks.get(event.taskId);
@@ -163,9 +197,6 @@ export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState
       break;
     case 'run_error':
       next = { ...state, status: 'error', error: event.error };
-      break;
-    case 'log':
-      next = { ...state, logs: [...state.logs, event.line] };
       break;
     case 'approval_request': {
       const pending = new Map(state.pendingApprovals);
