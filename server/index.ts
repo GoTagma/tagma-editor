@@ -32,6 +32,7 @@ import {
   registerPlugin,
   unregisterPlugin,
   isValidPluginName,
+  readPluginManifest as parsePluginManifestField,
   discoverTemplates,
   loadTemplateManifest,
 } from '@tagma/sdk';
@@ -1164,13 +1165,19 @@ function removeFromPluginManifest(name: string): void {
 
 /**
  * Discover installed tagma plugin packages under workDir/node_modules.
- * Scans workspace package.json dependencies, then checks each installed
- * package for `@tagma/types` in peerDependencies or dependencies —
- * the reliable marker for any tagma plugin regardless of package scope.
  *
- * Names that fail plugin-name validation are dropped silently — the manifest
- * is attacker-controllable (anyone who can edit package.json could plant a
- * malicious entry), so we only auto-load names that pass the regex.
+ * A package is a plugin iff its `package.json` declares the `tagmaPlugin`
+ * field (parsed via `parsePluginManifestField` from @tagma/sdk). That field
+ * is the single source of truth — no name regex, no `@tagma/types` dep
+ * sniffing. SDK-adjacent libraries like `@tagma/sdk`, `@tagma/types`, or
+ * `@tagma/template-*` simply don't declare it, so they're never picked up.
+ *
+ * Reading only `package.json` (no `import()`) keeps discovery fast and avoids
+ * executing top-level side effects of unverified packages.
+ *
+ * Names are still gated by `isValidPluginName` for filesystem safety —
+ * anyone who can edit package.json could plant a path-traversal name, so
+ * we drop anything that wouldn't survive the SDK's own loadPlugins guard.
  */
 function discoverInstalledPlugins(): string[] {
   if (!workDir) return [];
@@ -1181,17 +1188,25 @@ function discoverInstalledPlugins(): string[] {
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
     const plugins: string[] = [];
     for (const name of Object.keys(allDeps)) {
-      // H1: skip anything that doesn't look like a real plugin package name.
       if (!isValidPluginName(name)) continue;
       try {
         const depPkgPath = resolve(pluginDirFor(name), 'package.json');
         if (!existsSync(depPkgPath)) continue;
         const depPkg = JSON.parse(readFileSync(depPkgPath, 'utf-8'));
-        const peer = depPkg.peerDependencies ?? {};
-        const deps = depPkg.dependencies ?? {};
-        if ('@tagma/types' in peer || '@tagma/types' in deps) {
-          plugins.push(name);
+        // A throwing parse means the package shipped a malformed
+        // tagmaPlugin field — log it loud so the author can fix it,
+        // then skip rather than crashing the whole discovery sweep.
+        let manifest;
+        try {
+          manifest = parsePluginManifestField(depPkg);
+        } catch (err) {
+          console.warn(
+            `[plugins] "${name}" has an invalid tagmaPlugin field, skipping:`,
+            err instanceof Error ? err.message : String(err),
+          );
+          continue;
         }
+        if (manifest) plugins.push(name);
       } catch { /* skip unreadable packages */ }
     }
     return plugins;

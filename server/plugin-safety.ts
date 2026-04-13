@@ -85,6 +85,11 @@ export function safePluginDir(name: unknown, workDir: string): string {
  * Infer the SDK plugin category from a package name following the
  * `@tagma/<category>-<type>` convention. Returns null for packages that
  * don't fit the convention (e.g. tagma-plugin-* or third-party scopes).
+ *
+ * NOTE: This helper is a best-effort fallback for legacy display paths
+ * that need a category before the plugin's `package.json` has been read.
+ * The canonical signal that a package is a plugin is the `tagmaPlugin`
+ * field in its `package.json` — see `readPluginManifest` from @tagma/sdk.
  */
 export function pluginCategoryFromName(name: string): { category: PluginCategory; type: string } | null {
   const m = name.match(/^@tagma\/(driver|trigger|completion|middleware)-(.+)$/);
