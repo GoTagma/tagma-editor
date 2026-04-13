@@ -721,6 +721,57 @@ function verifyIntegrity(buffer: Buffer, meta: PackageMeta, name: string): void 
 }
 
 /**
+ * Extract a tarball into `destDir` with `strip: 1` semantics.
+ *
+ * Workaround for a Bun + `tar` v7 incompatibility: `tar.x()` / `tar.extract()`
+ * silently drop file contents during extraction under Bun (creates directory
+ * entries but never writes file data, *without throwing*), leaving broken
+ * installs like a lone empty `src/` directory. `tar.t()` list mode still
+ * works, so we iterate entries manually and write each file ourselves.
+ *
+ * Security: resolved targets are fenced within `destDir`, and non-regular
+ * entry types (symlinks, hardlinks, char/block devices) are skipped so a
+ * malicious tarball can't plant links outside the plugin directory.
+ */
+function extractTarballStrip1(tgzPath: string, destDir: string): void {
+  tar.t({
+    file: tgzPath,
+    sync: true,
+    onentry: (entry) => {
+      const type = entry.type;
+      if (type !== 'File' && type !== 'OldFile' && type !== 'Directory') {
+        entry.resume();
+        return;
+      }
+      // tar entry paths are POSIX — split on '/' regardless of host OS.
+      const segs = String(entry.path).split('/');
+      segs.shift(); // strip: 1
+      const rel = segs.join('/');
+      if (!rel) {
+        entry.resume();
+        return;
+      }
+      const outPath = resolve(destDir, rel);
+      if (!isPathWithin(outPath, destDir)) {
+        entry.resume();
+        return;
+      }
+      if (type === 'Directory') {
+        mkdirSync(outPath, { recursive: true });
+        entry.resume();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      entry.on('data', (c: Buffer) => chunks.push(c));
+      entry.on('end', () => {
+        mkdirSync(dirname(outPath), { recursive: true });
+        writeFileSync(outPath, Buffer.concat(chunks));
+      });
+    },
+  });
+}
+
+/**
  * Install a package from the npm registry without npm CLI.
  * Downloads tarball → verifies integrity → extracts via pure-JS tar.
  */
@@ -740,13 +791,15 @@ async function directRegistryInstall(name: string): Promise<void> {
   writeFileSync(tgzPath, tarBuffer);
 
   try {
+    // Wipe any stale state from a previous failed install (e.g. a half-
+    // extracted tree from the pre-fix Bun + tar.x bug) so reinstall produces
+    // a clean package directory.
+    if (existsSync(destDir)) {
+      rmSync(destDir, { recursive: true, force: true });
+    }
     mkdirSync(destDir, { recursive: true });
 
-    // Extract via pure-JS `tar` so install works on every platform without
-    // needing a `tar` binary on PATH. (Git Bash's GNU tar chokes on Windows
-    // drive letters, and we don't want to depend on the user's environment.)
-    // Note: `tar` v7 sanitizes absolute paths and `..` segments by default.
-    await tar.x({ file: tgzPath, cwd: destDir, strip: 1 });
+    extractTarballStrip1(tgzPath, destDir);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -794,7 +847,7 @@ async function installFromLocalPath(absPath: string): Promise<string> {
     sourceDir = absPath;
   } else {
     cleanupTmp = mkdtempSync(join(tmpdir(), 'tagma-local-'));
-    await tar.x({ file: absPath, cwd: cleanupTmp, strip: 1 });
+    extractTarballStrip1(absPath, cleanupTmp);
     sourceDir = cleanupTmp;
   }
 
