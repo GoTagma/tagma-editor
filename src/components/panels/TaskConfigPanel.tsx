@@ -133,7 +133,7 @@ export function TaskConfigPanel({
   }, [trackId, task, onUpdateTask]);
 
   const handlePermToggle = useCallback((key: 'read' | 'write' | 'execute') => {
-    const current = task.permissions ?? {};
+    const current = task.permissions ?? { read: false, write: false, execute: false };
     const next = { ...current, [key]: !current[key] };
     if (!next.read && !next.write && !next.execute) {
       commitField({ permissions: undefined });

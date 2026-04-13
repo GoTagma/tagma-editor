@@ -546,7 +546,7 @@ function lenientParseYaml(content: string, fallbackName: string): RawPipelineCon
           const tid = typeof tk.id === 'string' && tk.id ? tk.id : Math.random().toString(36).slice(2, 10);
           // Keep the task's other fields verbatim — lenient mode is best-effort,
           // and the editor's validateRaw will surface any structural issues.
-          return { ...(tk as RawTaskConfig), id: tid };
+          return { ...tk, id: tid } as unknown as RawTaskConfig;
         });
       return { ...(t as Partial<RawTrackConfig>), id, name, tasks } as RawTrackConfig;
     });
@@ -1112,8 +1112,11 @@ async function loadPluginFromWorkDir(name: string): Promise<{ result: RegisterRe
     throw new Error(`Plugin "${name}" must export pluginCategory, pluginType, and default`);
   }
   // SDK validates the category, type, and contract — let it throw on bad shapes.
-  const result = registerPlugin(mod.pluginCategory, mod.pluginType, mod.default);
-  const meta: LoadedPluginMeta = { category: mod.pluginCategory as PluginCategory, type: String(mod.pluginType) };
+  const category = mod.pluginCategory as PluginCategory;
+  const type = String(mod.pluginType);
+  const handler = mod.default as DriverPlugin | TriggerPlugin | CompletionPlugin | MiddlewarePlugin;
+  const result = registerPlugin(category, type, handler);
+  const meta: LoadedPluginMeta = { category, type };
   loadedPluginMeta.set(name, meta);
   return { result, meta };
 }
@@ -1438,12 +1441,19 @@ app.post('/api/plugins/load', async (req, res) => {
 // ── Pipeline name ──
 app.patch('/api/pipeline', (req, res) => {
   const { name, driver, timeout, plugins, hooks } = req.body;
-  const patch: Partial<RawPipelineConfig> = {};
-  if (name !== undefined) patch.name = name;
-  if (driver !== undefined) patch.driver = driver || undefined;
-  if (timeout !== undefined) patch.timeout = timeout || undefined;
-  if (plugins !== undefined) patch.plugins = Array.isArray(plugins) && plugins.length > 0 ? plugins : undefined;
-  if (hooks !== undefined) patch.hooks = hooks && Object.keys(hooks).length > 0 ? hooks : undefined;
+  // `RawPipelineConfig` fields are declared readonly, so we build the patch
+  // as an object literal instead of mutating field-by-field.
+  const patch: Partial<RawPipelineConfig> = {
+    ...(name !== undefined && { name }),
+    ...(driver !== undefined && { driver: driver || undefined }),
+    ...(timeout !== undefined && { timeout: timeout || undefined }),
+    ...(plugins !== undefined && {
+      plugins: Array.isArray(plugins) && plugins.length > 0 ? plugins : undefined,
+    }),
+    ...(hooks !== undefined && {
+      hooks: hooks && Object.keys(hooks).length > 0 ? hooks : undefined,
+    }),
+  };
   config = setPipelineField(config, patch);
   config = ensureDriverPlugins(config);
   res.json(getState());
@@ -1492,17 +1502,19 @@ app.patch('/api/tasks/:trackId/:taskId', (req, res) => {
   if (!track) return res.status(404).json({ error: 'Track not found' });
   const existing = track.tasks.find((t) => t.id === taskId);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
-  let updated = { ...existing, ...patch } as RawTaskConfig;
-  // prompt and command are mutually exclusive
-  // jsonBody converts undefined → null, so check for truthy or explicit empty string
+  // `RawTaskConfig` fields are readonly, so we rebuild the merged object
+  // rather than deleting fields in place. prompt and command are mutually
+  // exclusive; jsonBody converts undefined → null, so check for truthy or
+  // explicit empty string.
+  const merged: Record<string, unknown> = { ...existing, ...patch };
   if ('command' in patch && patch.command != null) {
-    delete updated.prompt;
+    delete merged.prompt;
   }
   if ('prompt' in patch && patch.prompt != null) {
-    delete updated.command;
+    delete merged.command;
   }
   // Strip empty optional fields so they don't appear as '' in YAML
-  updated = stripEmptyFields(updated, TASK_REQUIRED_KEYS) as RawTaskConfig;
+  const updated = stripEmptyFields(merged, TASK_REQUIRED_KEYS) as unknown as RawTaskConfig;
   config = upsertTask(config, trackId, updated);
   config = ensureDriverPlugins(config);
   res.json(getState());

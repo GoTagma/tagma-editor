@@ -5,7 +5,6 @@ import type {
   RunEvent,
   RawPipelineConfig,
   ApprovalRequestInfo,
-  ApprovalOutcome,
 } from '../api/client';
 import { foldRunEvent, type RunFoldState } from './run-event-reducer';
 
@@ -23,7 +22,9 @@ interface RunStoreState extends RunFoldState {
   abortRun: () => Promise<void>;
   selectTask: (taskId: string | null) => void;
   selectTrack: (trackId: string | null) => void;
-  resolveApproval: (requestId: string, outcome: ApprovalOutcome) => Promise<void>;
+  // Only 'approved' and 'rejected' are user-driven outcomes the UI can post;
+  // 'timeout' / 'aborted' arrive from the engine via SSE.
+  resolveApproval: (requestId: string, outcome: 'approved' | 'rejected') => Promise<void>;
   /**
    * Hide the RunView without stopping the run. SSE stays subscribed,
    * tasks / snapshot / pendingApprovals are preserved, and `showView()`

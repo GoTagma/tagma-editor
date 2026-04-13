@@ -67,7 +67,7 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
   }, [commit]);
 
   const handlePermToggle = useCallback((key: 'read' | 'write' | 'execute') => {
-    const current = track.permissions ?? {};
+    const current = track.permissions ?? { read: false, write: false, execute: false };
     const next = { ...current, [key]: !current[key] };
     // If all are falsy, remove permissions entirely
     if (!next.read && !next.write && !next.execute) {
