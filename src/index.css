@@ -72,7 +72,7 @@ input[type="checkbox"] { accent-color: #d4845a; }
     @apply w-full text-xs bg-tagma-bg border border-tagma-border px-2.5 py-1.5 text-tagma-text placeholder:text-tagma-muted/50 transition-colors;
   }
   .btn-primary {
-    @apply flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium tracking-wide bg-tagma-accent text-white hover:bg-tagma-accent/85 transition-all rounded-sm;
+    @apply flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium tracking-wide bg-tagma-accent text-white hover:bg-tagma-accent/85 transition-all;
   }
   .btn-ghost {
     @apply flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-tagma-muted hover:text-tagma-text hover:bg-tagma-elevated transition-colors;
@@ -82,5 +82,14 @@ input[type="checkbox"] { accent-color: #d4845a; }
   }
   .btn-danger:hover {
     background-color: rgba(248, 113, 113, 0.08);
+  }
+  .chip-xs {
+    @apply inline-flex items-center gap-0.5 px-1 py-px text-[9px] font-mono font-semibold border;
+  }
+  .chip-sm {
+    @apply inline-flex items-center gap-1 px-1.5 py-px text-[10px] font-mono font-semibold border;
+  }
+  .chip-md {
+    @apply inline-flex items-center gap-2 px-2 py-1 text-[11px] font-medium border;
   }
 }

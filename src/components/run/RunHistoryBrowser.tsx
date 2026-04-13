@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  History, RefreshCw, FileText, Loader2, Check, X, Clock, SkipForward, ShieldOff,
+  History, RefreshCw, FileText, Loader2, Check, X, Clock, SkipForward, Ban,
   Filter, Download,
 } from 'lucide-react';
 import { api } from '../../api/client';
@@ -14,18 +14,18 @@ const STATUS_ICON: Record<TaskStatus, React.ReactNode> = {
   failed: <X size={9} className="text-tagma-error" />,
   timeout: <Clock size={9} className="text-tagma-warning" />,
   skipped: <SkipForward size={9} className="text-tagma-muted/60" />,
-  blocked: <ShieldOff size={9} className="text-tagma-warning" />,
+  blocked: <Ban size={9} className="text-tagma-warning" />,
 };
 
-const STATUS_COLOR: Record<TaskStatus, string> = {
-  idle: 'text-tagma-muted',
-  waiting: 'text-tagma-muted',
-  running: 'text-tagma-ready',
-  success: 'text-tagma-success',
-  failed: 'text-tagma-error',
-  timeout: 'text-tagma-warning',
-  skipped: 'text-tagma-muted/70',
-  blocked: 'text-tagma-warning',
+const STATUS_CHIP: Record<TaskStatus, string> = {
+  idle:    'bg-tagma-muted/8 border-tagma-muted/15 text-tagma-muted',
+  waiting: 'bg-tagma-muted/8 border-tagma-muted/15 text-tagma-muted',
+  running: 'bg-tagma-ready/10 border-tagma-ready/20 text-tagma-ready',
+  success: 'bg-tagma-success/10 border-tagma-success/20 text-tagma-success',
+  failed:  'bg-tagma-error/10 border-tagma-error/20 text-tagma-error',
+  timeout: 'bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning',
+  skipped: 'bg-tagma-muted/6 border-tagma-muted/10 text-tagma-muted/60',
+  blocked: 'bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning',
 };
 
 type FilterMode = 'all' | 'success' | 'failed';
@@ -230,11 +230,31 @@ export function RunHistoryBrowser() {
                   <span>{computeRunDuration(run)}</span>
                 </div>
                 {run.taskCounts && (
-                  <div className="flex items-center gap-1.5 pl-4 mt-0.5 text-[9px] font-mono">
-                    {run.taskCounts.success > 0 && <span className="text-tagma-success">{run.taskCounts.success} ok</span>}
-                    {run.taskCounts.failed > 0 && <span className="text-tagma-error">{run.taskCounts.failed} fail</span>}
-                    {run.taskCounts.timeout > 0 && <span className="text-tagma-warning">{run.taskCounts.timeout} to</span>}
-                    {run.taskCounts.skipped > 0 && <span className="text-tagma-muted/60">{run.taskCounts.skipped} skip</span>}
+                  <div className="flex items-center gap-1 pl-4 mt-0.5">
+                    {run.taskCounts.success > 0 && (
+                      <span className="chip-xs bg-tagma-success/10 border-tagma-success/20 text-tagma-success">
+                        <Check size={7} />
+                        <span className="tabular-nums">{run.taskCounts.success}</span>
+                      </span>
+                    )}
+                    {run.taskCounts.failed > 0 && (
+                      <span className="chip-xs bg-tagma-error/10 border-tagma-error/20 text-tagma-error">
+                        <X size={7} />
+                        <span className="tabular-nums">{run.taskCounts.failed}</span>
+                      </span>
+                    )}
+                    {run.taskCounts.timeout > 0 && (
+                      <span className="chip-xs bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning">
+                        <Clock size={7} />
+                        <span className="tabular-nums">{run.taskCounts.timeout}</span>
+                      </span>
+                    )}
+                    {run.taskCounts.skipped > 0 && (
+                      <span className="chip-xs bg-tagma-muted/6 border-tagma-muted/10 text-tagma-muted/60">
+                        <SkipForward size={7} />
+                        <span className="tabular-nums">{run.taskCounts.skipped}</span>
+                      </span>
+                    )}
                   </div>
                 )}
                 {!run.taskCounts && (
@@ -349,8 +369,8 @@ export function RunHistoryBrowser() {
                               i > 0 ? 'border-t border-tagma-border/40' : ''
                             }`}
                           >
-                            <span className="shrink-0">{STATUS_ICON[task.status]}</span>
-                            <span className={`shrink-0 uppercase tracking-wider ${STATUS_COLOR[task.status]}`}>
+                            <span className={`chip-xs shrink-0 uppercase tracking-wider ${STATUS_CHIP[task.status]}`}>
+                              {STATUS_ICON[task.status]}
                               {task.status}
                             </span>
                             <span className="flex-1 min-w-0 truncate text-tagma-text">{task.taskName}</span>

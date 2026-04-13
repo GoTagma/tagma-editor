@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle, Terminal, MessageSquare, Lock, FileSearch,
   Clock, CheckCircle2, Layers, FileOutput, Package,
-  Loader2, Check, X as XIcon, SkipForward, ShieldOff,
+  Loader2, Check, X as XIcon, SkipForward, Ban,
 } from 'lucide-react';
 import type { RawTaskConfig, RawPipelineConfig, TaskStatus } from '../../api/client';
 import { getZoom, viewportW, viewportH } from '../../utils/zoom';
@@ -55,7 +55,7 @@ const RUNTIME_CFG: Record<TaskStatus, { bar: string; bg: string; icon: typeof Ch
   failed:  { bar: 'bg-tagma-error',     bg: 'bg-tagma-error/8',     icon: XIcon,       iconColor: 'text-tagma-error',     label: 'failed' },
   timeout: { bar: 'bg-tagma-warning',   bg: 'bg-tagma-warning/8',   icon: Clock,       iconColor: 'text-tagma-warning',   label: 'timeout' },
   skipped: { bar: 'bg-tagma-muted/40',  bg: '',                     icon: SkipForward, iconColor: 'text-tagma-muted/50',  label: 'skipped' },
-  blocked: { bar: 'bg-tagma-warning',   bg: 'bg-tagma-warning/8',   icon: ShieldOff,   iconColor: 'text-tagma-warning',   label: 'blocked' },
+  blocked: { bar: 'bg-tagma-warning',   bg: 'bg-tagma-warning/8',   icon: Ban,         iconColor: 'text-tagma-warning',   label: 'blocked' },
 };
 
 function formatRuntimeDuration(ms: number): string {
@@ -76,7 +76,7 @@ function resolveField<K extends 'driver' | 'model_tier'>(
 /* ── Tiny pill chip for meta items ── */
 function Chip({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
+    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
       {children}
     </span>
   );
@@ -122,7 +122,7 @@ function ErrorTooltip({ messages, anchorRect }: { messages: string[]; anchorRect
   return createPortal(
     <div
       ref={ref}
-      className="fixed pointer-events-none bg-[#1a1a1e] border border-tagma-error/40 shadow-lg rounded-[3px]"
+      className="fixed pointer-events-none bg-[#1a1a1e] border border-tagma-error/40 shadow-lg"
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
         width: 260, maxHeight: viewportH() - 16,
@@ -200,7 +200,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
   return createPortal(
     <div
       ref={tooltipRef}
-      className="fixed pointer-events-none bg-[#1a1a1e] border border-[#2a2a30] shadow-lg rounded-[3px] animate-fade-in"
+      className="fixed pointer-events-none bg-[#1a1a1e] border border-[#2a2a30] shadow-lg animate-fade-in"
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
         width: 260, maxHeight: viewportH() - 16,
@@ -288,7 +288,7 @@ export const TaskCard = memo(function TaskCard({
       ref={cardRef}
       data-task-card="true"
       className={`
-        absolute border select-none flex flex-col justify-center px-2.5 rounded-[2px]
+        absolute border select-none flex flex-col justify-center px-2.5
         ${borderColor} ${bgColor}
         ${isDragging ? 'z-30 shadow-glow-accent' : ''}
         ${cursorClass}
@@ -340,14 +340,14 @@ export const TaskCard = memo(function TaskCard({
       )}
       {/* Left indicator bar: selection (edit mode) or runtime status (run mode). */}
       {isSelected
-        ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${isInvalid ? 'bg-tagma-error' : 'bg-tagma-accent'}`} />
+        ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] ${isInvalid ? 'bg-tagma-error' : 'bg-tagma-accent'}`} />
         : runtimeCfg?.bar
-          ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l-[2px] ${runtimeCfg.bar}`} />
+          ? <div className={`absolute left-0 top-0 bottom-0 w-[2px] ${runtimeCfg.bar}`} />
           : null}
 
       {/* ─── Row 1: Type icon · Name · Status badges · Runtime status ─── */}
       <div className="flex items-center h-[24px] gap-[6px] pointer-events-none min-w-0 overflow-hidden">
-        <span className={`inline-flex items-center justify-center w-[16px] h-[16px] rounded-[2px] shrink-0
+        <span className={`inline-flex items-center justify-center w-[16px] h-[16px] shrink-0
           ${isTemplate ? 'bg-purple-500/10' : isCommand ? 'bg-sky-500/10' : 'bg-tagma-muted/8'}`}>
           {isTemplate
             ? <Package size={9} className="text-purple-400" />
@@ -403,7 +403,7 @@ export const TaskCard = memo(function TaskCard({
 
       {/* ─── Row 2: Driver chip · Tier chip · Permissions (prompt/template only) ─── */}
       {!isCommand && (
-        <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden rounded-[2px] bg-black/20 px-[3px]">
+        <div className="flex items-center h-[16px] gap-[4px] pointer-events-none min-w-0 overflow-hidden bg-black/20 px-[3px]">
           {driver && (
             <Chip className="bg-tagma-accent/12 text-tagma-accent/80">{driver}</Chip>
           )}

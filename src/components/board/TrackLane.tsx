@@ -26,7 +26,7 @@ const FAIL_CFG: Record<string, { icon: React.ReactNode; cls: string; tip: string
 
 function Chip({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] rounded-sm text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
+    <span className={`inline-flex items-center justify-center h-[14px] px-[4px] text-[7.5px] font-mono leading-[14px] shrink-0 ${className}`}>
       {children}
     </span>
   );
@@ -116,7 +116,7 @@ function FloatingPanel({ anchorRect, width, borderClass, children }: {
   return createPortal(
     <div
       ref={ref}
-      className={`fixed pointer-events-none bg-[#1a1a1e] ${borderClass} border shadow-lg rounded-[3px] animate-fade-in`}
+      className={`fixed pointer-events-none bg-[#1a1a1e] ${borderClass} border shadow-lg animate-fade-in`}
       style={{
         left: pos?.left ?? -9999, top: pos?.top ?? -9999,
         width, maxHeight: viewportH() - 16,
@@ -155,7 +155,7 @@ export const TrackLane = memo(function TrackLane({ track, taskCount, hasParallel
       <div className="flex items-center h-[22px] gap-[6px] min-w-0 overflow-hidden">
         <span
           aria-hidden
-          className="inline-block w-[8px] h-[8px] shrink-0 rounded-[1px]"
+          className="inline-block w-[8px] h-[8px] shrink-0"
           style={{ backgroundColor: track.color || 'transparent' }}
         />
         <span
@@ -189,7 +189,7 @@ export const TrackLane = memo(function TrackLane({ track, taskCount, hasParallel
           nitpicks even if individual chip widths differ. The rail is
           always rendered (even when the track has no meta) so every row
           in the header sidebar has identical vertical structure. */}
-      <div className="flex items-center h-[16px] gap-[4px] min-w-0 overflow-hidden rounded-[2px] bg-black/20 px-[4px]">
+      <div className="flex items-center h-[16px] gap-[4px] min-w-0 overflow-hidden bg-black/20 px-[4px]">
           {track.driver && (
             <Chip className="bg-tagma-accent/12 text-tagma-accent/70">{track.driver}</Chip>
           )}

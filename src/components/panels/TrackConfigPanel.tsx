@@ -84,7 +84,7 @@ export function TrackConfigPanel({ track, drivers, errors, onUpdateTrack, onDele
         <span className="text-[10px] font-medium text-tagma-muted uppercase tracking-wider">Track Inspector</span>
         <button
           onClick={onTogglePin}
-          className={`p-1 rounded transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
+          className={`p-1 transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
           title={isPinned ? 'Unpin panel (allow switching)' : 'Pin panel (lock to this track)'}
         >
           <Pin size={12} />

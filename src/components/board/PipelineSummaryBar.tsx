@@ -8,18 +8,13 @@ interface PipelineSummaryBarProps {
 /* Uniform icon+label chip */
 function InfoChip({ icon, label, color }: { icon: React.ReactNode; label: string; color: string }) {
   return (
-    <div className="flex items-center gap-1.5 h-full min-w-0 overflow-hidden">
+    <div className="inline-flex items-center gap-1.5 h-[16px] px-1.5 bg-tagma-elevated/60 border border-tagma-border/50 min-w-0 overflow-hidden">
       <span className={`inline-flex items-center justify-center shrink-0 ${color}`}>
         {icon}
       </span>
-      <span className="text-[9px] font-mono text-tagma-muted/70 whitespace-nowrap">{label}</span>
+      <span className="text-[9px] font-mono text-tagma-muted/80 whitespace-nowrap">{label}</span>
     </div>
   );
-}
-
-/* Dot separator between chips */
-function Dot() {
-  return <span className="text-tagma-border text-[8px] select-none shrink-0">·</span>;
 }
 
 export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
@@ -45,13 +40,8 @@ export function PipelineSummaryBar({ config }: PipelineSummaryBarProps) {
 
   return (
     <div className="flex items-center h-[26px] px-[44px] bg-tagma-bg border-b border-tagma-border/30 shrink-0">
-      <div className="flex items-center gap-2.5 h-full">
-        {chips.map((chip, i) => (
-          <div key={i} className="flex items-center gap-2.5 h-full">
-            {i > 0 && <Dot />}
-            {chip}
-          </div>
-        ))}
+      <div className="flex items-center gap-1.5 h-full">
+        {chips}
       </div>
       <span className="flex-1" />
       <span className="text-[9px] font-mono text-tagma-muted/30 tracking-wide">

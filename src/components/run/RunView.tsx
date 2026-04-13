@@ -4,7 +4,7 @@
 // consistent with the editor.
 
 import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Square, Loader2, Check, X, LayoutGrid, Settings, Search, Package, ChevronDown, ChevronRight, Clock, SkipForward, Ban, AlertCircle } from 'lucide-react';
 import { useRunStore } from '../../store/run-store';
 import { TaskCard } from '../board/TaskCard';
 import { TrackLane } from '../board/TrackLane';
@@ -329,33 +329,84 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         <div className="w-px h-5 bg-tagma-border" />
 
         {/* Run status */}
-        <div className="flex items-center gap-2 text-[10px] font-mono">
-          {status === 'running' && <Loader2 size={11} className="text-tagma-ready animate-spin" />}
-          {status === 'done' && <Check size={11} className="text-tagma-success" />}
-          {(status === 'error' || status === 'aborted' || status === 'failed') && <X size={11} className="text-tagma-error" />}
-          <span className={`
-            ${status === 'running' ? 'text-tagma-ready' : ''}
-            ${status === 'done' ? 'text-tagma-success' : ''}
-            ${status === 'error' || status === 'aborted' || status === 'failed' ? 'text-tagma-error' : ''}
-            ${status === 'starting' ? 'text-tagma-muted' : ''}
-          `}>
-            {RUN_STATUS_LABEL[status] ?? status}
-          </span>
+        <div className="flex items-center gap-2 text-[10px] font-medium">
+          {status === 'running' && (
+            <span className="chip-sm gap-1.5 px-2 bg-tagma-ready/10 border-tagma-ready/20 text-tagma-ready">
+              <Loader2 size={10} className="animate-spin" />
+              Running
+            </span>
+          )}
+          {status === 'done' && (
+            <span className="chip-sm gap-1.5 px-2 bg-tagma-success/10 border-tagma-success/20 text-tagma-success">
+              <Check size={10} />
+              Completed
+            </span>
+          )}
+          {(status === 'error' || status === 'aborted' || status === 'failed') && (
+            <span className="chip-sm gap-1.5 px-2 bg-tagma-error/10 border-tagma-error/20 text-tagma-error">
+              <X size={10} />
+              {RUN_STATUS_LABEL[status] ?? status}
+            </span>
+          )}
+          {status === 'starting' && (
+            <span className="chip-sm gap-1.5 px-2 bg-tagma-muted/8 border-tagma-muted/15 text-tagma-muted">
+              {RUN_STATUS_LABEL[status] ?? status}
+            </span>
+          )}
         </div>
 
         {tasks.size > 0 && (
-          <div className="flex items-center gap-1.5 text-[9px] font-mono">
-            {counts.success && <span className="text-tagma-success">{counts.success} ok</span>}
-            {counts.failed && <span className="text-tagma-error">{counts.failed} fail</span>}
-            {counts.running && <span className="text-tagma-ready">{counts.running} run</span>}
-            {counts.waiting && <span className="text-tagma-muted">{counts.waiting} wait</span>}
-            {counts.skipped && <span className="text-tagma-muted/50">{counts.skipped} skip</span>}
+          <div className="flex items-center gap-1">
+            {counts.success != null && counts.success > 0 && (
+              <span className="chip-sm bg-tagma-success/10 border-tagma-success/20 text-tagma-success">
+                <Check size={9} />
+                <span className="tabular-nums">{counts.success}</span>
+              </span>
+            )}
+            {counts.failed != null && counts.failed > 0 && (
+              <span className="chip-sm bg-tagma-error/10 border-tagma-error/20 text-tagma-error">
+                <X size={9} />
+                <span className="tabular-nums">{counts.failed}</span>
+              </span>
+            )}
+            {counts.running != null && counts.running > 0 && (
+              <span className="chip-sm bg-tagma-ready/10 border-tagma-ready/20 text-tagma-ready">
+                <Loader2 size={9} className="animate-spin" />
+                <span className="tabular-nums">{counts.running}</span>
+              </span>
+            )}
+            {counts.blocked != null && counts.blocked > 0 && (
+              <span className="chip-sm bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning">
+                <Ban size={9} />
+                <span className="tabular-nums">{counts.blocked}</span>
+              </span>
+            )}
+            {counts.waiting != null && counts.waiting > 0 && (
+              <span className="chip-sm bg-tagma-muted/8 border-tagma-muted/15 text-tagma-muted">
+                <Clock size={9} />
+                <span className="tabular-nums">{counts.waiting}</span>
+              </span>
+            )}
+            {counts.timeout != null && counts.timeout > 0 && (
+              <span className="chip-sm bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning">
+                <Clock size={9} />
+                <span className="tabular-nums">{counts.timeout}</span>
+              </span>
+            )}
+            {counts.skipped != null && counts.skipped > 0 && (
+              <span className="chip-sm bg-tagma-muted/6 border-tagma-muted/10 text-tagma-muted/60">
+                <SkipForward size={9} />
+                <span className="font-semibold tabular-nums">{counts.skipped}</span>
+              </span>
+            )}
           </div>
         )}
 
         {pendingApprovals.size > 0 && (
-          <span className="text-[9px] font-mono text-tagma-warning">
-            {pendingApprovals.size} approval{pendingApprovals.size === 1 ? '' : 's'} pending
+          <span className="chip-sm bg-tagma-warning/10 border-tagma-warning/20 text-tagma-warning">
+            <AlertCircle size={9} className="animate-pulse-slow" />
+            <span className="tabular-nums">{pendingApprovals.size}</span>
+            approval{pendingApprovals.size === 1 ? '' : 's'}
           </span>
         )}
 
@@ -396,12 +447,12 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           </button>
         )}
         {showAbortConfirm && (
-          <div className="flex items-center gap-1.5 mr-1">
-            <span className="text-xs text-tagma-error">Stop all tasks?</span>
-            <button onClick={handleAbortConfirm} className="px-2 py-1 text-[10px] bg-tagma-error/20 text-tagma-error border border-tagma-error/30 hover:bg-tagma-error/30 transition-colors">
+          <div className="flex items-center gap-2 mr-1 px-2 py-1 bg-tagma-error/5 border border-tagma-error/20">
+            <span className="text-[10px] font-medium text-tagma-error">Stop all?</span>
+            <button onClick={handleAbortConfirm} className="px-2 py-0.5 text-[10px] font-medium bg-tagma-error/20 text-tagma-error border border-tagma-error/30 hover:bg-tagma-error/30 transition-colors">
               Confirm
             </button>
-            <button onClick={handleAbortCancel} className="px-2 py-1 text-[10px] text-tagma-muted border border-tagma-border hover:bg-tagma-surface transition-colors">
+            <button onClick={handleAbortCancel} className="px-2 py-0.5 text-[10px] text-tagma-muted border border-tagma-border hover:bg-tagma-elevated transition-colors">
               Cancel
             </button>
           </div>
@@ -409,8 +460,9 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
       </header>
 
       {error && (
-        <div className="px-4 py-2 bg-tagma-error/5 border-b border-tagma-error/20 text-[11px] text-tagma-error font-mono">
-          {error}
+        <div className="flex items-center gap-2 bg-tagma-error/5 border-b border-tagma-error/20">
+          <div className="w-[3px] self-stretch shrink-0 bg-tagma-error" />
+          <span className="text-[11px] text-tagma-error font-mono py-2">{error}</span>
         </div>
       )}
 
@@ -616,7 +668,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
                 if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); }
               }}
               placeholder="Search tasks by name or prompt..."
-              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent px-2 py-1 text-tagma-text outline-none"
             />
             <button
               onClick={() => { setSearchVisible(false); setSearchQuery(''); }}

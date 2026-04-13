@@ -82,7 +82,7 @@ export function TrackInfoPanel({ track, config, onClose }: TrackInfoPanelProps) 
         {/* Core config */}
         <div>
           <label className="field-label">Configuration (read-only)</label>
-          <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
+          <div className="border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5">
             <ConfigRow label="Tasks">{track.tasks.length}</ConfigRow>
             <ConfigRow label="Driver">
               {driver}
@@ -112,7 +112,7 @@ export function TrackInfoPanel({ track, config, onClose }: TrackInfoPanelProps) 
             <label className="field-label flex items-center gap-1">
               <Layers size={9} /> Middlewares ({middlewares.length})
             </label>
-            <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
+            <div className="border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
               {middlewares.map((mw, i) => (
                 <ConfigRow key={`${mw.type}-${i}`} label={mw.type}>
                   {mw.label ?? mw.file ?? '—'}
@@ -126,7 +126,7 @@ export function TrackInfoPanel({ track, config, onClose }: TrackInfoPanelProps) 
         {track.tasks.length > 0 && (
           <div>
             <label className="field-label">Tasks in this track</label>
-            <div className="rounded-sm border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
+            <div className="border border-tagma-border/60 bg-tagma-bg/40 px-2.5 py-1.5 space-y-0.5">
               {track.tasks.map((task) => (
                 <div key={task.id} className="flex items-center gap-2 py-[2px] text-[10px] font-mono text-tagma-text/80 min-w-0">
                   <span className="text-tagma-muted/60 truncate">{track.id}.{task.id}</span>

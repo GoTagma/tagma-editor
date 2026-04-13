@@ -207,7 +207,7 @@ export function TaskConfigPanel({
         <span className="text-[10px] font-medium text-tagma-muted uppercase tracking-wider">Task Inspector</span>
         <button
           onClick={onTogglePin}
-          className={`p-1 rounded transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
+          className={`p-1 transition-colors ${isPinned ? 'text-tagma-accent bg-tagma-accent/10' : 'text-tagma-muted hover:text-tagma-text'}`}
           title={isPinned ? 'Unpin panel (allow switching)' : 'Pin panel (lock to this task)'}
         >
           <Pin size={12} />
@@ -328,7 +328,7 @@ export function TaskConfigPanel({
                     </span>
                   </button>
                   {showTrackProfile && (
-                    <pre className="mt-1 text-[10px] font-mono text-tagma-muted/80 bg-tagma-bg border border-tagma-border rounded px-2 py-1.5 max-h-[120px] overflow-auto whitespace-pre-wrap break-words">
+                    <pre className="mt-1 text-[10px] font-mono text-tagma-muted/80 bg-tagma-bg border border-tagma-border px-2 py-1.5 max-h-[120px] overflow-auto whitespace-pre-wrap break-words">
                       {track.agent_profile}
                     </pre>
                   )}

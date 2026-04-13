@@ -572,7 +572,7 @@ export function App() {
         <button
           type="button"
           onClick={showRun}
-          className={`flex items-center gap-1.5 px-2.5 h-[22px] border text-[10px] font-mono rounded transition-colors ${borderClass}`}
+          className={`flex items-center gap-1.5 px-2.5 h-[22px] border text-[10px] font-mono transition-colors ${borderClass}`}
           title="Return to Run view"
         >
           {runIsLive && <Loader2 size={10} className="animate-spin" />}
@@ -580,8 +580,8 @@ export function App() {
           {(runStatus === 'aborted' || runStatus === 'failed' || runStatus === 'error') && <XIcon size={10} />}
           <span>{label}</span>
           {runPendingApprovals.size > 0 && (
-            <span className="flex items-center gap-0.5 text-tagma-warning animate-pulse-slow">
-              <ShieldCheck size={9} />
+            <span className="flex items-center gap-0.5 text-tagma-warning">
+              <ShieldCheck size={9} className="animate-pulse-slow" />
               {runPendingApprovals.size}
             </span>
           )}
@@ -589,7 +589,7 @@ export function App() {
         <button
           type="button"
           onClick={handleRunStopOrDismiss}
-          className="flex items-center justify-center h-[22px] w-[22px] border border-tagma-border/60 text-tagma-muted hover:text-tagma-text hover:border-tagma-muted/80 rounded transition-colors"
+          className="flex items-center justify-center h-[22px] w-[22px] border border-tagma-border/60 text-tagma-muted hover:text-tagma-text hover:border-tagma-muted/80 transition-colors"
           title={runIsLive ? 'Abort run' : 'Dismiss'}
         >
           {runIsLive ? <Square size={9} /> : <XIcon size={10} />}
@@ -848,14 +848,14 @@ export function App() {
                   if (e.key === 'Enter') commitSaveAs(saveAsInput);
                   if (e.key === 'Escape') setSaveAsInput(null);
                 }}
-                className="text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+                className="text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent px-2 py-1 text-tagma-text outline-none"
                 placeholder="my-pipeline.yaml"
               />
             </div>
             <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
               <button
                 onClick={() => setSaveAsInput(null)}
-                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors rounded-sm"
+                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors"
               >
                 Cancel
               </button>
@@ -878,7 +878,7 @@ export function App() {
                 if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); }
               }}
               placeholder="Search tasks by name or prompt..."
-              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent rounded px-2 py-1 text-tagma-text outline-none"
+              className="flex-1 text-[11px] font-mono bg-tagma-bg border border-tagma-border focus:border-tagma-accent px-2 py-1 text-tagma-text outline-none"
             />
             <button
               onClick={() => { setSearchVisible(false); setSearchQuery(''); }}
@@ -961,7 +961,7 @@ export function App() {
             <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
               <button
                 onClick={() => setConfirmInfo(null)}
-                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors rounded-sm"
+                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors"
               >
                 Cancel
               </button>

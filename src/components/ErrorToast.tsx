@@ -26,9 +26,10 @@ export function ErrorToast() {
     <div
       role="alert"
       aria-live="assertive"
-      className="fixed bottom-4 right-4 z-[300] max-w-[420px] bg-tagma-surface border border-tagma-error shadow-panel animate-fade-in"
+      className="fixed bottom-4 right-4 z-[300] max-w-[420px] bg-tagma-surface border border-tagma-error shadow-panel animate-fade-in overflow-hidden"
     >
       <div className="flex items-start gap-2.5 px-3 py-2.5">
+        <div className="w-[3px] self-stretch shrink-0 bg-tagma-error" />
         <AlertCircle size={14} className="text-tagma-error shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0 text-[11px] text-tagma-text font-mono break-words">
           {errorMessage}

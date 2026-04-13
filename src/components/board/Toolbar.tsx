@@ -79,7 +79,7 @@ export function Toolbar({
               type="text" value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName(); if (e.key === 'Escape') handleCancel(); }}
-              className="text-[11px] font-semibold tracking-wide bg-tagma-bg border border-tagma-accent/40 rounded px-2 py-0.5 text-tagma-text focus:border-tagma-accent w-full max-w-[12rem]"
+              className="text-[11px] font-semibold tracking-wide bg-tagma-bg border border-tagma-accent/40 px-2 py-0.5 text-tagma-text focus:border-tagma-accent w-full max-w-[12rem]"
               autoFocus
             />
             <button onClick={handleSaveName} className="p-0.5 text-tagma-success hover:text-tagma-success/80"><Check size={12} /></button>
@@ -119,12 +119,12 @@ export function Toolbar({
       {yamlPath && (isDirty || errorCount > 0) && (
         <div className="flex items-center gap-1.5 shrink-0 ml-1">
           {isDirty && (
-            <span className="text-[9px] font-medium tracking-wider uppercase text-tagma-warning/80 bg-tagma-warning/8 px-1.5 py-px rounded-sm">
+            <span className="text-[9px] font-medium tracking-wider uppercase text-tagma-warning/80 bg-tagma-warning/8 px-1.5 py-px">
               modified
             </span>
           )}
           {errorCount > 0 && (
-            <span className="flex items-center gap-1 text-[9px] font-medium tracking-wider uppercase text-tagma-error/90 bg-tagma-error/8 px-1.5 py-px rounded-sm whitespace-nowrap">
+            <span className="flex items-center gap-1 text-[9px] font-medium tracking-wider uppercase text-tagma-error/90 bg-tagma-error/8 px-1.5 py-px whitespace-nowrap">
               <AlertTriangle size={9} />
               {errorCount} {errorCount === 1 ? 'error' : 'errors'}
             </span>
@@ -169,7 +169,7 @@ export function Toolbar({
 
         <button
           onClick={onToggleYamlPreview}
-          className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded border transition-colors shrink-0 ${
+          className={`flex items-center gap-1 px-2 py-1 text-[10px] border transition-colors shrink-0 ${
             yamlPreviewOpen
               ? 'border-tagma-accent/50 bg-tagma-accent/10 text-tagma-accent'
               : 'border-tagma-border text-tagma-muted hover:text-tagma-text hover:border-tagma-accent/30'
@@ -181,7 +181,7 @@ export function Toolbar({
         </button>
 
         {runStatusSlot ?? (
-          <button onClick={onRun} className="btn-primary group shrink-0 rounded">
+          <button onClick={onRun} className="btn-primary group shrink-0">
             <Play size={11} className="group-hover:scale-110 transition-transform" />
             <span>Run</span>
           </button>
