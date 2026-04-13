@@ -13,7 +13,8 @@
     "build": "vite build",
     "start": "bun server/index.ts",
     "preview": "vite preview",
-    "test": "bun test"
+    "test": "bun test",
+    "install:clean": "set HTTP_PROXY=&& set HTTPS_PROXY=&& set http_proxy=&& set https_proxy=&& bun pm cache rm && bun install"
   },
   "dependencies": {
     "@tagma/sdk": "latest",
