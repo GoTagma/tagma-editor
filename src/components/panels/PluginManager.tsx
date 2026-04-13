@@ -14,21 +14,32 @@ interface PluginManagerProps {
   onRequestBrowse?: () => void;
 }
 
-type ErrorKind = 'network' | 'permission' | 'version' | 'notfound' | 'unknown';
+type ErrorKind = 'network' | 'permission' | 'version' | 'notfound' | 'invalid' | 'unknown';
 
 type ActionState = { type: 'idle' }
   | { type: 'loading'; plugin: string; action: string }
   | { type: 'error'; plugin: string; action: string; message: string; kind: ErrorKind }
   | { type: 'success'; plugin: string; message: string };
 
+const ERROR_KINDS: ReadonlySet<ErrorKind> = new Set(['network', 'permission', 'version', 'notfound', 'invalid', 'unknown']);
+
 /**
- * Classify a server install error message into a coarse bucket so we
- * can render a short human hint alongside the raw message. The server already
- * returns the full `Install failed: <stderr>` string — we just pattern-match
- * on well-known substrings.
+ * Classify an error from /api/plugins/* into a coarse bucket. Prefers the
+ * server-supplied `kind` field (set by classifyServerError) and only falls
+ * back to substring matching when older servers don't ship one.
  */
-function classifyError(message: string): ErrorKind {
+function classifyError(err: unknown, message: string): ErrorKind {
+  // Prefer the server-supplied kind so we don't depend on English substrings
+  // in the raw error message — tolerates localized server output.
+  const declared = (err as { kind?: unknown } | null | undefined)?.kind;
+  if (typeof declared === 'string' && ERROR_KINDS.has(declared as ErrorKind)) {
+    return declared as ErrorKind;
+  }
   const m = message.toLowerCase();
+  if (m.includes('refusing') || m.includes('invalid plugin name') || m.includes('outside')) {
+    return 'invalid';
+  }
+  if (m.includes('integrity') || m.includes('shasum')) return 'version';
   if (m.includes('enotfound') || m.includes('etimedout') || m.includes('econnrefused') || m.includes('network') || m.includes('fetch failed')) {
     return 'network';
   }
@@ -48,8 +59,9 @@ function errorHint(kind: ErrorKind): string {
   switch (kind) {
     case 'network': return 'Network error — check your connection or proxy settings.';
     case 'permission': return 'Permission denied — check write access to the working directory.';
-    case 'version': return 'Version conflict — the package version could not be resolved.';
+    case 'version': return 'Version / integrity issue — the package could not be verified or resolved.';
     case 'notfound': return 'Package not found on the registry.';
+    case 'invalid': return 'Plugin name rejected — must be a scoped @tagma/* or tagma-plugin-* package.';
     case 'unknown': return 'See details below.';
   }
 }
@@ -68,6 +80,7 @@ const INSTALLED_FILTER = 'installed';
 
 export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChange, onRequestBrowse }: PluginManagerProps) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [autoLoadErrors, setAutoLoadErrors] = useState<ReadonlyArray<{ name: string; message: string }>>([]);
   const [actionState, setActionState] = useState<ActionState>({ type: 'idle' });
   const [inputValue, setInputValue] = useState('');
   const [search, setSearch] = useState('');
@@ -92,10 +105,12 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
 
   const refresh = useCallback(async () => {
     try {
-      const { plugins: list } = await api.listPlugins();
-      setPlugins(list);
+      const result = await api.listPlugins();
+      setPlugins(result.plugins);
+      setAutoLoadErrors(result.autoLoadErrors ?? []);
     } catch {
       setPlugins([]);
+      setAutoLoadErrors([]);
     }
   }, []);
 
@@ -148,7 +163,7 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
       await refresh();
     } catch (e: unknown) {
       const message = extractErrorMessage(e);
-      setActionState({ type: 'error', plugin: name, action: 'Install', message, kind: classifyError(message) });
+      setActionState({ type: 'error', plugin: name, action: 'Install', message, kind: classifyError(e, message) });
     }
   }, [declaredPlugins, onRegistryUpdate, onPluginsChange, refresh]);
 
@@ -164,7 +179,7 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
       await refresh();
     } catch (e: unknown) {
       const message = extractErrorMessage(e);
-      setActionState({ type: 'error', plugin: name, action: 'Uninstall', message, kind: classifyError(message) });
+      setActionState({ type: 'error', plugin: name, action: 'Uninstall', message, kind: classifyError(e, message) });
     }
   }, [declaredPlugins, onRegistryUpdate, onPluginsChange, refresh]);
 
@@ -177,7 +192,7 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
       await refresh();
     } catch (e: unknown) {
       const message = extractErrorMessage(e);
-      setActionState({ type: 'error', plugin: name, action: 'Load', message, kind: classifyError(message) });
+      setActionState({ type: 'error', plugin: name, action: 'Load', message, kind: classifyError(e, message) });
     }
   }, [onRegistryUpdate, refresh]);
 
@@ -226,9 +241,37 @@ export function PluginManager({ declaredPlugins, onRegistryUpdate, onPluginsChan
               already-installed package into the current runtime registry only. Does <em>not</em>
               touch the YAML; the effect is lost when the server restarts.
             </p>
+            <p className="text-amber-400/80">
+              <span className="font-medium">Upgrading?</span> Reinstalling a plugin replaces the
+              files on disk, but the running server keeps the previously-imported code in its
+              ESM cache. Restart the server to pick up the new version.
+            </p>
           </div>
         </div>
       </div>
+
+      {/* L1: Surface auto-load failures so users can see why a plugin from
+          their workspace didn't show up — used to be silently dropped to
+          console.warn. */}
+      {autoLoadErrors.length > 0 && (
+        <div className="shrink-0 mb-3 px-2 py-1.5 bg-tagma-error/10 border border-tagma-error/30 text-[10px]">
+          <div className="flex items-start gap-1.5">
+            <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-tagma-error font-medium mb-1">
+                {autoLoadErrors.length} plugin{autoLoadErrors.length === 1 ? '' : 's'} failed to auto-load
+              </p>
+              <ul className="space-y-0.5">
+                {autoLoadErrors.map((err) => (
+                  <li key={err.name} className="font-mono text-tagma-muted truncate" title={err.message}>
+                    <span className="text-tagma-error/80">{err.name}</span> — {err.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Search bar */}
       <div className="relative mb-3 shrink-0">

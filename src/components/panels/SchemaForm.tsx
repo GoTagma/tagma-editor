@@ -249,15 +249,26 @@ function SchemaFieldInput({ field, value, onChange, defaultStr, onBrowsePath }: 
   const strValue = value == null ? '' : String(value);
 
   // Every text-like input uses useLocalField so edits don't thrash the store.
+  // For 'number-or-list' we keep the original string when any token fails to
+  // parse as a number — silently dropping bad tokens used to swallow user
+  // typos like "1, two, 3" → [1,3] with no feedback.
   const [localStr, setLocalStr, blurStr] = useLocalField(strValue, (v) => {
     if (field.type === 'number') {
-      onChange(v === '' ? undefined : Number(v));
+      if (v === '') { onChange(undefined); return; }
+      const n = Number(v);
+      onChange(Number.isNaN(n) ? v : n);
       return;
     }
     if (field.type === 'number-or-list') {
       if (v === '') { onChange(undefined); return; }
       if (v.includes(',')) {
-        onChange(v.split(',').map((s) => Number(s.trim())).filter((n) => !Number.isNaN(n)));
+        const tokens = v.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        const parsed = tokens.map((s) => Number(s));
+        if (parsed.some((n) => Number.isNaN(n))) {
+          onChange(v); // preserve raw string so the validation error surfaces
+          return;
+        }
+        onChange(parsed);
         return;
       }
       const n = Number(v);

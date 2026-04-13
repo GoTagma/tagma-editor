@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, cpSync, createWriteStream } from 'node:fs';
 import { resolve, relative, dirname, basename, sep, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import * as tar from 'tar';
 import yaml from 'js-yaml';
 import {
@@ -20,7 +21,6 @@ import {
   serializePipeline,
   bootstrapBuiltins,
   listRegistered,
-  loadPlugins,
   loadPipeline,
   validateConfig,
   setPipelineField,
@@ -30,9 +30,12 @@ import {
   hasHandler,
   getHandler,
   registerPlugin,
+  unregisterPlugin,
+  isValidPluginName,
   discoverTemplates,
   loadTemplateManifest,
 } from '@tagma/sdk';
+import type { PluginCategory, RegisterResult } from '@tagma/sdk';
 import type {
   TemplateManifest,
   PipelineEvent,
@@ -59,6 +62,14 @@ import {
   markSynced as markWatcherSynced,
   type ExternalChangeEvent,
 } from './file-watcher.js';
+import {
+  PluginSafetyError,
+  assertSafePluginName,
+  assertWithinNodeModules,
+  pluginDirFor as pluginDirForRaw,
+  pluginCategoryFromName,
+  importWithTimeout,
+} from './plugin-safety.js';
 import type { RawPipelineConfig, RawTrackConfig, RawTaskConfig } from '@tagma/sdk';
 import type { ValidationError, RawDag } from '@tagma/sdk';
 
@@ -82,6 +93,16 @@ let workDir: string = '';
 function isPathWithin(child: string, root: string): boolean {
   const rel = relative(root, child);
   return !rel.startsWith('..') && !resolve(root, rel).includes('..' + sep);
+}
+
+// Thin closures that bind the global `workDir` to the pure helpers exported
+// from plugin-safety.ts. Keeping the helpers parametric lets us unit test
+// them in isolation; binding here lets the rest of the file stay terse.
+function pluginDirFor(name: string): string {
+  return pluginDirForRaw(name, workDir);
+}
+function fenceWithinNodeModules(pluginDir: string): void {
+  assertWithinNodeModules(pluginDir, workDir);
 }
 
 /** Max number of run log directories to keep. Shared with the SDK's engine
@@ -219,6 +240,10 @@ const BUILTIN_DRIVERS = new Set(['claude-code']);
  * Adds `@tagma/driver-{name}` when a driver is used, removes it when
  * no track/task references that driver any more. Non-driver plugins
  * (triggers, middlewares, etc.) are left untouched.
+ *
+ * M5: any auto-generated package name that fails plugin-name validation is
+ * dropped — driver names like "../evil" used to silently produce
+ * `@tagma/driver-../evil` and feed the path-traversal pipeline.
  */
 function ensureDriverPlugins(cfg: RawPipelineConfig): RawPipelineConfig {
   // Collect non-built-in drivers actually referenced
@@ -231,7 +256,11 @@ function ensureDriverPlugins(cfg: RawPipelineConfig): RawPipelineConfig {
     }
   }
 
-  const requiredDriverPlugins = new Set([...usedDrivers].map((d) => `@tagma/driver-${d}`));
+  const requiredDriverPlugins = new Set(
+    [...usedDrivers]
+      .map((d) => `@tagma/driver-${d}`)
+      .filter(isValidPluginName)
+  );
   const existing = cfg.plugins ?? [];
 
   // Keep non-driver plugins as-is, replace driver plugins with only the required set
@@ -493,6 +522,42 @@ app.get('/api/state/reload', (_req, res) => {
   res.json(getState());
 });
 
+/**
+ * Lenient YAML → RawPipelineConfig fallback used when `parseYaml` (the strict
+ * SDK parser) rejects the input. We keep accepting weird shapes so users
+ * don't lose their work, but every track/task is sanitized to a safe minimum
+ * structure — without this, the file-watcher reload path will happily ingest
+ * `tracks: [null, 1, "foo"]` from a malicious YAML and crash on the next
+ * config.tracks.flatMap() call.
+ */
+function lenientParseYaml(content: string, fallbackName: string): RawPipelineConfig {
+  const doc = yaml.load(content) as any;
+  const p = doc?.pipeline ?? doc ?? {};
+  const rawTracks = Array.isArray(p.tracks) ? p.tracks : [];
+  const tracks = rawTracks
+    .filter((t: unknown): t is Record<string, unknown> => !!t && typeof t === 'object' && !Array.isArray(t))
+    .map((t: Record<string, unknown>): RawTrackConfig => {
+      const id = typeof t.id === 'string' && t.id ? t.id : Math.random().toString(36).slice(2, 10);
+      const name = typeof t.name === 'string' && t.name ? t.name : id;
+      const rawTasks = Array.isArray(t.tasks) ? t.tasks : [];
+      const tasks = rawTasks
+        .filter((tk: unknown): tk is Record<string, unknown> => !!tk && typeof tk === 'object' && !Array.isArray(tk))
+        .map((tk: Record<string, unknown>): RawTaskConfig => {
+          const tid = typeof tk.id === 'string' && tk.id ? tk.id : Math.random().toString(36).slice(2, 10);
+          // Keep the task's other fields verbatim — lenient mode is best-effort,
+          // and the editor's validateRaw will surface any structural issues.
+          return { ...(tk as RawTaskConfig), id: tid };
+        });
+      return { ...(t as Partial<RawTrackConfig>), id, name, tasks } as RawTrackConfig;
+    });
+  return {
+    name: typeof p.name === 'string' && p.name ? p.name : fallbackName,
+    driver: typeof p.driver === 'string' ? p.driver : undefined,
+    timeout: typeof p.timeout === 'string' ? p.timeout : undefined,
+    tracks,
+  } as RawPipelineConfig;
+}
+
 // Wire the file-watcher into the SSE broadcaster. When the watcher detects
 // an external change with clean in-memory state, auto-reload the YAML and
 // push the new state to subscribers.
@@ -502,14 +567,7 @@ onFileWatcherEvent((event: ExternalChangeEvent) => {
       config = parseYaml(event.content);
     } catch {
       try {
-        const doc = yaml.load(event.content) as any;
-        const p = doc?.pipeline ?? doc ?? {};
-        config = {
-          name: p.name || 'Untitled',
-          driver: p.driver,
-          timeout: p.timeout,
-          tracks: Array.isArray(p.tracks) ? p.tracks : [],
-        } as RawPipelineConfig;
+        config = lenientParseYaml(event.content, 'Untitled');
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('[file-watcher] failed to parse reloaded YAML', err);
@@ -551,10 +609,28 @@ function registryUrl(name: string): string {
   return `${NPM_REGISTRY}/${encodeURIComponent(name)}`;
 }
 
+// C3 hardening: bound every registry/tarball fetch so a slow or malicious
+// mirror can't hang the server forever, and verify content integrity so a
+// MITM or compromised mirror can't substitute the tarball.
+const REGISTRY_FETCH_TIMEOUT_MS = 30_000;
+const TARBALL_FETCH_TIMEOUT_MS = 60_000;
+const MAX_TARBALL_BYTES = 50 * 1024 * 1024; // 50 MB hard cap
+
+interface PackageMeta {
+  version: string;
+  description: string | null;
+  tarball: string;
+  /** SRI integrity string (e.g. "sha512-...") if the registry provides one. */
+  integrity: string | null;
+  /** Legacy SHA-1 from `dist.shasum`, used as a fallback when integrity is missing. */
+  shasum: string | null;
+}
+
 /** Fetch package metadata from the npm registry (uses Bun's built-in fetch) */
-async function registryMeta(name: string): Promise<{ version: string; description: string | null; tarball: string }> {
+async function registryMeta(name: string): Promise<PackageMeta> {
   const res = await fetch(registryUrl(name), {
     headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Package "${name}" not found on registry (${res.status})`);
   const meta = await res.json() as any;
@@ -566,34 +642,110 @@ async function registryMeta(name: string): Promise<{ version: string; descriptio
     version: latest,
     description: info.description ?? null,
     tarball: info.dist.tarball,
+    integrity: typeof info.dist.integrity === 'string' ? info.dist.integrity : null,
+    shasum: typeof info.dist.shasum === 'string' ? info.dist.shasum : null,
   };
 }
 
 /**
+ * Streaming tarball download with hard size cap. Reads the response body
+ * incrementally so we can fail fast on oversized payloads instead of buffering
+ * everything in memory and OOMing the server.
+ */
+async function downloadTarball(url: string): Promise<Buffer> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(TARBALL_FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`Tarball download failed (${res.status})`);
+
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_TARBALL_BYTES) {
+    throw new Error(
+      `Tarball too large: declared ${declared} bytes exceeds cap of ${MAX_TARBALL_BYTES} bytes`
+    );
+  }
+  if (!res.body) throw new Error('Tarball response has no body');
+
+  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_TARBALL_BYTES) {
+      try { await reader.cancel(); } catch { /* ignore */ }
+      throw new Error(
+        `Tarball exceeds size cap of ${MAX_TARBALL_BYTES} bytes (received ${total}+)`
+      );
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)), total);
+}
+
+/**
+ * Verify a tarball against the registry-provided integrity field. Prefers
+ * SRI (sha512), falls back to SHA-1 shasum if that's all the registry has.
+ * Throws on mismatch.
+ */
+function verifyIntegrity(buffer: Buffer, meta: PackageMeta, name: string): void {
+  if (meta.integrity) {
+    const m = meta.integrity.match(/^(sha\d+)-(.+)$/);
+    if (!m) {
+      throw new Error(`Unrecognized integrity format for "${name}": ${meta.integrity}`);
+    }
+    const [, algo, expectedB64] = m;
+    const actual = createHash(algo).update(buffer).digest('base64');
+    if (actual !== expectedB64) {
+      throw new Error(
+        `Tarball integrity mismatch for "${name}": ` +
+        `expected ${meta.integrity}, got ${algo}-${actual}`
+      );
+    }
+    return;
+  }
+  if (meta.shasum) {
+    const actual = createHash('sha1').update(buffer).digest('hex');
+    if (actual !== meta.shasum) {
+      throw new Error(
+        `Tarball shasum mismatch for "${name}": expected ${meta.shasum}, got ${actual}`
+      );
+    }
+    return;
+  }
+  throw new Error(
+    `Registry returned no integrity or shasum for "${name}". Refusing to install ` +
+    `unverified tarball.`
+  );
+}
+
+/**
  * Install a package from the npm registry without npm CLI.
- * Downloads tarball → extracts via system tar → updates package.json.
+ * Downloads tarball → verifies integrity → extracts via pure-JS tar.
  */
 async function directRegistryInstall(name: string): Promise<void> {
-  const meta = await registryMeta(name);
+  // Caller (route handler) MUST have already validated `name` via
+  // assertSafePluginName. We still fence against escape for defense in depth.
+  assertSafePluginName(name);
+  const destDir = pluginDirFor(name);
+  fenceWithinNodeModules(destDir);
 
-  // Download tarball
-  const tarRes = await fetch(meta.tarball);
-  if (!tarRes.ok) throw new Error(`Tarball download failed (${tarRes.status})`);
-  const tarBuffer = Buffer.from(await tarRes.arrayBuffer());
+  const meta = await registryMeta(name);
+  const tarBuffer = await downloadTarball(meta.tarball);
+  verifyIntegrity(tarBuffer, meta, name);
 
   const tmpDir = mkdtempSync(join(tmpdir(), 'tagma-pkg-'));
   const tgzPath = join(tmpDir, 'package.tgz');
   writeFileSync(tgzPath, tarBuffer);
 
   try {
-    // Prepare destination in node_modules
-    const parts = name.startsWith('@') ? name.split('/') : [name];
-    const destDir = resolve(workDir, 'node_modules', ...parts);
     mkdirSync(destDir, { recursive: true });
 
     // Extract via pure-JS `tar` so install works on every platform without
     // needing a `tar` binary on PATH. (Git Bash's GNU tar chokes on Windows
     // drive letters, and we don't want to depend on the user's environment.)
+    // Note: `tar` v7 sanitizes absolute paths and `..` segments by default.
     await tar.x({ file: tgzPath, cwd: destDir, strip: 1 });
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -623,6 +775,11 @@ async function installPackage(name: string): Promise<void> {
  * Install a plugin from a local path (directory or .tgz file) via pure
  * filesystem ops — no package manager CLI required. Returns the package name
  * that was installed.
+ *
+ * The source `package.json`'s `name` field is validated against the plugin
+ * name regex before being turned into a destination path. Without this an
+ * attacker could plant a malicious `package.json` with `name: "../etc"` and
+ * trigger an arbitrary directory wipe at line `rmSync(destDir, ...)` below.
  */
 async function installFromLocalPath(absPath: string): Promise<string> {
   ensureWorkDirPackageJson();
@@ -647,14 +804,15 @@ async function installFromLocalPath(absPath: string): Promise<string> {
       throw new Error('Source does not contain a package.json');
     }
     const srcPkg = JSON.parse(readFileSync(srcPkgPath, 'utf-8'));
-    const pkgName: string | undefined = srcPkg.name;
-    if (!pkgName) {
+    const pkgName: unknown = srcPkg.name;
+    if (typeof pkgName !== 'string' || !pkgName) {
       throw new Error('Source package.json has no "name" field');
     }
+    // L3: refuse pkg names that would resolve outside workDir/node_modules.
+    assertSafePluginName(pkgName);
+    const destDir = pluginDirFor(pkgName);
+    fenceWithinNodeModules(destDir);
 
-    // Copy into the workspace's node_modules.
-    const parts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
-    const destDir = resolve(workDir, 'node_modules', ...parts);
     // Remove any previous copy so we get a clean overwrite.
     if (existsSync(destDir)) {
       rmSync(destDir, { recursive: true, force: true });
@@ -680,20 +838,29 @@ async function installFromLocalPath(absPath: string): Promise<string> {
 /**
  * Uninstall a package: remove from node_modules + package.json.
  * Done via direct filesystem ops — no package manager CLI required.
+ *
+ * Caller MUST have validated `name` via assertSafePluginName before reaching
+ * this function. We re-fence here so any future caller path that forgets the
+ * validation still can't escape workDir/node_modules.
  */
 function uninstallPackage(name: string): void {
-  // Remove from node_modules
-  const parts = name.startsWith('@') ? name.split('/') : [name];
-  const pkgDir = resolve(workDir, 'node_modules', ...parts);
+  assertSafePluginName(name);
+  const pkgDir = pluginDirFor(name);
+  fenceWithinNodeModules(pkgDir);
+
   if (existsSync(pkgDir)) {
     rmSync(pkgDir, { recursive: true, force: true });
   }
 
   // Clean up empty scope directory
-  if (name.startsWith('@') && parts.length > 1) {
-    const scopeDir = resolve(workDir, 'node_modules', parts[0]);
+  if (name.startsWith('@')) {
+    const scopeDir = resolve(workDir, 'node_modules', name.split('/')[0]);
     try {
-      if (existsSync(scopeDir) && readdirSync(scopeDir).length === 0) {
+      if (
+        isPathWithin(scopeDir, resolve(workDir, 'node_modules')) &&
+        existsSync(scopeDir) &&
+        readdirSync(scopeDir).length === 0
+      ) {
         rmSync(scopeDir, { recursive: true, force: true });
       }
     } catch {}
@@ -710,8 +877,38 @@ function uninstallPackage(name: string): void {
   }
 }
 
-/** Set of plugin package names that have been dynamically loaded into the registry this session */
-const loadedPlugins = new Set<string>();
+/**
+ * Map of plugin package name → which (category, type) pair it occupies in the
+ * SDK registry. Replaces the old `loadedPlugins: Set<string>` so we can
+ * actually unregister a plugin on uninstall.
+ *
+ * Note: ESM module caching means we cannot reload a plugin's *code* after the
+ * first import — but we CAN remove its handler from the registry, which makes
+ * subsequent task references fail loudly instead of silently reusing stale
+ * code. The PluginManager UI tells users they need to restart the server to
+ * pick up new versions.
+ */
+interface LoadedPluginMeta {
+  category: PluginCategory;
+  type: string;
+}
+const loadedPluginMeta = new Map<string, LoadedPluginMeta>();
+
+/** Compatibility shim for callers that just want a "loaded" check. */
+const loadedPlugins = {
+  has: (name: string) => loadedPluginMeta.has(name),
+  add: (name: string, meta?: LoadedPluginMeta) => {
+    if (meta) loadedPluginMeta.set(name, meta);
+  },
+  delete: (name: string) => loadedPluginMeta.delete(name),
+} as const;
+
+/**
+ * Errors collected during the most recent autoLoadInstalledPlugins() pass.
+ * Surfaced to clients via /api/plugins so the UI can flag broken plugins
+ * instead of silently dropping them on workspace open.
+ */
+let lastAutoLoadErrors: Array<{ name: string; message: string }> = [];
 
 /** Ensure workDir has a package.json so the installer has somewhere to record dependencies. */
 function ensureWorkDirPackageJson(): void {
@@ -731,11 +928,21 @@ interface PluginInfo {
 }
 
 function getPluginInfo(name: string): PluginInfo {
+  // H7: validate name BEFORE turning it into a filesystem path so an attacker
+  // can't probe arbitrary on-disk paths via /api/plugins/info?name=../../...
+  // For invalid names we return a non-installed stub; the route layer also
+  // rejects with 400 on invalid input, but we belt-and-brace here too.
+  if (!isValidPluginName(name)) {
+    return { name, installed: false, loaded: false, version: null, description: null, categories: [] };
+  }
+
   let installed = false;
   let version: string | null = null;
   let description: string | null = null;
   try {
-    const pkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
+    const pluginDir = pluginDirFor(name);
+    fenceWithinNodeModules(pluginDir);
+    const pkgPath = resolve(pluginDir, 'package.json');
     if (existsSync(pkgPath)) {
       installed = true;
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
@@ -747,12 +954,13 @@ function getPluginInfo(name: string): PluginInfo {
   const loaded = loadedPlugins.has(name);
 
   const categories: string[] = [];
-  const match = name.match(/@tagma\/(driver|trigger|completion|middleware)-(.+)/);
-  if (match) {
-    const [, cat, type] = match;
-    const pluralCat = cat + 's' as 'drivers' | 'triggers' | 'completions' | 'middlewares';
-    if (hasHandler(pluralCat, type)) {
-      categories.push(pluralCat);
+  const meta = loadedPluginMeta.get(name);
+  if (meta) {
+    if (hasHandler(meta.category, meta.type)) categories.push(meta.category);
+  } else {
+    const inferred = pluginCategoryFromName(name);
+    if (inferred && hasHandler(inferred.category, inferred.type)) {
+      categories.push(inferred.category);
     }
   }
 
@@ -787,13 +995,42 @@ function getTemplatesSnapshot(): TemplateManifest[] {
   }
 }
 
-/** Dynamically import a plugin from the workDir's node_modules */
-async function loadPluginFromWorkDir(name: string): Promise<void> {
-  // Resolve to the plugin's entry point inside workDir/node_modules
-  const pluginPkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
+/**
+ * Dynamically import a plugin from the workDir's node_modules. Returns the
+ * (category, type) pair the plugin registered under so the caller can record
+ * it in loadedPluginMeta and later unregister it cleanly.
+ *
+ * Layered safety:
+ *   1. assertSafePluginName     — reject paths and weird unicode
+ *   2. assertWithinNodeModules  — even after split('/'), pluginDir must live
+ *                                 under workDir/node_modules
+ *   3. isPathWithin (B2)        — entry point must live inside pluginDir
+ *
+ * All three are required: assertSafePluginName alone could be bypassed if the
+ * regex were ever loosened, and assertWithinNodeModules alone would still let
+ * a malicious package.json `main` field escape via "../../../evil.js".
+ */
+// R11: hard cap on how long `await import()` can hang. Plugins with an
+// infinite loop or a top-level fetch to a dead host used to wedge the load
+// route forever; now the import is racing against this timeout and we
+// surface a clear "took longer than Xs to load" error instead.
+const PLUGIN_IMPORT_TIMEOUT_MS = 15_000;
+
+async function loadPluginFromWorkDir(name: string): Promise<{ result: RegisterResult; meta: LoadedPluginMeta }> {
+  assertSafePluginName(name);
+  if (!workDir) {
+    throw new PluginSafetyError('Cannot load plugin: workspace directory is not set');
+  }
+
+  const pluginDir = pluginDirFor(name);
+  fenceWithinNodeModules(pluginDir);
+
+  const pluginPkgPath = resolve(pluginDir, 'package.json');
+  if (!existsSync(pluginPkgPath)) {
+    throw new Error(`Plugin "${name}" is not installed (no package.json at ${pluginPkgPath})`);
+  }
   const pluginPkg = JSON.parse(readFileSync(pluginPkgPath, 'utf-8'));
   const entryPoint = pluginPkg.exports?.['.'] ?? pluginPkg.main ?? './src/index.ts';
-  const pluginDir = resolve(workDir, 'node_modules', ...name.split('/'));
   const modulePath = resolve(pluginDir, entryPoint);
 
   // B2: Validate the resolved entry point is within the plugin directory to
@@ -806,12 +1043,26 @@ async function loadPluginFromWorkDir(name: string): Promise<void> {
 
   // Use file:// URL for Windows compatibility with dynamic import
   const fileUrl = `file:///${modulePath.replace(/\\/g, '/')}`;
-  const mod = await import(fileUrl);
+
+  // R11: race the dynamic import against a hard timeout so a plugin with a
+  // top-level infinite loop / pending fetch can't wedge the loader. The
+  // orphaned import keeps running on the event loop after we throw — there
+  // is no way to cancel it from outside without worker_threads — but the
+  // route handler unblocks and returns a useful error to the user.
+  const mod = await importWithTimeout<{
+    pluginCategory?: unknown;
+    pluginType?: unknown;
+    default?: unknown;
+  }>(fileUrl, PLUGIN_IMPORT_TIMEOUT_MS, name, (url) => import(url));
 
   if (!mod.pluginCategory || !mod.pluginType || !mod.default) {
     throw new Error(`Plugin "${name}" must export pluginCategory, pluginType, and default`);
   }
-  registerPlugin(mod.pluginCategory, mod.pluginType, mod.default);
+  // SDK validates the category, type, and contract — let it throw on bad shapes.
+  const result = registerPlugin(mod.pluginCategory, mod.pluginType, mod.default);
+  const meta: LoadedPluginMeta = { category: mod.pluginCategory as PluginCategory, type: String(mod.pluginType) };
+  loadedPluginMeta.set(name, meta);
+  return { result, meta };
 }
 
 /** Read/write .tagma/plugins.json — the persistent manifest of installed plugins */
@@ -819,8 +1070,16 @@ function readPluginManifest(): string[] {
   try {
     const p = resolve(workDir, '.tagma', 'plugins.json');
     if (!existsSync(p)) return [];
-    return JSON.parse(readFileSync(p, 'utf-8'));
-  } catch {
+    const parsed = JSON.parse(readFileSync(p, 'utf-8'));
+    if (!Array.isArray(parsed)) {
+      console.error(`[plugins] manifest at ${p} is not an array; ignoring`);
+      return [];
+    }
+    // Drop any entry that wouldn't survive name validation — keeps a bad
+    // manifest from re-introducing a path-traversal payload on every open.
+    return parsed.filter((n): n is string => isValidPluginName(n));
+  } catch (err) {
+    console.error('[plugins] failed to read .tagma/plugins.json:', err);
     return [];
   }
 }
@@ -852,6 +1111,10 @@ function removeFromPluginManifest(name: string): void {
  * Scans workspace package.json dependencies, then checks each installed
  * package for `@tagma/types` in peerDependencies or dependencies —
  * the reliable marker for any tagma plugin regardless of package scope.
+ *
+ * Names that fail plugin-name validation are dropped silently — the manifest
+ * is attacker-controllable (anyone who can edit package.json could plant a
+ * malicious entry), so we only auto-load names that pass the regex.
  */
 function discoverInstalledPlugins(): string[] {
   if (!workDir) return [];
@@ -862,8 +1125,10 @@ function discoverInstalledPlugins(): string[] {
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
     const plugins: string[] = [];
     for (const name of Object.keys(allDeps)) {
+      // H1: skip anything that doesn't look like a real plugin package name.
+      if (!isValidPluginName(name)) continue;
       try {
-        const depPkgPath = resolve(workDir, 'node_modules', ...name.split('/'), 'package.json');
+        const depPkgPath = resolve(pluginDirFor(name), 'package.json');
         if (!existsSync(depPkgPath)) continue;
         const depPkg = JSON.parse(readFileSync(depPkgPath, 'utf-8'));
         const peer = depPkg.peerDependencies ?? {};
@@ -882,41 +1147,79 @@ function discoverInstalledPlugins(): string[] {
 /**
  * Auto-load all installed plugins into the registry.
  * Sources: node_modules scan + manifest + config.plugins.
- * Skips already-loaded plugins. Errors are silently skipped
- * so one bad plugin doesn't block the rest.
+ * Skips already-loaded plugins. Errors are recorded in `lastAutoLoadErrors`
+ * so the UI can surface them via /api/plugins instead of dropping silently.
  */
 async function autoLoadInstalledPlugins(): Promise<string[]> {
   const manifest = readPluginManifest();
-  const declared = config.plugins ?? [];
+  const declared = (config.plugins ?? []).filter(isValidPluginName);
   const discovered = discoverInstalledPlugins();
   const candidates = [...new Set([...discovered, ...manifest, ...declared])];
   const loaded: string[] = [];
+  const errors: Array<{ name: string; message: string }> = [];
   for (const name of candidates) {
     if (loadedPlugins.has(name)) continue;
+    if (!isValidPluginName(name)) {
+      errors.push({ name, message: 'invalid plugin name' });
+      continue;
+    }
     const info = getPluginInfo(name);
     if (!info.installed) continue;
     try {
       await loadPluginFromWorkDir(name);
-      loadedPlugins.add(name);
       loaded.push(name);
-    } catch (e) { console.warn(`Failed to load plugin "${name}":`, e); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`Failed to load plugin "${name}":`, msg);
+      errors.push({ name, message: msg });
+    }
   }
+  lastAutoLoadErrors = errors;
   return loaded;
+}
+
+/**
+ * Map a server-side error onto a coarse error kind so the client can render a
+ * localized hint without scraping English substrings out of the message body.
+ * Keeps the wire format symmetric with PluginManager.classifyError.
+ */
+type PluginErrorKind = 'network' | 'permission' | 'version' | 'notfound' | 'invalid' | 'unknown';
+
+function classifyServerError(err: unknown): { message: string; kind: PluginErrorKind } {
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof PluginSafetyError) return { message, kind: 'invalid' };
+  const m = message.toLowerCase();
+  if (m.includes('integrity') || m.includes('shasum')) return { message, kind: 'version' };
+  if (m.includes('enotfound') || m.includes('etimedout') || m.includes('econnrefused') || m.includes('fetch failed') || m.includes('aborted') || m.includes('network')) return { message, kind: 'network' };
+  if (m.includes('eacces') || m.includes('eperm') || m.includes('permission denied')) return { message, kind: 'permission' };
+  if (m.includes('etarget') || m.includes('eresolve') || m.includes('peer dep')) return { message, kind: 'version' };
+  if (m.includes('not found') || m.includes('e404') || m.includes('404')) return { message, kind: 'notfound' };
+  return { message, kind: 'unknown' };
+}
+
+function pluginErrorResponse(err: unknown, action: string) {
+  const { message, kind } = classifyServerError(err);
+  return { error: `${action} failed: ${message}`, kind };
 }
 
 /** List all managed plugins (from pipeline config + manifest + loaded this session) */
 app.get('/api/plugins', (_req, res) => {
   const declared = config.plugins ?? [];
   const manifest = readPluginManifest();
-  const allNames = [...new Set([...declared, ...manifest, ...loadedPlugins])];
+  const allNames = [...new Set([...declared, ...manifest, ...loadedPluginMeta.keys()])];
   const plugins = allNames.map(getPluginInfo);
-  res.json({ plugins });
+  res.json({ plugins, autoLoadErrors: lastAutoLoadErrors });
 });
 
 /** Look up a single plugin from npm registry */
 app.get('/api/plugins/info', async (req, res) => {
   const name = req.query.name as string;
-  if (!name) return res.status(400).json({ error: 'name query parameter required' });
+  try {
+    assertSafePluginName(name);
+  } catch (err) {
+    const { message } = classifyServerError(err);
+    return res.status(400).json({ error: message });
+  }
 
   const local = getPluginInfo(name);
   if (local.installed) return res.json(local);
@@ -928,23 +1231,20 @@ app.get('/api/plugins/info', async (req, res) => {
       version: meta.version, description: meta.description,
       categories: [],
     });
-  } catch (e: any) {
-    res.status(404).json({ error: `Package "${name}" not found on registry` });
+  } catch (e: unknown) {
+    const { message, kind } = classifyServerError(e);
+    res.status(404).json({ error: `Package "${name}" not found on registry: ${message}`, kind });
   }
 });
-
-// B9: Validate plugin name format — must be a scoped npm package or tagma-plugin-*.
-// Reuse the SDK's regex to stay in sync.
-const EDITOR_PLUGIN_NAME_RE = /^@[a-z0-9-]+\/[a-z0-9._-]+$|^tagma-plugin-[a-z0-9._-]+$/;
 
 /** Install a plugin into workDir and load it into the registry */
 app.post('/api/plugins/install', async (req, res) => {
   const { name } = req.body;
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'name is required' });
-  }
-  if (!EDITOR_PLUGIN_NAME_RE.test(name)) {
-    return res.status(400).json({ error: `Invalid plugin name "${name}". Must be a scoped npm package (e.g. @tagma/trigger-xyz) or tagma-plugin-*.` });
+  try {
+    assertSafePluginName(name);
+  } catch (err) {
+    const { message } = classifyServerError(err);
+    return res.status(400).json({ error: message });
   }
   if (!workDir) {
     return res.status(400).json({ error: 'Set a working directory first' });
@@ -956,41 +1256,56 @@ app.post('/api/plugins/install', async (req, res) => {
 
     // Load into SDK registry
     try {
-      await loadPluginFromWorkDir(name);
-      loadedPlugins.add(name);
-    } catch (loadErr: any) {
+      const { result } = await loadPluginFromWorkDir(name);
+      const note = result === 'replaced'
+        ? 'A plugin was already registered for this category/type — restart the server to pick up the new code.'
+        : undefined;
+      res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot(), note });
+    } catch (loadErr: unknown) {
+      const { message, kind } = classifyServerError(loadErr);
       return res.json({
         plugin: getPluginInfo(name),
         registry: getRegistrySnapshot(),
-        warning: `Installed but failed to load: ${loadErr.message}`,
+        warning: `Installed but failed to load: ${message}`,
+        kind,
       });
     }
-
-    res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot() });
-  } catch (e: any) {
-    res.status(500).json({ error: `Install failed: ${e.message}` });
+  } catch (e: unknown) {
+    res.status(500).json(pluginErrorResponse(e, 'Install'));
   }
 });
 
 /** Uninstall a plugin from workDir via direct filesystem ops (no package manager required) */
 app.post('/api/plugins/uninstall', (_req, res) => {
   const { name } = _req.body;
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'name is required' });
+  try {
+    assertSafePluginName(name);
+  } catch (err) {
+    const { message } = classifyServerError(err);
+    return res.status(400).json({ error: message });
+  }
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
   }
 
   try {
     uninstallPackage(name);
     removeFromPluginManifest(name);
-    loadedPlugins.delete(name);
+    // C4: actually remove the handler from the SDK registry so subsequent
+    // task references fail fast instead of silently using stale code.
+    const meta = loadedPluginMeta.get(name);
+    if (meta) {
+      unregisterPlugin(meta.category, meta.type);
+      loadedPluginMeta.delete(name);
+    }
 
     res.json({
       plugin: getPluginInfo(name),
       registry: getRegistrySnapshot(),
-      note: 'Plugin uninstalled. Registry entries persist until server restart.',
+      note: 'Plugin uninstalled. The cached module remains in the ESM loader; restart the server before reinstalling a different version.',
     });
-  } catch (e: any) {
-    res.status(500).json({ error: `Uninstall failed: ${e.message}` });
+  } catch (e: unknown) {
+    res.status(500).json(pluginErrorResponse(e, 'Uninstall'));
   }
 });
 
@@ -1015,27 +1330,36 @@ app.post('/api/plugins/import-local', async (req, res) => {
 
     // Load into SDK registry
     try {
-      await loadPluginFromWorkDir(pkgName);
-      loadedPlugins.add(pkgName);
-    } catch (loadErr: any) {
+      const { result } = await loadPluginFromWorkDir(pkgName);
+      const note = result === 'replaced'
+        ? 'A plugin was already registered for this category/type — restart the server to pick up the new code.'
+        : undefined;
+      res.json({ plugin: getPluginInfo(pkgName), registry: getRegistrySnapshot(), note });
+    } catch (loadErr: unknown) {
+      const { message, kind } = classifyServerError(loadErr);
       return res.json({
         plugin: getPluginInfo(pkgName),
         registry: getRegistrySnapshot(),
-        warning: `Installed but failed to load: ${loadErr.message}`,
+        warning: `Installed but failed to load: ${message}`,
+        kind,
       });
     }
-
-    res.json({ plugin: getPluginInfo(pkgName), registry: getRegistrySnapshot() });
-  } catch (e: any) {
-    res.status(500).json({ error: `Local import failed: ${e.message}` });
+  } catch (e: unknown) {
+    res.status(500).json(pluginErrorResponse(e, 'Local import'));
   }
 });
 
 /** Load an already-installed plugin from workDir into the registry */
 app.post('/api/plugins/load', async (req, res) => {
   const { name } = req.body;
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'name is required' });
+  try {
+    assertSafePluginName(name);
+  } catch (err) {
+    const { message } = classifyServerError(err);
+    return res.status(400).json({ error: message });
+  }
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
   }
 
   const info = getPluginInfo(name);
@@ -1048,11 +1372,13 @@ app.post('/api/plugins/load', async (req, res) => {
   }
 
   try {
-    await loadPluginFromWorkDir(name);
-    loadedPlugins.add(name);
-    res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot() });
-  } catch (e: any) {
-    res.status(500).json({ error: `Load failed: ${e.message}` });
+    const { result } = await loadPluginFromWorkDir(name);
+    const note = result === 'replaced'
+      ? 'Replaced an existing handler for this category/type. Restart the server to pick up new code.'
+      : undefined;
+    res.json({ plugin: getPluginInfo(name), registry: getRegistrySnapshot(), note });
+  } catch (e: unknown) {
+    res.status(500).json(pluginErrorResponse(e, 'Load'));
   }
 });
 
@@ -1349,14 +1675,7 @@ app.post('/api/open', async (req, res) => {
       config = parseYaml(content);
     } catch {
       // parseYaml is strict — fall back to lenient loading
-      const doc = yaml.load(content) as any;
-      const p = doc?.pipeline ?? doc ?? {};
-      config = {
-        name: p.name || basename(absPath, '.yaml').replace(/[-_]/g, ' '),
-        driver: p.driver,
-        timeout: p.timeout,
-        tracks: Array.isArray(p.tracks) ? p.tracks : [],
-      } as RawPipelineConfig;
+      config = lenientParseYaml(content, basename(absPath, '.yaml').replace(/[-_]/g, ' '));
     }
     yamlPath = absPath;
     loadLayout();
@@ -1453,10 +1772,6 @@ app.post('/api/import-file', async (req, res) => {
   if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
   const absSource = resolve(sourcePath);
   if (!existsSync(absSource)) return res.status(404).json({ error: `File not found: ${absSource}` });
-  // Security: prevent importing arbitrary files from outside the workspace
-  if (!isPathWithin(absSource, workDir) && !isPathWithin(absSource, join(workDir, '.tagma'))) {
-    return res.status(403).json({ error: 'Source path is outside the workspace directory' });
-  }
   const tagmaDir = join(workDir, '.tagma');
   mkdirSync(tagmaDir, { recursive: true });
   const destPath = join(tagmaDir, basename(absSource));
@@ -1474,14 +1789,7 @@ app.post('/api/import-file', async (req, res) => {
     try {
       config = parseYaml(content);
     } catch {
-      const doc = yaml.load(content) as any;
-      const p = doc?.pipeline ?? doc ?? {};
-      config = {
-        name: p.name || basename(absSource, '.yaml').replace(/[-_]/g, ' '),
-        driver: p.driver,
-        timeout: p.timeout,
-        tracks: Array.isArray(p.tracks) ? p.tracks : [],
-      } as RawPipelineConfig;
+      config = lenientParseYaml(content, basename(absSource, '.yaml').replace(/[-_]/g, ' '));
     }
     yamlPath = destPath;
     loadLayout();
@@ -1501,10 +1809,6 @@ app.post('/api/export-file', (req, res) => {
   if (!yamlPath) return res.status(400).json({ error: 'No pipeline file to export' });
   const absDestDir = resolve(destDir);
   if (!existsSync(absDestDir)) return res.status(404).json({ error: `Directory not found: ${absDestDir}` });
-  // B1: Ensure export destination is within workDir.
-  if (workDir && !isPathWithin(absDestDir, workDir)) {
-    return res.status(403).json({ error: 'Export destination is outside the workspace directory' });
-  }
   try {
     const content = serializePipeline(config);
     writeFileSync(yamlPath, content, 'utf-8');
@@ -1732,15 +2036,17 @@ app.post('/api/run/start', async (_req, res) => {
 
   // Pre-load plugins from workDir's node_modules so the SDK engine doesn't
   // fall back to Node's default resolution (which uses process.cwd(), not
-  // the user's workspace). After loading we strip `plugins` from the resolved
-  // config so the engine's own loadPlugins() is a no-op.
+  // the user's workspace). Every name is validated before reaching
+  // loadPluginFromWorkDir so a malicious YAML can't smuggle a path-traversal
+  // payload into the loader.
   if (config.plugins?.length) {
     for (const name of config.plugins) {
       try {
+        assertSafePluginName(name);
         await loadPluginFromWorkDir(name);
       } catch (err: unknown) {
         runStarting = false;
-        const message = err instanceof Error ? err.message : String(err);
+        const { message } = classifyServerError(err);
         return res.status(400).json({ error: `Plugin load error: ${message}` });
       }
     }
@@ -1755,9 +2061,9 @@ app.post('/api/run/start', async (_req, res) => {
     return res.status(400).json({ error: `Configuration error: ${message}` });
   }
 
-  // Clear plugins so the SDK engine skips its own import(name) resolution
-  // (plugins are already registered above from workDir's node_modules).
-  pipelineConfig = { ...pipelineConfig, plugins: [] };
+  // Plugins are already registered from the workDir's node_modules above; the
+  // engine will see skipPluginLoading: true and won't re-resolve them via
+  // Node's cwd-based default import.
 
   // Validate the resolved config (catches DAG errors introduced by template
   // expansion, e.g. duplicate qualified IDs, broken cross-template references).
@@ -1868,6 +2174,7 @@ app.post('/api/run/start', async (_req, res) => {
     signal: abortController.signal,
     maxLogRuns: MAX_LOG_RUNS,
     runId,
+    skipPluginLoading: true,
     onEvent: (event: PipelineEvent) => {
       if (event.type === 'task_status_change') {
         // Update local snapshot for summary persistence.

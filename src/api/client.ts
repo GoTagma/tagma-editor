@@ -83,7 +83,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error ?? 'Request failed');
+    // Promote server-supplied error kind to a typed property so callers can
+    // render localized hints without scraping English substrings out of the
+    // message body.
+    const apiErr = new Error(err.error ?? 'Request failed') as Error & { kind?: string };
+    if (typeof err.kind === 'string') apiErr.kind = err.kind;
+    throw apiErr;
   }
   if (res.headers.get('content-type')?.includes('text/yaml')) {
     return (await res.text()) as unknown as T;
@@ -346,11 +351,22 @@ export interface PluginInfo {
   categories: string[];
 }
 
+/** Coarse server-side error classification — mirrors PluginManager's ErrorKind. */
+export type PluginErrorKind = 'network' | 'permission' | 'version' | 'notfound' | 'invalid' | 'unknown';
+
 export interface PluginActionResult {
   plugin: PluginInfo;
   registry: PluginRegistry;
   warning?: string;
   note?: string;
+  /** Set when the action partially failed (e.g. installed but failed to load). */
+  kind?: PluginErrorKind;
+}
+
+export interface PluginListResult {
+  plugins: PluginInfo[];
+  /** Errors collected during the most recent autoLoadInstalledPlugins() pass. */
+  autoLoadErrors?: ReadonlyArray<{ name: string; message: string }>;
 }
 
 export interface FsEntry {
@@ -649,7 +665,7 @@ export const api = {
   // ── Plugin management ──
 
   listPlugins: () =>
-    request<{ plugins: PluginInfo[] }>('/plugins'),
+    request<PluginListResult>('/plugins'),
 
   getPluginInfo: (name: string) =>
     request<PluginInfo>(`/plugins/info?name=${encodeURIComponent(name)}`),
