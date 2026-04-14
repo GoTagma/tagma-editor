@@ -52,6 +52,46 @@ function computeRunDuration(entry: RunHistoryEntry): string {
   return formatDuration(end - start);
 }
 
+/** Absolute timestamp: shows Today / Yesterday / Mon DD / YYYY-MM-DD
+ *  together with HH:mm in 24h format — concise but unambiguous. */
+function formatAbsTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const now = new Date();
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `Today ${hhmm}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${hhmm}`;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  if (sameYear) {
+    const month = d.toLocaleString(undefined, { month: 'short' });
+    return `${month} ${d.getDate()} ${hhmm}`;
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hhmm}`;
+}
+
+/** "3 min ago", "2 h ago", "5 d ago" — quick relative scan. */
+function formatRelTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = Date.now() - d.getTime();
+  if (diff < 0) return 'just now';
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const dy = Math.floor(h / 24);
+  if (dy < 30) return `${dy} d ago`;
+  const mo = Math.floor(dy / 30);
+  if (mo < 12) return `${mo} mo ago`;
+  const y = Math.floor(dy / 365);
+  return `${y} y ago`;
+}
+
 function downloadSummary(summary: RunSummary): void {
   const blob = new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -201,10 +241,10 @@ export function RunHistoryBrowser() {
           {visibleRuns.map((run) => {
             const isSelected = selectedRunId === run.runId;
             const statusIcon = run.success == null
-              ? <Clock size={10} className="text-tagma-muted/50" />
+              ? <Clock size={11} className="text-tagma-muted/60 shrink-0" />
               : run.success
-                ? <Check size={10} className="text-tagma-success" />
-                : <X size={10} className="text-tagma-error" />;
+                ? <Check size={11} className="text-tagma-success shrink-0" />
+                : <X size={11} className="text-tagma-error shrink-0" />;
             return (
               <button
                 type="button"
@@ -215,22 +255,33 @@ export function RunHistoryBrowser() {
                   ${isSelected ? 'bg-tagma-accent/8 border-l-2 border-l-tagma-accent' : ''}
                 `}
               >
+                {/* Primary line — the time is the most scannable piece of
+                    information when disambiguating which past run a user is
+                    after, so it's promoted to the top line alongside the
+                    status icon and total duration. */}
                 <div className="flex items-center gap-1.5">
                   {statusIcon}
-                  <span className="text-[10px] font-mono text-tagma-text truncate flex-1">{run.runId}</span>
+                  <span className="text-[11px] font-medium text-tagma-text flex-1 truncate">
+                    {formatAbsTime(run.startedAt)}
+                  </span>
+                  <span className="text-[9px] font-mono text-tagma-muted/70 tabular-nums shrink-0">
+                    {computeRunDuration(run)}
+                  </span>
                 </div>
-                {run.pipelineName && (
-                  <div className="text-[9px] text-tagma-text/70 pl-4 mt-0.5 truncate">
-                    {run.pipelineName}
-                  </div>
-                )}
-                <div className="text-[9px] font-mono text-tagma-muted pl-4 mt-0.5 flex items-center gap-1.5">
-                  <span>{new Date(run.startedAt).toLocaleString()}</span>
-                  <span className="text-tagma-muted/50">·</span>
-                  <span>{computeRunDuration(run)}</span>
+                {/* Secondary line — pipeline name + relative time ("3 min ago")
+                    for quick temporal scanning without parsing the timestamp. */}
+                <div className="text-[9px] text-tagma-muted pl-[18px] mt-0.5 flex items-center gap-1.5 min-w-0">
+                  {run.pipelineName && (
+                    <>
+                      <span className="truncate text-tagma-text/70">{run.pipelineName}</span>
+                      <span className="text-tagma-muted/40 shrink-0">·</span>
+                    </>
+                  )}
+                  <span className="shrink-0 text-tagma-muted/60">{formatRelTime(run.startedAt)}</span>
                 </div>
+                {/* Task-count chips (unchanged) */}
                 {run.taskCounts && (
-                  <div className="flex items-center gap-1 pl-4 mt-0.5">
+                  <div className="flex items-center gap-1 pl-[18px] mt-1">
                     {run.taskCounts.success > 0 && (
                       <span className="chip-xs bg-tagma-success/10 border-tagma-success/20 text-tagma-success">
                         <Check size={7} />
@@ -258,10 +309,15 @@ export function RunHistoryBrowser() {
                   </div>
                 )}
                 {!run.taskCounts && (
-                  <div className="text-[9px] font-mono text-tagma-muted/40 pl-4 mt-0.5">
+                  <div className="text-[9px] font-mono text-tagma-muted/40 pl-[18px] mt-0.5">
                     {formatSize(run.sizeBytes)} log
                   </div>
                 )}
+                {/* Tertiary — the opaque runId kept small/muted as a tooltip-
+                    like fingerprint, useful when correlating with server logs. */}
+                <div className="text-[8.5px] font-mono text-tagma-muted/35 pl-[18px] mt-1 truncate" title={run.runId}>
+                  {run.runId}
+                </div>
               </button>
             );
           })}

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { usePipelineStore } from './store/pipeline-store';
 import { BoardCanvas } from './components/board/BoardCanvas';
 import { Toolbar } from './components/board/Toolbar';
@@ -613,10 +614,19 @@ export function App() {
     );
   }
 
-  // Run mode
-  if (runActive) {
-    return (
-      <>
+  const VIEW_TRANSITION = { duration: 0.28, ease: [0.16, 1, 0.3, 1] as const };
+
+  return (
+    <AnimatePresence mode="wait">
+    {runActive ? (
+      <motion.div
+        key="run"
+        className="h-full"
+        initial={{ opacity: 0, x: 40 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0, x: -40 }}
+        transition={VIEW_TRANSITION}
+      >
         <RunView
           config={config}
           dagEdges={dagEdges}
@@ -656,18 +666,23 @@ export function App() {
             </div>
           </div>
         )}
-      </>
-    );
-  }
-
-  return (
-    <div className="h-full flex flex-col bg-tagma-bg">
+      </motion.div>
+    ) : (
+    <motion.div
+      key="editor"
+      className="h-full flex flex-col bg-tagma-bg"
+      initial={{ opacity: 0, x: -40 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 40 }}
+      transition={VIEW_TRANSITION}
+    >
       <div onClick={() => { if (!pinnedTaskId && !pinnedTrackId) { selectTask(null); selectTrack(null); } }}>
         <Toolbar
           pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
           menus={menus} workspaceItems={workspaceItems}
           onUpdateName={setPipelineName} onRun={handleRun}
           yamlPreviewOpen={showYamlPreview} onToggleYamlPreview={() => setShowYamlPreview((v) => !v)}
+          onShowHistory={showRun}
           runStatusSlot={runStatusSlot}
         />
 
@@ -979,6 +994,8 @@ export function App() {
           </div>
         </div>
       )}
-    </div>
+    </motion.div>
+    )}
+    </AnimatePresence>
   );
 }

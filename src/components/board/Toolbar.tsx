@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react';
-import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink, ChevronDown, Code } from 'lucide-react';
+import { Check, X, Pencil, Play, LayoutGrid, AlertTriangle, FolderOpen, ExternalLink, ChevronDown, Code, History } from 'lucide-react';
 import { MenuBar } from '../MenuBar';
 import { DropdownMenu, type DropdownItem } from '../DropdownMenu';
 import { api } from '../../api/client';
@@ -19,6 +19,13 @@ interface ToolbarProps {
   /** Toggle the YAML preview panel visibility. */
   onToggleYamlPreview: () => void;
   /**
+   * Open the Run view without starting a new run. When clicked while the
+   * run engine is idle, the Run view renders the RunHistoryBrowser so the
+   * user can inspect past runs (persisted under .tagma/logs/run_*). When a
+   * run is already live or minimized, this is equivalent to reopening it.
+   */
+  onShowHistory: () => void;
+  /**
    * Optional slot rendered in place of the primary Run button. The
    * Run view uses this while a run is minimized so the user gets a
    * clearly-labelled re-enter / abort control instead of a Run button
@@ -29,7 +36,7 @@ interface ToolbarProps {
 
 export function Toolbar({
   pipelineName, yamlPath, workDir, isDirty, errorCount, menus, workspaceItems,
-  onUpdateName, onRun, yamlPreviewOpen, onToggleYamlPreview, runStatusSlot,
+  onUpdateName, onRun, yamlPreviewOpen, onToggleYamlPreview, onShowHistory, runStatusSlot,
 }: ToolbarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(pipelineName);
@@ -166,6 +173,15 @@ export function Toolbar({
         )}
 
         {workDir && <div className="w-px h-4 bg-tagma-border/60 shrink-0" />}
+
+        <button
+          onClick={onShowHistory}
+          className="flex items-center gap-1 px-2 py-1 text-[10px] border border-tagma-border text-tagma-muted hover:text-tagma-text hover:border-tagma-accent/30 transition-colors shrink-0"
+          title="View run history"
+        >
+          <History size={11} />
+          <span>History</span>
+        </button>
 
         <button
           onClick={onToggleYamlPreview}
