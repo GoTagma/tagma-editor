@@ -273,6 +273,8 @@ export interface RawTaskConfig {
 export interface ValidationError {
   path: string;
   message: string;
+  /** H8: 'warning' entries are non-blocking style hints; undefined / 'error' are fatal. */
+  severity?: 'error' | 'warning';
 }
 
 export interface DagEdge {
@@ -707,8 +709,16 @@ export const api = {
 
   loadDemo: () => request<ServerState>('/demo', { method: 'POST' }),
 
-  listDir: (path?: string) =>
-    request<FsListResult>(`/fs/list${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+  listDir: (path?: string, opts?: { picker?: boolean }) => {
+    // C3: `picker=1` opts a request out of the workspace fence so the
+    // dedicated workspace-root / import / export pickers can walk the host
+    // filesystem. Mutation endpoints still enforce their own fences.
+    const params = new URLSearchParams();
+    if (path) params.set('path', path);
+    if (opts?.picker) params.set('picker', '1');
+    const qs = params.toString();
+    return request<FsListResult>(`/fs/list${qs ? `?${qs}` : ''}`);
+  },
 
   listWorkspaceYamls: () =>
     request<{ entries: { name: string; path: string; pipelineName: string | null }[] }>(
@@ -861,7 +871,17 @@ export const api = {
     es.addEventListener('state_event', (e) => {
       try {
         const event = JSON.parse((e as MessageEvent).data) as ServerStateEvent;
-        if ((event.type === 'external-change' || event.type === 'state_sync') && event.newState?.revision !== undefined) {
+        // C4 (P1-H1 lost-update fix): only bump the client revision on
+        // `external-change`, where the server has already reloaded the file
+        // and the App.tsx handler unconditionally calls init() so the local
+        // store will be replaced with the new state. For `state_sync` (a
+        // reconnect catch-up) the consumer may *skip* applying the new state
+        // when there are unsaved local edits — bumping the revision here
+        // would mean the next mutation passes the If-Match check against an
+        // unrelated baseline, silently overwriting whoever wrote that newer
+        // revision. The consumer is responsible for calling setClientRevision
+        // (via applyState) only when it actually adopts the new state.
+        if (event.type === 'external-change' && event.newState?.revision !== undefined) {
           setClientRevision(event.newState.revision);
         }
         onEvent(event);

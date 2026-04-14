@@ -15,6 +15,51 @@ import type { FileExplorerMode } from '../FileExplorer';
 const KNOWN_TRIGGER_TYPES = new Set(['manual', 'file']);
 const KNOWN_COMPLETION_TYPES = new Set(['exit_code', 'file_exists', 'output_check']);
 
+/**
+ * H7: Inline conflict banner shown when an external file change brought a
+ * new server value for a field while the user had uncommitted edits. Lets
+ * the user keep their typing or accept the incoming server version without
+ * losing context. Without this, the local-field hook silently kept local
+ * edits and there was no UI affordance to reconcile.
+ */
+function FieldConflictBadge({
+  changed,
+  onDiscard,
+  onAccept,
+}: {
+  changed: boolean;
+  onDiscard: () => void;
+  onAccept: () => void;
+}) {
+  if (!changed) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 px-2 py-1 mb-1 bg-tagma-warning/10 border border-tagma-warning/40 text-[10px]">
+      <div className="flex items-center gap-1.5 text-tagma-warning min-w-0">
+        <AlertTriangle size={10} className="shrink-0" />
+        <span className="truncate">External change available</span>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={onDiscard}
+          className="px-1.5 py-0.5 hover:bg-tagma-warning/20 text-tagma-warning"
+          title="Adopt the external change, discarding local edits"
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          onClick={onAccept}
+          className="px-1.5 py-0.5 hover:bg-tagma-warning/20 text-tagma-warning"
+          title="Keep local edits and overwrite the external change"
+        >
+          Keep mine
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Merge builtin + registry plugin list into a unique, sorted option list. */
 function mergeTypeOptions(builtin: string[], registry: string[]): string[] {
   const set = new Set<string>([...builtin, ...registry]);
@@ -107,9 +152,17 @@ export function TaskConfigPanel({
     setFileBrowser({ mode, initialPath: currentValue || undefined, onSelect });
   }, []);
 
-  const [name, setName, blurName] = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
-  const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v }));
-  const [command, setCommand, blurCommand] = useLocalField(task.command ?? '', (v) => commitField({ command: v }));
+  // H7: useLocalField exposes `serverChanged` / `discardLocal` / `acceptLocal`
+  // as extras on the returned tuple so existing 3-element destructuring still
+  // works. We grab the full result for the high-traffic fields (name, prompt,
+  // command) so the user can resolve a server-vs-local conflict without
+  // losing their in-progress edits when an external file change arrives.
+  const nameField = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
+  const [name, setName, blurName] = nameField;
+  const promptField = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v }));
+  const [prompt, setPrompt, blurPrompt] = promptField;
+  const commandField = useLocalField(task.command ?? '', (v) => commitField({ command: v }));
+  const [command, setCommand, blurCommand] = commandField;
   const handleDriverChange = useCallback((value: string) => {
     onUpdateTask(trackId, task.id, { driver: value || undefined });
   }, [trackId, task.id, onUpdateTask]);
@@ -225,6 +278,11 @@ export function TaskConfigPanel({
         {/* Name */}
         <div>
           <label className="field-label">Name</label>
+          <FieldConflictBadge
+            changed={nameField.serverChanged}
+            onDiscard={nameField.discardLocal}
+            onAccept={nameField.acceptLocal}
+          />
           <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={blurName} placeholder="Task name..." />
         </div>
 
@@ -240,6 +298,11 @@ export function TaskConfigPanel({
         {/* Prompt / Command */}
         <div>
           <label className="field-label">{mode === 'prompt' ? 'Prompt' : 'Command'}</label>
+          <FieldConflictBadge
+            changed={mode === 'prompt' ? promptField.serverChanged : commandField.serverChanged}
+            onDiscard={mode === 'prompt' ? promptField.discardLocal : commandField.discardLocal}
+            onAccept={mode === 'prompt' ? promptField.acceptLocal : commandField.acceptLocal}
+          />
           <textarea
             className="field-input min-h-[120px] resize-y font-mono text-[11px]"
             value={mode === 'prompt' ? prompt : command}

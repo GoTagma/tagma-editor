@@ -35,6 +35,7 @@ import {
   readPluginManifest as parsePluginManifestField,
   discoverTemplates,
   loadTemplateManifest,
+  generateRunId,
 } from '@tagma/sdk';
 import type { PluginCategory, RegisterResult } from '@tagma/sdk';
 import type {
@@ -78,7 +79,37 @@ import type { ValidationError, RawDag } from '@tagma/sdk';
 bootstrapBuiltins();
 
 const app = express();
-app.use(cors());
+// ── C2: Tighten CORS ──
+// The server hosts powerful local file-system endpoints (open / save-as /
+// delete-file / import / export / fs/list). Default cors() echoes any Origin,
+// which lets a malicious page in another browser tab CSRF the user's machine.
+// Restrict to the editor's own dev/prod origins; override via TAGMA_ALLOWED_ORIGINS
+// (comma-separated) when running in a trusted multi-machine setup.
+const PORT = parseInt(process.env.PORT ?? '3001');
+const HOST = process.env.HOST ?? '127.0.0.1';
+const DEFAULT_ALLOWED_ORIGINS = new Set<string>([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+]);
+const EXTRA_ALLOWED_ORIGINS = (process.env.TAGMA_ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ALLOWED_ORIGINS = new Set<string>([...DEFAULT_ALLOWED_ORIGINS, ...EXTRA_ALLOWED_ORIGINS]);
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Same-origin requests (server-side fetch, curl, browser navigation
+      // to /api/* directly) have no Origin header — those are allowed.
+      if (!origin) return cb(null, true);
+      if (ALLOWED_ORIGINS.has(origin)) return cb(null, true);
+      return cb(new Error(`CORS rejected: ${origin}`));
+    },
+    credentials: false,
+  }),
+);
 app.use(express.json({ limit: '5mb' }));
 
 // ── In-memory state ──
@@ -94,6 +125,37 @@ let workDir: string = '';
 function isPathWithin(child: string, root: string): boolean {
   const rel = relative(root, child);
   return !rel.startsWith('..') && !resolve(root, rel).includes('..' + sep);
+}
+
+/**
+ * C3: Hard fence used by every endpoint that touches the local filesystem.
+ * Throws WorkspaceFenceError when:
+ *   - workDir has not been configured yet (no path can be considered safe), or
+ *   - the resolved candidate path lies outside workDir.
+ *
+ * Centralising the check makes "did we forget to fence this endpoint?" a
+ * grep-able question (search for assertWithinWorkspace).
+ */
+class WorkspaceFenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspaceFenceError';
+  }
+}
+
+function assertWithinWorkspace(absPath: string, label: string): string {
+  if (!workDir) {
+    throw new WorkspaceFenceError(
+      `Workspace directory is not set; cannot resolve ${label}.`,
+    );
+  }
+  const resolved = resolve(absPath);
+  if (!isPathWithin(resolved, workDir)) {
+    throw new WorkspaceFenceError(
+      `Path "${resolved}" is outside the workspace directory.`,
+    );
+  }
+  return resolved;
 }
 
 // Thin closures that bind the global `workDir` to the pure helpers exported
@@ -161,7 +223,23 @@ function saveLayout(): void {
   } catch { /* best-effort */ }
 }
 
-/** Auto-reconcile continue_from: if a prompt task depends on another prompt task, set continue_from. */
+/**
+ * Auto-reconcile `continue_from` for prompt tasks. The rule is intentionally
+ * conservative:
+ *   - If the task has no upstream prompt deps at all, drop continue_from
+ *     (it can no longer point anywhere meaningful).
+ *   - If there is exactly ONE upstream prompt dep and continue_from is unset,
+ *     auto-fill it. This covers the common "drag a prompt task onto another"
+ *     workflow.
+ *   - If continue_from already points at one of the existing prompt deps,
+ *     leave it untouched.
+ *   - M5: with multiple prompt-typed deps we used to silently rewrite
+ *     continue_from to "the last one in depends_on", which surprised users
+ *     and made the value depend on dependency order. We now keep the user's
+ *     explicit choice — only validating that it still points at a real
+ *     upstream dep — so the task panel's continue_from dropdown stays the
+ *     source of truth in the multi-dep case.
+ */
 function reconcileContinueFrom(cfg: RawPipelineConfig): RawPipelineConfig {
   const taskMap = new Map<string, RawTaskConfig>();
   for (const track of cfg.tracks) {
@@ -176,35 +254,60 @@ function reconcileContinueFrom(cfg: RawPipelineConfig): RawPipelineConfig {
       const isPromptTask = !!task.prompt && !task.command && !task.use;
       const deps = task.depends_on ?? [];
 
-      if (!isPromptTask || deps.length === 0) {
-        // Not a prompt task or no deps — clear continue_from if set
+      if (!isPromptTask) {
+        // Non-prompt tasks (command / template) cannot use continue_from.
         if (task.continue_from) {
           changed = true;
-          const { continue_from: _, ...rest } = task;
+          const { continue_from: _drop, ...rest } = task;
           return rest as RawTaskConfig;
         }
         return task;
       }
 
-      // Find last dep that is also a prompt task — that's the continue_from source
-      let continueRef: string | undefined;
+      // Filter deps down to upstream prompt tasks (those eligible to be a
+      // continue_from source).
+      const promptDeps: string[] = [];
       for (const dep of deps) {
         const qid = dep.includes('.') ? dep : `${track.id}.${dep}`;
         const depTask = taskMap.get(qid);
         if (depTask && !!depTask.prompt && !depTask.command && !depTask.use) {
-          continueRef = dep; // use the raw ref as written in depends_on
+          promptDeps.push(dep);
         }
       }
 
-      if (continueRef && task.continue_from !== continueRef) {
-        changed = true;
-        return { ...task, continue_from: continueRef };
+      if (promptDeps.length === 0) {
+        // No prompt upstreams — continue_from can't reference anything valid.
+        if (task.continue_from) {
+          changed = true;
+          const { continue_from: _drop, ...rest } = task;
+          return rest as RawTaskConfig;
+        }
+        return task;
       }
-      if (!continueRef && task.continue_from) {
+
+      // If the user already chose a continue_from and it still points at a
+      // real upstream prompt dep, do not touch it.
+      if (task.continue_from && promptDeps.includes(task.continue_from)) {
+        return task;
+      }
+
+      // Single-source auto-pick: fill in the only candidate when continue_from
+      // is empty. Multi-source case: leave unset and let the user pick from
+      // the TaskConfigPanel dropdown explicitly.
+      if (!task.continue_from && promptDeps.length === 1) {
         changed = true;
-        const { continue_from: _, ...rest } = task;
+        return { ...task, continue_from: promptDeps[0] };
+      }
+
+      // The previous continue_from no longer matches any current upstream
+      // prompt dep (e.g. the dep was removed). Clear it so the next save
+      // doesn't carry a dangling reference.
+      if (task.continue_from && !promptDeps.includes(task.continue_from)) {
+        changed = true;
+        const { continue_from: _drop, ...rest } = task;
         return rest as RawTaskConfig;
       }
+
       return task;
     });
     return newTasks !== track.tasks ? { ...track, tasks: newTasks } : track;
@@ -238,9 +341,16 @@ const BUILTIN_DRIVERS = new Set(['claude-code']);
 
 /**
  * Sync `config.plugins` with actually-referenced non-built-in drivers.
- * Adds `@tagma/driver-{name}` when a driver is used, removes it when
- * no track/task references that driver any more. Non-driver plugins
- * (triggers, middlewares, etc.) are left untouched.
+ * Adds `@tagma/driver-{name}` when a driver is used. Non-driver plugins
+ * (triggers, middlewares, etc.) and *manually declared* driver plugins are
+ * left untouched.
+ *
+ * H5: this function used to also REMOVE driver plugins that were no longer
+ * referenced by any task. That silently dropped manually-declared entries
+ * (e.g. a user pre-installing `@tagma/driver-codex` ahead of using it, or
+ * keeping it visible in the marketplace panel). Removal is now an explicit
+ * UI action — call sites that want to trim unused drivers should do so
+ * deliberately.
  *
  * M5: any auto-generated package name that fails plugin-name validation is
  * dropped — driver names like "../evil" used to silently produce
@@ -257,22 +367,17 @@ function ensureDriverPlugins(cfg: RawPipelineConfig): RawPipelineConfig {
     }
   }
 
-  const requiredDriverPlugins = new Set(
-    [...usedDrivers]
-      .map((d) => `@tagma/driver-${d}`)
-      .filter(isValidPluginName)
-  );
+  const requiredDriverPlugins = [...usedDrivers]
+    .map((d) => `@tagma/driver-${d}`)
+    .filter(isValidPluginName);
   const existing = cfg.plugins ?? [];
 
-  // Keep non-driver plugins as-is, replace driver plugins with only the required set
-  const kept = existing.filter((p) => !/^@tagma\/driver-/.test(p));
-  const added = [...requiredDriverPlugins].filter((p) => !existing.includes(p));
-  const newPlugins = [...kept, ...existing.filter((p) => requiredDriverPlugins.has(p)), ...added];
+  // Append missing driver plugins; preserve everything the user already declared.
+  const additions = requiredDriverPlugins.filter((p) => !existing.includes(p));
+  if (additions.length === 0) return cfg;
 
-  // No change needed?
-  if (newPlugins.length === existing.length && existing.every((p, i) => p === newPlugins[i])) return cfg;
-
-  return { ...cfg, plugins: newPlugins.length > 0 ? newPlugins : undefined };
+  const newPlugins = [...existing, ...additions];
+  return { ...cfg, plugins: newPlugins };
 }
 
 function getState() {
@@ -2117,6 +2222,18 @@ app.delete('/api/tasks/:trackId/:taskId', (req, res) => {
   const prev = config;
   config = removeTask(config, trackId, taskId, true);
   if (config === prev) return res.status(404).json({ error: 'Task not found' });
+  // H9: parseYaml/loadPipeline both reject empty tracks (`tasks: []`), and
+  // run-start would 400 if we left one in memory. Auto-prune the host track
+  // when the user removes its last task so the editor never produces an
+  // unloadable YAML. We never delete the *last* remaining track — the user
+  // would lose the workspace's anchor and validateRaw would also reject a
+  // track-less pipeline. validateRaw still surfaces a "track must have at
+  // least one task" warning so the user knows they need to add one before
+  // running.
+  const hostTrack = config.tracks.find((t) => t.id === trackId);
+  if (hostTrack && hostTrack.tasks.length === 0 && config.tracks.length > 1) {
+    config = removeTrack(config, trackId);
+  }
   res.json(getState());
 });
 
@@ -2300,11 +2417,18 @@ app.patch('/api/editor-settings', (req, res) => {
 });
 
 // ── Filesystem browsing ──
+//
+// C3: /api/fs/list now operates in two modes:
+//   - "workspace" (default): refuses to list anything outside workDir.
+//   - "picker"   (?picker=1): used only by the dedicated workspace-root
+//     picker UI; needs to walk the host filesystem so users can switch
+//     work directories. Confined to GET so it stays harmless under CSRF
+//     (no state changes), and still resolves the path to defeat relative
+//     traversal tricks.
 app.get('/api/fs/list', (req, res) => {
-  let dirPath = resolve((req.query.path as string) || workDir);
-  // B1: Allow browsing outside workDir (for file picker / drive roots) but
-  // still resolve the path to prevent relative traversal tricks.
-  dirPath = resolve(dirPath);
+  const requested = (req.query.path as string) || workDir;
+  const isPicker = req.query.picker === '1' || req.query.picker === 'true';
+  let dirPath = resolve(requested);
   try {
     if (!existsSync(dirPath)) {
       dirPath = dirname(dirPath);
@@ -2314,6 +2438,14 @@ app.get('/api/fs/list', (req, res) => {
     }
     if (!statSync(dirPath).isDirectory()) {
       dirPath = dirname(dirPath);
+    }
+    if (!isPicker) {
+      try {
+        assertWithinWorkspace(dirPath, 'directory');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Path is outside the workspace directory';
+        return res.status(403).json({ error: msg });
+      }
     }
     const entries = readdirSync(dirPath, { withFileTypes: true })
       .filter((e) => !e.name.startsWith('.'))
@@ -2419,7 +2551,17 @@ app.post('/api/fs/reveal', (req, res) => {
 app.post('/api/open', async (req, res) => {
   const { path: filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
-  const absPath = resolve(filePath);
+  let absPath: string;
+  try {
+    // C3: All editor "open" calls go through the workspace YAML list — there
+    // is no UI path that opens a YAML outside workDir. Refusing it server-side
+    // closes the CSRF/path-traversal door (e.g. a malicious page asking us to
+    // parse and stash arbitrary files into `config`).
+    absPath = assertWithinWorkspace(resolve(filePath), 'file to open');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Path is outside the workspace directory';
+    return res.status(403).json({ error: msg });
+  }
   try {
     if (!existsSync(absPath)) {
       return res.status(404).json({ error: `File not found: ${absPath}` });
@@ -2469,7 +2611,17 @@ app.post('/api/save', (_req, res) => {
 app.post('/api/save-as', (req, res) => {
   const { path: filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
-  const absPath = resolve(filePath);
+  let absPath: string;
+  try {
+    // C3 / M3: client.commitSaveAs always pins targets under {workDir}/.tagma,
+    // but the server used to accept any path. Fence here so the wire contract
+    // matches the UI contract — Save As cannot be used as an arbitrary YAML
+    // writer by a page in another browser tab.
+    absPath = assertWithinWorkspace(resolve(filePath), 'save target');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Path is outside the workspace directory';
+    return res.status(403).json({ error: msg });
+  }
   try {
     // B4: Stop watcher before write to prevent false external-change detection.
     stopFileWatching();
@@ -2524,11 +2676,21 @@ app.post('/api/import-file', async (req, res) => {
   const { sourcePath } = req.body;
   if (!sourcePath) return res.status(400).json({ error: 'sourcePath is required' });
   if (!workDir) return res.status(400).json({ error: 'Workspace directory is not set' });
+  // C3: source path is user-picked, so we can't fence it to the workspace.
+  // Restrict to YAML extensions to cap blast radius — a CSRF attempt that
+  // tries to slurp `id_rsa` into the workspace fails the extension check.
+  if (!/\.ya?ml$/i.test(sourcePath)) {
+    return res.status(400).json({ error: 'sourcePath must be a .yaml or .yml file' });
+  }
   const absSource = resolve(sourcePath);
   if (!existsSync(absSource)) return res.status(404).json({ error: `File not found: ${absSource}` });
   const tagmaDir = join(workDir, '.tagma');
   mkdirSync(tagmaDir, { recursive: true });
-  const destPath = join(tagmaDir, basename(absSource));
+  // Sanitize the destination filename: basename() keeps the extension and
+  // strips any directory components, so an attacker can't smuggle "../" in
+  // sourcePath to escape the workspace on the destination side.
+  const safeName = basename(absSource);
+  const destPath = assertWithinWorkspace(join(tagmaDir, safeName), 'import destination');
   try {
     const content = readFileSync(absSource, 'utf-8');
     writeFileSync(destPath, content, 'utf-8');
@@ -2563,6 +2725,14 @@ app.post('/api/export-file', (req, res) => {
   if (!yamlPath) return res.status(400).json({ error: 'No pipeline file to export' });
   const absDestDir = resolve(destDir);
   if (!existsSync(absDestDir)) return res.status(404).json({ error: `Directory not found: ${absDestDir}` });
+  // C3: destDir is user-picked through the export dialog so it may legitimately
+  // sit outside the workspace. We cap damage to "exactly one YAML + one
+  // layout.json with the current pipeline's basename" (no path-traversal in
+  // the destination filename). Combined with the localhost-only bind (C1) and
+  // tightened CORS (C2) this leaves the export endpoint safe under casual CSRF.
+  if (!statSync(absDestDir).isDirectory()) {
+    return res.status(400).json({ error: 'destDir must be an existing directory' });
+  }
   try {
     const content = serializePipeline(config);
     writeFileSync(yamlPath, content, 'utf-8');
@@ -2585,7 +2755,21 @@ app.post('/api/export-file', (req, res) => {
 app.post('/api/delete-file', (req, res) => {
   const { path: filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
-  const absPath = resolve(filePath);
+  let absPath: string;
+  try {
+    // C3: deletes are the highest-blast-radius file op. The UI only ever
+    // calls this with a path returned by /api/workspace/yamls (i.e. always
+    // inside .tagma/) so the workspace fence is a tight, principled bound.
+    absPath = assertWithinWorkspace(resolve(filePath), 'file to delete');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Path is outside the workspace directory';
+    return res.status(403).json({ error: msg });
+  }
+  // C3: only YAML files under .tagma/ are user-deletable through this
+  // endpoint. Layout files travel with their YAML and are removed transitively.
+  if (!/\.ya?ml$/i.test(absPath)) {
+    return res.status(400).json({ error: 'Only .yaml/.yml pipeline files can be deleted via this endpoint' });
+  }
   try {
     if (existsSync(absPath)) {
       rmSync(absPath, { force: true });
@@ -2789,11 +2973,6 @@ app.post('/api/run/start', async (_req, res) => {
     return res.status(409).json({ error: 'A run is already in progress' });
   }
   runStarting = true;
-  // Clear any leftover events from the previous run the moment a new run
-  // is initiated. Deferring this until after validation leaves a window
-  // where a fresh EventSource connection replays stale events from the
-  // completed run and makes the UI think the new run already succeeded.
-  resetRunEventBuffer();
 
   // Serialize the in-memory editor config to YAML and hand it to the SDK.
   // The round-trip is intentional: it exercises the same load path the CLI
@@ -2802,21 +2981,49 @@ app.post('/api/run/start', async (_req, res) => {
   const content = serializePipeline(config);
   const cwd = workDir || process.cwd();
 
-  // Pre-load plugins from workDir's node_modules so the SDK engine doesn't
-  // fall back to Node's default resolution (which uses process.cwd(), not
-  // the user's workspace). Every name is validated before reaching
-  // loadPluginFromWorkDir so a malicious YAML can't smuggle a path-traversal
-  // payload into the loader.
-  if (config.plugins?.length) {
-    for (const name of config.plugins) {
+  // H6: Pre-load plugins atomically — validate every name first, then load
+  // them in order, and on any failure unregister everything we already
+  // loaded so the SDK registry never ends up half-populated. The previous
+  // path returned mid-iteration with whatever it had managed to register,
+  // leaving stale handlers visible to subsequent runs.
+  const pluginsToLoad = config.plugins ?? [];
+  if (pluginsToLoad.length > 0) {
+    for (const name of pluginsToLoad) {
       try {
         assertSafePluginName(name);
-        await loadPluginFromWorkDir(name);
       } catch (err: unknown) {
         runStarting = false;
         const { message } = classifyServerError(err);
         return res.status(400).json({ error: `Plugin load error: ${message}` });
       }
+    }
+    const newlyLoaded: string[] = [];
+    let preloadError: { message: string } | null = null;
+    for (const name of pluginsToLoad) {
+      // Skip plugins that were already loaded by a previous run / autoload —
+      // their lifecycle is owned elsewhere and we should not unregister them
+      // on rollback.
+      if (loadedPluginMeta.has(name)) continue;
+      try {
+        await loadPluginFromWorkDir(name);
+        newlyLoaded.push(name);
+      } catch (err: unknown) {
+        const { message } = classifyServerError(err);
+        preloadError = { message };
+        break;
+      }
+    }
+    if (preloadError) {
+      // Roll back partial load so the SDK registry matches the on-disk state.
+      for (const name of newlyLoaded) {
+        const meta = loadedPluginMeta.get(name);
+        if (meta) {
+          try { unregisterPlugin(meta.category, meta.type); } catch { /* best-effort */ }
+          loadedPluginMeta.delete(name);
+        }
+      }
+      runStarting = false;
+      return res.status(400).json({ error: `Plugin load error: ${preloadError.message}` });
     }
   }
 
@@ -2867,7 +3074,19 @@ app.post('/api/run/start', async (_req, res) => {
     })),
   );
 
-  const runId = `run_${Date.now().toString(36)}`;
+  // H6: only reset the per-run event buffer once everything that could fail
+  // (plugin pre-load, loadPipeline, validateConfig) has succeeded. The old
+  // code reset it at the top of the handler — failing validation later left
+  // SSE consumers with no replay for the *previous* completed run.
+  resetRunEventBuffer();
+
+  // H4: use the SDK's own collision-resistant id generator. The previous
+  // `run_${Date.now().toString(36)}` lost the per-process counter + random
+  // suffix the SDK builds in (see utils.ts:generateRunId), so two starts
+  // landing in the same millisecond — common in test loops or rapid
+  // restarts — would share a runId, mix logs, and overwrite each other's
+  // summary.json under .tagma/logs/<runId>.
+  const runId = generateRunId();
   const runStartedAt = new Date().toISOString();
   const abortController = new AbortController();
   const gateway = new InMemoryApprovalGateway();
@@ -3273,9 +3492,11 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   }
 });
 
-const PORT = parseInt(process.env.PORT ?? '3001');
-const server = app.listen(PORT, () => {
-  console.log(`Tagma Editor server running on http://localhost:${PORT}`);
+// C1: Bind to 127.0.0.1 by default so the LAN can't reach the local file-system
+// endpoints. HOST may be set explicitly (e.g. "0.0.0.0") for trusted multi-machine
+// setups, but those should also enable TAGMA_ALLOWED_ORIGINS + token auth.
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Tagma Editor server running on http://${HOST}:${PORT}`);
 });
 
 // ── B6: Graceful shutdown ──

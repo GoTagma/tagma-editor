@@ -10,11 +10,18 @@ interface FileExplorerProps {
   title?: string;
   initialPath?: string;
   fileFilter?: string[];
+  /**
+   * C3: When true, the explorer is allowed to walk the host filesystem
+   * outside the configured workspace. Use for the workspace picker, plugin
+   * import, and YAML import flows. Leave unset for "browse inside the
+   * workspace" interactions so the server fence stays in effect.
+   */
+  picker?: boolean;
   onConfirm: (path: string) => void;
   onCancel: () => void;
 }
 
-export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, onCancel }: FileExplorerProps) {
+export function FileExplorer({ mode, title, initialPath, fileFilter, picker, onConfirm, onCancel }: FileExplorerProps) {
   const [currentPath, setCurrentPath] = useState('');
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -33,7 +40,7 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
     setLoading(true);
     setError(null);
     try {
-      const result = await api.listDir(dirPath);
+      const result = await api.listDir(dirPath, { picker });
       setCurrentPath(result.path);
       setParentPath(result.parent);
       setPathInput(result.path);
@@ -58,8 +65,12 @@ export function FileExplorer({ mode, title, initialPath, fileFilter, onConfirm, 
 
   useEffect(() => {
     loadDir(initialPath);
-    api.listRoots().then((r) => setRoots(r.roots)).catch(() => {});
-  }, [loadDir]);
+    if (picker) {
+      // Drive roots are only relevant when the explorer is allowed to walk
+      // the host filesystem; in workspace-bound mode we don't show them.
+      api.listRoots().then((r) => setRoots(r.roots)).catch(() => {});
+    }
+  }, [loadDir, picker]);
 
   const handleEntryClick = useCallback((entry: FsEntry) => {
     if (entry.type === 'directory') {

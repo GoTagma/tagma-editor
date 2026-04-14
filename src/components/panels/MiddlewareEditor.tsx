@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { X, Plus } from 'lucide-react';
 import type { MiddlewareConfig } from '../../api/client';
 import { usePipelineStore } from '../../store/pipeline-store';
@@ -10,9 +10,34 @@ interface MiddlewareEditorProps {
   onBrowsePath?: (currentValue: string, onSelect: (path: string) => void) => void;
 }
 
+/**
+ * M10: assign a stable identity to each middleware object so React can
+ * track them across reorders / removals. Using array index used to
+ * reassign DOM nodes on delete (item at index 2 became item at index 1),
+ * which scrambled the per-item useLocalField state and stole input focus.
+ *
+ * We keep the stable ids in a WeakMap keyed by the middleware reference
+ * — pure parents that copy on every keystroke would break this, but
+ * MiddlewareEditor's own update/remove paths preserve the reference for
+ * untouched items, which is the common case.
+ */
+let nextMiddlewareKey = 1;
+function useMiddlewareKeys(middlewares: MiddlewareConfig[]): string[] {
+  const keyMap = useRef(new WeakMap<MiddlewareConfig, string>()).current;
+  return middlewares.map((m) => {
+    let id = keyMap.get(m);
+    if (!id) {
+      id = `mw-${nextMiddlewareKey++}`;
+      keyMap.set(m, id);
+    }
+    return id;
+  });
+}
+
 export function MiddlewareEditor({ middlewares, onChange, onBrowsePath }: MiddlewareEditorProps) {
   const registry = usePipelineStore((s) => s.registry);
   const typeOptions = Array.from(new Set<string>(['static_context', ...registry.middlewares]));
+  const keys = useMiddlewareKeys(middlewares);
 
   const handleAdd = useCallback(() => {
     onChange([...middlewares, { type: 'static_context', file: '' }]);
@@ -41,7 +66,7 @@ export function MiddlewareEditor({ middlewares, onChange, onBrowsePath }: Middle
       )}
       <div className="space-y-2">
         {middlewares.map((m, i) => (
-          <MiddlewareItem key={i} middleware={m} typeOptions={typeOptions}
+          <MiddlewareItem key={keys[i]} middleware={m} typeOptions={typeOptions}
             onUpdate={(patch) => handleUpdate(i, patch)} onRemove={() => handleRemove(i)}
             onBrowsePath={onBrowsePath} />
         ))}

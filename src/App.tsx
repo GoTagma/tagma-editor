@@ -20,7 +20,7 @@ import { YamlPreview } from './components/panels/YamlPreview';
 import { useRunStore } from './store/run-store';
 import { ErrorToast } from './components/ErrorToast';
 import { useShortcuts } from './hooks/use-shortcuts';
-import { useAutosave } from './hooks/use-autosave';
+import { useAutosave, loadDraft, clearDraft } from './hooks/use-autosave';
 
 type ExplorerIntent = { mode: FileExplorerMode; purpose: 'import' | 'export' | 'workdir' | 'plugin-import' };
 type DialogInfo = { type: 'error' | 'success'; title: string; details: string[] };
@@ -28,8 +28,11 @@ type ConfirmInfo = {
   title: string;
   details: string[];
   confirmLabel: string;
+  cancelLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
+  /** Optional cancel callback (for dialogs like draft restore where Discard ≠ no-op). */
+  onCancel?: () => void;
 };
 
 export function App() {
@@ -76,6 +79,47 @@ export function App() {
   // to `errorMessage` and handles auto-dismiss. No effect needed here.
 
   useEffect(() => { init(); }, []);
+
+  // M4: After the initial state load completes, check whether the user has a
+  // newer autosave draft for the same yamlPath. The draft only exists when a
+  // previous session crashed / closed before saving, so this dialog is rare —
+  // but without it the draft was being written by useAutosave() and never read
+  // by anyone, making the entire crash-recovery feature dead code.
+  const draftCheckRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (draftCheckRef.current) return;
+    if (loading) return;
+    draftCheckRef.current = true;
+    const draft = loadDraft(yamlPath);
+    if (!draft) return;
+    // Stale guard: drafts older than 7 days probably don't reflect what the
+    // user wants any more. Drop them silently rather than nagging on every
+    // app start.
+    if (Date.now() - draft.savedAt > 7 * 24 * 3600_000) {
+      clearDraft(yamlPath);
+      return;
+    }
+    setConfirmInfo({
+      title: 'Recover unsaved draft?',
+      details: [
+        `An autosaved draft from ${new Date(draft.savedAt).toLocaleString()} was found for this pipeline.`,
+        'Restoring overwrites the current in-memory pipeline with the draft contents.',
+      ],
+      confirmLabel: 'Restore',
+      cancelLabel: 'Discard',
+      onConfirm: () => {
+        // Apply the draft via the same path /api/state uses so the editor
+        // round-trips through validation. We update via the store directly
+        // so this stays a client-side operation; the user can then Save to
+        // persist to disk.
+        usePipelineStore.setState((s) => ({ ...s, config: draft.config, isDirty: true }));
+        clearDraft(yamlPath);
+      },
+      onCancel: () => {
+        clearDraft(yamlPath);
+      },
+    });
+  }, [loading, yamlPath]);
 
   // C1: Subscribe to external file change events and show a dialog.
   useEffect(() => {
@@ -268,6 +312,14 @@ export function App() {
     [validationErrors],
   );
 
+  // H8: only "real" errors (severity !== 'warning') should block Save / Run.
+  // The continue_from-in-depends_on hint is the canonical example — runtime
+  // happily inserts the implicit edge, so the editor shouldn't refuse to run.
+  const blockingValidationErrors = useMemo(
+    () => validationErrors.filter((e) => e.severity !== 'warning'),
+    [validationErrors],
+  );
+
   // Compat: keep invalidTaskIds as a Set for BoardCanvas
   const invalidTaskIds = useMemo(
     () => new Set(errorsByTask.keys()),
@@ -304,11 +356,11 @@ export function App() {
       return;
     }
     if (!requireWorkspace('run')) return;
-    if (validationErrors.length > 0) {
+    if (blockingValidationErrors.length > 0) {
       setDialog({
         type: 'error',
-        title: `Cannot run: ${validationErrors.length} validation error(s)`,
-        details: validationErrors.map((e) => `[${e.path}] ${e.message}`),
+        title: `Cannot run: ${blockingValidationErrors.length} validation error(s)`,
+        details: blockingValidationErrors.map((e) => `[${e.path}] ${e.message}`),
       });
       return;
     }
@@ -701,7 +753,7 @@ export function App() {
     >
       <div onClick={() => { if (!pinnedTaskId && !pinnedTrackId) { selectTask(null); selectTrack(null); } }}>
         <Toolbar
-          pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={validationErrors.length}
+          pipelineName={config.name} yamlPath={yamlPath} workDir={workDir} isDirty={isDirty} errorCount={blockingValidationErrors.length}
           menus={menus} workspaceItems={workspaceItems}
           onUpdateName={setPipelineName} onRun={handleRun}
           yamlPreviewOpen={showYamlPreview} onToggleYamlPreview={() => setShowYamlPreview((v) => !v)}
@@ -921,6 +973,15 @@ export function App() {
           : (workDir || undefined)
         }
         fileFilter={explorer.purpose === 'import' ? ['.yaml', '.yml'] : undefined}
+        // C3: every legitimate "browse outside the workspace" intent flows
+        // through one of these four purposes. Anything else is in-workspace
+        // navigation and stays subject to the server's workspace fence.
+        picker={
+          explorer.purpose === 'workdir'
+          || explorer.purpose === 'plugin-import'
+          || explorer.purpose === 'import'
+          || explorer.purpose === 'export'
+        }
         onConfirm={handleExplorerConfirm}
         onCancel={() => {
           const wasPluginImport = explorer?.purpose === 'plugin-import';
@@ -967,7 +1028,13 @@ export function App() {
 
     {/* Confirm dialog */}
     {confirmInfo && (
-      <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60" onClick={() => setConfirmInfo(null)}>
+      <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60" onClick={() => {
+        // Honor the dialog's onCancel side-effect even when dismissed by the
+        // overlay click (M4: draft-restore needs to run clearDraft on cancel).
+        const info = confirmInfo;
+        setConfirmInfo(null);
+        info.onCancel?.();
+      }}>
         <div
           className="bg-tagma-surface border border-tagma-border shadow-panel w-[440px] max-h-[60vh] flex flex-col animate-fade-in"
           onClick={(e) => e.stopPropagation()}
@@ -979,7 +1046,11 @@ export function App() {
                 {confirmInfo.title}
               </h2>
             </div>
-            <button onClick={() => setConfirmInfo(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+            <button onClick={() => {
+              const info = confirmInfo;
+              setConfirmInfo(null);
+              info.onCancel?.();
+            }} className="p-1 text-tagma-muted hover:text-tagma-text">
               <XIcon size={14} />
             </button>
           </div>
@@ -992,10 +1063,14 @@ export function App() {
           </div>
           <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
             <button
-              onClick={() => setConfirmInfo(null)}
+              onClick={() => {
+                const info = confirmInfo;
+                setConfirmInfo(null);
+                info.onCancel?.();
+              }}
               className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors"
             >
-              Cancel
+              {confirmInfo.cancelLabel ?? 'Cancel'}
             </button>
             <button
               onClick={() => {
