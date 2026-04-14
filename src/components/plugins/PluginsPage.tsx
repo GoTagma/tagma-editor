@@ -14,10 +14,10 @@ import {
   extractErrorMessage,
   type ErrorKind,
 } from './plugin-errors';
-import { InstalledPanel } from './InstalledPanel';
+import { LocalPanel } from './LocalPanel';
 import { MarketplacePanel } from './MarketplacePanel';
 
-type Tab = 'installed' | 'marketplace';
+type Tab = 'local' | 'marketplace';
 type CategoryFilter = 'all' | PluginCategory;
 
 /**
@@ -25,7 +25,7 @@ type CategoryFilter = 'all' | PluginCategory;
  * across both tabs. Lifted to the page so the same feedback flows no matter
  * which panel triggered the action, and so one panel can react to a mutation
  * fired by the other (e.g. installing from the marketplace immediately
- * updates the Installed tab on return).
+ * updates the Local tab on return).
  */
 export type PluginActionState =
   | { type: 'idle' }
@@ -55,11 +55,11 @@ const CATEGORY_TABS: ReadonlyArray<{ key: CategoryFilter; label: string }> = [
 const SUCCESS_DISMISS_MS = 2500;
 
 /**
- * Top-level Plugins page. Hosts two tabs — Installed and Marketplace — that
+ * Top-level Plugins page. Hosts two tabs — Local and Marketplace — that
  * share a single page-level state store:
  *
  *   - `plugins`       — the authoritative list of plugins currently in the
- *                       workspace (via `/api/plugins`). The Installed tab
+ *                       workspace (via `/api/plugins`). The Local tab
  *                       renders these directly; the Marketplace tab uses
  *                       the set of installed names to decide whether to
  *                       show Install or Uninstall on each card.
@@ -80,7 +80,7 @@ export function PluginsPage({
   onPluginsChange,
   onRequestBrowseLocal,
 }: PluginsPageProps) {
-  const [tab, setTab] = useState<Tab>('installed');
+  const [tab, setTab] = useState<Tab>('local');
   const [category, setCategory] = useState<CategoryFilter>('all');
 
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
@@ -364,21 +364,23 @@ export function PluginsPage({
             ))}
           </nav>
 
-          <div className="mt-4 px-2">
-            <button
-              onClick={onRequestBrowseLocal}
-              className="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] bg-orange-500/10 border border-orange-500/25 text-orange-300 hover:bg-orange-500/20 transition-colors"
-              title="Import a plugin from a local directory"
-            >
-              <FolderOpen size={11} />
-              <span>Import local…</span>
-            </button>
-          </div>
+          {tab === 'local' && (
+            <div className="mt-4 px-2">
+              <button
+                onClick={onRequestBrowseLocal}
+                className="w-full flex items-center gap-1.5 px-2 py-1 text-[10px] bg-orange-500/10 border border-orange-500/25 text-orange-300 hover:bg-orange-500/20 transition-colors"
+                title="Import a plugin from a local directory"
+              >
+                <FolderOpen size={11} />
+                <span>Import local…</span>
+              </button>
+            </div>
+          )}
         </aside>
 
         <section className="flex-1 min-h-0 overflow-hidden">
-          {tab === 'installed' ? (
-            <InstalledPanel
+          {tab === 'local' ? (
+            <LocalPanel
               plugins={plugins}
               autoLoadErrors={autoLoadErrors}
               declaredSet={declaredSet}
@@ -444,10 +446,10 @@ function PluginsHeader({
       <div className="w-px h-5 bg-tagma-border" />
       <div className="flex items-center gap-1">
         <TabButton
-          active={tab === 'installed'}
-          onClick={() => onTab('installed')}
+          active={tab === 'local'}
+          onClick={() => onTab('local')}
           icon={<Package size={12} />}
-          label="Installed"
+          label="Local"
         />
         <TabButton
           active={tab === 'marketplace'}

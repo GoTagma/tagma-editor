@@ -11,7 +11,7 @@ import {
   PluginCardShell,
 } from './plugin-card';
 
-interface InstalledPanelProps {
+interface LocalPanelProps {
   plugins: readonly PluginInfo[];
   autoLoadErrors: ReadonlyArray<{ name: string; message: string }>;
   declaredSet: ReadonlySet<string>;
@@ -25,17 +25,17 @@ interface InstalledPanelProps {
 }
 
 /**
- * Stateless card view of the installed plugin list. All data (plugins,
+ * Stateless card view of the workspace's local plugins. All data (plugins,
  * auto-load errors, action state) flows in from PluginsPage — this component
  * only renders and forwards button clicks.
  *
- * "Installed" in the workspace is broader than "declared in YAML": a plugin
- * may live in `node_modules` without appearing in `pipeline.plugins[]`, or
- * vice-versa. The panel shows every plugin the server knows about and
- * annotates whether it's installed, loaded into the runtime registry, and
- * declared in YAML.
+ * "Local" here means "anything the server knows about for this workspace":
+ * a plugin may live in `node_modules` without appearing in `pipeline.plugins[]`,
+ * or be declared in YAML but not yet installed. The panel shows the union of
+ * those sources and annotates whether each is installed, loaded into the
+ * runtime registry, and/or declared in YAML.
  */
-export function InstalledPanel({
+export function LocalPanel({
   plugins,
   autoLoadErrors,
   declaredSet,
@@ -46,7 +46,7 @@ export function InstalledPanel({
   onUninstall,
   onLoad,
   onDismissAction,
-}: InstalledPanelProps) {
+}: LocalPanelProps) {
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(() => {
@@ -103,7 +103,7 @@ export function InstalledPanel({
         ) : filtered.length > 0 ? (
           <div className={PLUGIN_CARD_GRID_CLASSES}>
             {filtered.map((p) => (
-              <InstalledCard
+              <LocalPluginCard
                 key={p.name}
                 plugin={p}
                 declared={declaredSet.has(p.name)}
@@ -140,7 +140,7 @@ export function InstalledPanel({
   );
 }
 
-function InstalledCard({
+function LocalPluginCard({
   plugin,
   declared,
   actionState,
