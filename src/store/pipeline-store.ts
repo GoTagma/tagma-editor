@@ -822,8 +822,8 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       try {
         // Auto-save current pipeline before switching workspace.
         // If the save fails we MUST abort the switch — otherwise the
-        // follow-up newPipeline() call overwrites the in-memory pipeline
-        // and the user silently loses their unsaved work.
+        // caller may overwrite the in-memory pipeline and the user
+        // silently loses their unsaved work.
         const current = _get();
         if (current.isDirty && current.yamlPath) {
           try {
@@ -839,9 +839,25 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
             return;
           }
         }
-        // Set new workspace, then reset to a blank pipeline via store's newPipeline
-        await api.setWorkDir(wd);
-        await _get().newPipeline();
+        // Clear per-pipeline UI state so the previous workspace's
+        // selection/pins/history don't leak into whatever pipeline the
+        // caller opens next.
+        set({
+          selectedTaskId: null,
+          selectedTaskIds: [],
+          selectedTrackId: null,
+          pinnedTaskId: null,
+          pinnedTrackId: null,
+          past: [],
+          future: [],
+        });
+        // Switch workspace and apply the returned state (workDir only —
+        // the server still holds the previous config/yamlPath, which the
+        // caller will overwrite by opening an existing file or creating a
+        // new pipeline).
+        const state = await api.setWorkDir(wd);
+        applyStateWithLayout(state);
+        set({ isDirty: false, layoutDirty: false });
       } catch (e) {
         set({ errorMessage: 'Failed to set workspace: ' + errorToMessage(e) });
       }

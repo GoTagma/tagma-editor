@@ -346,6 +346,21 @@ export function App() {
       } else if (pending === 'run') {
         setPendingRun(true);
         await saveFile();
+      } else {
+        // Default: if the workspace already has pipelines under .tagma,
+        // open the first one; otherwise create a default pipeline so the
+        // user has something to edit. Avoids spawning a fresh
+        // pipeline-*.yaml on every workspace open.
+        try {
+          const result = await api.listWorkspaceYamls();
+          if (result.entries.length > 0) {
+            await openFile(result.entries[0].path);
+          } else {
+            await newPipeline();
+          }
+        } catch {
+          await newPipeline();
+        }
       }
     } else if (explorer.purpose === 'import') {
       await importFile(path);
@@ -374,7 +389,7 @@ export function App() {
         setDialog({ type: 'error', title: 'Import Failed', details: [e.message ?? 'Unknown error'] });
       }
     }
-  }, [explorer, setWorkDir, importFile, exportFile, newPipeline, saveFile, config.plugins, setRegistry, updatePipelineFields]);
+  }, [explorer, setWorkDir, importFile, exportFile, newPipeline, openFile, saveFile, config.plugins, setRegistry, updatePipelineFields]);
 
   const handleNewPipeline = useCallback(() => {
     if (!requireWorkspace('new')) return;
