@@ -7,7 +7,7 @@ import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
 import { EditorSettingsPanel } from './components/panels/EditorSettingsPanel';
-import { PluginManager } from './components/panels/PluginManager';
+import { PluginsPage } from './components/plugins/PluginsPage';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { api, type ServerStateEvent } from './api/client';
 import {
@@ -36,6 +36,7 @@ export function App() {
   const {
     config, positions, selectedTaskId, selectedTaskIds, selectedTrackId, pinnedTaskId, pinnedTrackId, validationErrors, dagEdges,
     yamlPath, workDir, isDirty, layoutDirty, loading, registry,
+    pluginsActive, showPluginsPage, hidePluginsPage,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
@@ -58,7 +59,6 @@ export function App() {
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [showEditorSettings, setShowEditorSettings] = useState(false);
-  const [showPlugins, setShowPlugins] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
   const [confirmInfo, setConfirmInfo] = useState<ConfirmInfo | null>(null);
@@ -373,7 +373,7 @@ export function App() {
       }
     } else if (explorer.purpose === 'plugin-import') {
       setExplorer(null);
-      setShowPlugins(true);
+      showPluginsPage();
       try {
         const result = await api.importLocalPlugin(path);
         setRegistry(result.registry);
@@ -464,7 +464,7 @@ export function App() {
       {
         label: 'Plugins',
         items: [
-          { label: 'Manage Plugins...', onAction: () => setShowPlugins(true) },
+          { label: 'Manage Plugins...', onAction: () => showPluginsPage() },
         ],
       },
       {
@@ -700,6 +700,27 @@ export function App() {
           </div>
         )}
       </motion.div>
+    ) : pluginsActive ? (
+      <motion.div
+        key="plugins"
+        className="h-full"
+        initial={{ opacity: 0, x: 40 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0, x: -40 }}
+        transition={VIEW_TRANSITION}
+      >
+        <PluginsPage
+          workDir={workDir}
+          declaredPlugins={config.plugins ?? []}
+          onBack={hidePluginsPage}
+          onRegistryUpdate={setRegistry}
+          onPluginsChange={(plugins) =>
+            updatePipelineFields({ plugins: plugins.length > 0 ? plugins : undefined })
+          }
+          onRequestBrowseLocal={() => setExplorer({ mode: 'directory', purpose: 'plugin-import' })}
+        />
+        <ErrorToast />
+      </motion.div>
     ) : (
     <motion.div
       key="editor"
@@ -793,34 +814,6 @@ export function App() {
         />
       )}
 
-      {/* Plugins modal */}
-      {showPlugins && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowPlugins(false)}>
-          <div
-            className="bg-tagma-surface border border-tagma-border shadow-panel w-[520px] max-h-[80vh] flex flex-col animate-fade-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="panel-header">
-              <h2 className="panel-title">Plugins</h2>
-              <button onClick={() => setShowPlugins(false)} className="p-1 text-tagma-muted hover:text-tagma-text transition-colors">
-                <XIcon size={14} />
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 px-5 py-4 flex flex-col">
-              <PluginManager
-                declaredPlugins={config.plugins ?? []}
-                onRegistryUpdate={setRegistry}
-                onPluginsChange={(plugins) => updatePipelineFields({ plugins: plugins.length > 0 ? plugins : undefined })}
-                onRequestBrowse={() => {
-                  setShowPlugins(false);
-                  setExplorer({ mode: 'directory', purpose: 'plugin-import' });
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* File Explorer modal */}
       {explorer && (
         <FileExplorer
@@ -843,7 +836,7 @@ export function App() {
             setExplorer(null);
             setPendingRun(false);
             afterWorkspaceRef.current = null;
-            if (wasPluginImport) setShowPlugins(true);
+            if (wasPluginImport) showPluginsPage();
           }}
         />
       )}

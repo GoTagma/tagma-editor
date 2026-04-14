@@ -1696,6 +1696,320 @@ app.post('/api/plugins/load', async (req, res) => {
   }
 });
 
+// ── Plugin marketplace (npm registry proxy) ──
+//
+// The marketplace UI searches the public npm registry for packages that are
+// tagged with `keywords:tagma-plugin`, then verifies each candidate by
+// fetching its real `package.json` and reading the SDK-defined `tagmaPlugin`
+// field. Packages that claim the keyword but don't declare a valid
+// `tagmaPlugin` manifest are discarded so the UI only ever shows real
+// plugins.
+//
+// The search results and per-package details are cached in-memory with a
+// short TTL. This keeps keystroke-driven search responsive and shields
+// the upstream registry from rate-limit pressure.
+
+const NPM_SEARCH_URL = `${NPM_REGISTRY}/-/v1/search`;
+const NPM_DOWNLOADS_URL = 'https://api.npmjs.org/downloads/point/last-week';
+const MARKETPLACE_CACHE_TTL_MS = 5 * 60 * 1000;
+const MARKETPLACE_SEARCH_LIMIT = 50;
+const MARKETPLACE_CONCURRENCY = 8;
+const VALID_PLUGIN_CATEGORIES: ReadonlySet<PluginCategory> = new Set([
+  'drivers', 'triggers', 'completions', 'middlewares',
+]);
+
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+function makeCache<T>(): Map<string, CacheEntry<T>> {
+  return new Map<string, CacheEntry<T>>();
+}
+
+function cacheGet<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function cacheSet<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T): void {
+  cache.set(key, { value, expiresAt: Date.now() + MARKETPLACE_CACHE_TTL_MS });
+}
+
+interface MarketplaceEntry {
+  name: string;
+  version: string;
+  description: string | null;
+  category: PluginCategory;
+  type: string;
+  keywords: string[];
+  author: string | null;
+  date: string | null;
+  homepage: string | null;
+  repository: string | null;
+  weeklyDownloads: number | null;
+}
+
+interface MarketplacePackageDetail extends MarketplaceEntry {
+  readme: string | null;
+  license: string | null;
+  versions: string[];
+}
+
+const marketplaceSearchCache = makeCache<MarketplaceEntry[]>();
+const marketplacePackageCache = makeCache<MarketplacePackageDetail>();
+const marketplaceDownloadsCache = makeCache<number | null>();
+const marketplaceManifestCache = makeCache<MarketplacePackageDetail>();
+
+function coerceAuthor(raw: unknown): string | null {
+  if (!raw) return null;
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'object' && raw !== null) {
+    const name = (raw as { name?: unknown }).name;
+    if (typeof name === 'string' && name.length > 0) return name;
+  }
+  return null;
+}
+
+function coerceRepository(raw: unknown): string | null {
+  if (!raw) return null;
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'object' && raw !== null) {
+    const url = (raw as { url?: unknown }).url;
+    if (typeof url === 'string' && url.length > 0) return url;
+  }
+  return null;
+}
+
+function coerceStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === 'string');
+}
+
+/**
+ * Fetch weekly downloads for a package. Returns null if the call fails or
+ * the package is not yet indexed — the UI treats null as "unknown" rather
+ * than "zero" so unranked plugins are not visually penalized.
+ */
+async function fetchWeeklyDownloads(name: string): Promise<number | null> {
+  const cached = cacheGet(marketplaceDownloadsCache, name);
+  if (cached !== null) return cached;
+  try {
+    const url = `${NPM_DOWNLOADS_URL}/${name}`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      cacheSet(marketplaceDownloadsCache, name, null);
+      return null;
+    }
+    const body = await res.json() as { downloads?: unknown; error?: unknown };
+    if (typeof body.downloads === 'number' && Number.isFinite(body.downloads)) {
+      cacheSet(marketplaceDownloadsCache, name, body.downloads);
+      return body.downloads;
+    }
+    cacheSet(marketplaceDownloadsCache, name, null);
+    return null;
+  } catch {
+    cacheSet(marketplaceDownloadsCache, name, null);
+    return null;
+  }
+}
+
+/**
+ * Fetch a package's full manifest from the registry, validate that its
+ * `tagmaPlugin` field exists and is well-formed, and shape it into a
+ * MarketplacePackageDetail. Returns null when the package is absent, not a
+ * valid plugin, or otherwise unusable.
+ */
+async function fetchMarketplacePackage(name: string): Promise<MarketplacePackageDetail | null> {
+  if (!isValidPluginName(name)) return null;
+  const cached = cacheGet(marketplaceManifestCache, name);
+  if (cached) return cached;
+  let body: any;
+  try {
+    const res = await fetch(registryUrl(name), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    body = await res.json();
+  } catch {
+    return null;
+  }
+  const latest = body?.['dist-tags']?.latest;
+  if (typeof latest !== 'string') return null;
+  const versionEntry = body?.versions?.[latest];
+  if (!versionEntry || typeof versionEntry !== 'object') return null;
+  let manifest;
+  try {
+    manifest = parsePluginManifestField(versionEntry);
+  } catch {
+    // Malformed tagmaPlugin field — plugin authors should hear about this
+    // but it's not worth surfacing to marketplace users. Drop it quietly.
+    return null;
+  }
+  if (!manifest || !VALID_PLUGIN_CATEGORIES.has(manifest.category)) return null;
+  const downloads = await fetchWeeklyDownloads(name);
+  const time = body?.time ?? {};
+  const detail: MarketplacePackageDetail = {
+    name,
+    version: latest,
+    description: typeof versionEntry.description === 'string' ? versionEntry.description : null,
+    category: manifest.category,
+    type: manifest.type,
+    keywords: coerceStringArray(versionEntry.keywords),
+    author: coerceAuthor(versionEntry.author),
+    date: typeof time[latest] === 'string' ? time[latest] : null,
+    homepage: typeof versionEntry.homepage === 'string' ? versionEntry.homepage : null,
+    repository: coerceRepository(versionEntry.repository),
+    weeklyDownloads: downloads,
+    readme: typeof body.readme === 'string' ? body.readme : null,
+    license: typeof versionEntry.license === 'string' ? versionEntry.license : null,
+    versions: Object.keys(body.versions ?? {}).reverse(),
+  };
+  cacheSet(marketplaceManifestCache, name, detail);
+  return detail;
+}
+
+/**
+ * Run `fetchMarketplacePackage` over a list of names with bounded
+ * concurrency so we don't fan out dozens of simultaneous fetches against
+ * the registry.
+ */
+async function resolveMarketplaceEntries(names: readonly string[]): Promise<MarketplaceEntry[]> {
+  const results: MarketplaceEntry[] = [];
+  let i = 0;
+  async function worker(): Promise<void> {
+    while (i < names.length) {
+      const idx = i++;
+      const name = names[idx];
+      const detail = await fetchMarketplacePackage(name);
+      if (detail) {
+        const { readme: _r, license: _l, versions: _v, ...entry } = detail;
+        results.push(entry);
+      }
+    }
+  }
+  const pool = Array.from({ length: Math.min(MARKETPLACE_CONCURRENCY, names.length) }, worker);
+  await Promise.all(pool);
+  return results;
+}
+
+/** GET /api/marketplace/search?q=&category= */
+app.get('/api/marketplace/search', async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const rawCategory = typeof req.query.category === 'string' ? req.query.category : '';
+  const category: PluginCategory | null =
+    VALID_PLUGIN_CATEGORIES.has(rawCategory as PluginCategory)
+      ? (rawCategory as PluginCategory)
+      : null;
+  const cacheKey = `q=${q}|cat=${category ?? ''}`;
+  const cached = cacheGet(marketplaceSearchCache, cacheKey);
+  if (cached) {
+    res.json({
+      query: q,
+      category,
+      entries: cached,
+      totalRaw: cached.length,
+      fetchedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  // We hit two upstream queries in parallel and merge them.
+  //
+  //   1. `keywords:tagma-plugin` — the canonical discovery channel. Plugin
+  //      authors (including third parties) opt in by adding the keyword
+  //      to their package.json. This is the long-term right answer.
+  //
+  //   2. Free-text "tagma" filtered to the @tagma/* scope — backstop for
+  //      official packages that haven't declared the keyword yet. Note
+  //      that not every @tagma/* package is a plugin (e.g. @tagma/sdk,
+  //      @tagma/types are libraries) — the manifest check below
+  //      discards any candidate whose package.json doesn't carry a
+  //      `tagmaPlugin` field, so this scope-based discovery is safe.
+  const keywordText = q ? `keywords:tagma-plugin ${q}` : 'keywords:tagma-plugin';
+  const scopeText = q ? `tagma ${q}` : 'tagma';
+  async function fetchSearch(text: string, scopeOnly: boolean): Promise<string[]> {
+    const params = new URLSearchParams({ text, size: String(MARKETPLACE_SEARCH_LIMIT) });
+    const r = await fetch(`${NPM_SEARCH_URL}?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) throw new Error(`npm search returned ${r.status}`);
+    const data = await r.json() as { objects?: Array<{ package?: { name?: unknown } }> };
+    const out: string[] = [];
+    for (const obj of data.objects ?? []) {
+      const name = obj?.package?.name;
+      if (typeof name !== 'string') continue;
+      if (!isValidPluginName(name)) continue;
+      if (scopeOnly && !name.startsWith('@tagma/')) continue;
+      out.push(name);
+    }
+    return out;
+  }
+  try {
+    const [keywordHits, scopeHits] = await Promise.all([
+      fetchSearch(keywordText, false).catch(() => []),
+      fetchSearch(scopeText, true).catch(() => []),
+    ]);
+    const rawNames = Array.from(new Set([...keywordHits, ...scopeHits]));
+    const resolved = await resolveMarketplaceEntries(rawNames);
+    const filtered = category
+      ? resolved.filter((e) => e.category === category)
+      : resolved;
+    // Sort: weekly downloads desc (null goes to the bottom), then name asc.
+    filtered.sort((a, b) => {
+      const ad = a.weeklyDownloads ?? -1;
+      const bd = b.weeklyDownloads ?? -1;
+      if (bd !== ad) return bd - ad;
+      return a.name.localeCompare(b.name);
+    });
+    cacheSet(marketplaceSearchCache, cacheKey, filtered);
+    res.json({
+      query: q,
+      category,
+      entries: filtered,
+      totalRaw: rawNames.length,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(502).json({ error: `Marketplace search failed: ${message}` });
+  }
+});
+
+/** GET /api/marketplace/package?name=... */
+app.get('/api/marketplace/package', async (req, res) => {
+  const rawName = typeof req.query.name === 'string' ? req.query.name : '';
+  if (!rawName || !isValidPluginName(rawName)) {
+    return res.status(400).json({
+      error: 'Invalid plugin name. Names must be scoped (@scope/name) or prefixed (tagma-plugin-*).',
+    });
+  }
+  const cached = cacheGet(marketplacePackageCache, rawName);
+  if (cached) return res.json(cached);
+  try {
+    const detail = await fetchMarketplacePackage(rawName);
+    if (!detail) {
+      return res.status(404).json({
+        error: `Package "${rawName}" is not a valid tagma plugin (missing tagmaPlugin field or unknown to npm).`,
+      });
+    }
+    cacheSet(marketplacePackageCache, rawName, detail);
+    res.json(detail);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(502).json({ error: `Marketplace fetch failed: ${message}` });
+  }
+});
+
 // ── Pipeline name ──
 app.patch('/api/pipeline', (req, res) => {
   const { name, driver, timeout, plugins, hooks } = req.body;

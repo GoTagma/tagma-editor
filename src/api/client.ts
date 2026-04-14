@@ -423,6 +423,52 @@ export interface PluginListResult {
   autoLoadErrors?: ReadonlyArray<{ name: string; message: string }>;
 }
 
+// ── Marketplace types ──
+//
+// The SDK defines exactly four plugin categories (see tagma-sdk/src/registry.ts
+// VALID_CATEGORIES). Anything else returned from an upstream source is
+// considered invalid and is filtered out server-side.
+export type PluginCategory = 'drivers' | 'triggers' | 'completions' | 'middlewares';
+
+export interface MarketplaceEntry {
+  name: string;
+  version: string;
+  description: string | null;
+  /** Resolved from the package's own `package.json.tagmaPlugin` field. */
+  category: PluginCategory;
+  /** Resolved from the package's own `package.json.tagmaPlugin.type`. */
+  type: string;
+  /** `keywords` array from package.json (may be empty). */
+  keywords: readonly string[];
+  /** Primary author name if resolvable. */
+  author: string | null;
+  /** Last publish timestamp reported by the npm search index. */
+  date: string | null;
+  /** Package homepage if declared. */
+  homepage: string | null;
+  /** Source repository URL if declared. */
+  repository: string | null;
+  /** npm weekly download count (null if the downloads API failed). */
+  weeklyDownloads: number | null;
+}
+
+export interface MarketplaceSearchResult {
+  query: string;
+  category: PluginCategory | null;
+  entries: MarketplaceEntry[];
+  /** Number of raw results fetched from npm before tagmaPlugin validation. */
+  totalRaw: number;
+  /** Timestamp when the cached payload was produced. */
+  fetchedAt: string;
+}
+
+export interface MarketplacePackageDetail extends MarketplaceEntry {
+  readme: string | null;
+  license: string | null;
+  /** All published versions, newest first. */
+  versions: readonly string[];
+}
+
 export interface FsEntry {
   name: string;
   path: string;
@@ -759,6 +805,23 @@ export const api = {
 
   importLocalPlugin: (path: string) =>
     request<PluginActionResult>('/plugins/import-local', { method: 'POST', body: jsonBody({ path }) }),
+
+  // ── Plugin marketplace (npm registry proxy) ──
+  // The server proxies and caches npm registry queries so we can strip
+  // packages that don't declare `tagmaPlugin` in their manifest, enrich
+  // results with weekly downloads, and shield the client from CORS +
+  // rate-limit quirks.
+
+  searchMarketplace: (query: string, category?: PluginCategory) => {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    if (category) params.set('category', category);
+    const qs = params.toString();
+    return request<MarketplaceSearchResult>(`/marketplace/search${qs ? `?${qs}` : ''}`);
+  },
+
+  getMarketplacePackage: (name: string) =>
+    request<MarketplacePackageDetail>(`/marketplace/package?name=${encodeURIComponent(name)}`),
 
   // ── Run history (F8 / §3.12) ──
   listRunHistory: () =>
