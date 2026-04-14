@@ -107,6 +107,7 @@ interface PipelineState {
   validationErrors: ValidationError[];
   dagEdges: DagEdge[];
   yamlPath: string | null;
+  yamlMtimeMs: number | null;
   workDir: string;
   isDirty: boolean;
   layoutDirty: boolean;
@@ -152,6 +153,7 @@ interface PipelineState {
   openFile: (path: string) => Promise<void>;
   saveFile: () => Promise<void>;
   saveFileAs: (path: string) => Promise<void>;
+  restoreDraft: (config: RawPipelineConfig) => Promise<void>;
   newPipeline: (name?: string) => Promise<void>;
   importFile: (sourcePath: string) => Promise<void>;
   exportFile: (destDir: string) => Promise<string | null>;
@@ -299,6 +301,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       validationErrors: state.validationErrors,
       dagEdges: state.dag.edges,
       yamlPath: state.yamlPath,
+      yamlMtimeMs: state.yamlMtimeMs ?? null,
       workDir: state.workDir,
       loading: false,
     });
@@ -317,6 +320,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       validationErrors: state.validationErrors,
       dagEdges: state.dag.edges,
       yamlPath: state.yamlPath,
+      yamlMtimeMs: state.yamlMtimeMs ?? null,
       workDir: state.workDir,
       positions,
       loading: false,
@@ -592,6 +596,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     validationErrors: [],
     dagEdges: [],
     yamlPath: null,
+    yamlMtimeMs: null,
     workDir: '',
     isDirty: false,
     layoutDirty: false,
@@ -957,6 +962,35 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       }
     },
 
+    restoreDraft: async (draftConfig) => {
+      try {
+        await drainInFlight();
+        const s = _get();
+        const state = await api.replaceConfig(draftConfig, positionsToObj(s.positions));
+        applyState(state);
+        set({
+          isDirty: true,
+          layoutDirty: s.layoutDirty,
+          past: [],
+          future: [],
+          errorMessage: null,
+        });
+      } catch (e) {
+        if (e instanceof RevisionConflictError) {
+          applyStateWithLayout(e.currentState);
+          set({
+            isDirty: false,
+            layoutDirty: false,
+            past: [],
+            future: [],
+            errorMessage: REVISION_CONFLICT_MESSAGE,
+          });
+          return;
+        }
+        set({ errorMessage: 'Failed to restore draft: ' + errorToMessage(e) });
+        throw e;
+      }
+    },
     newPipeline: async (name) => {
       try {
         set({ selectedTaskId: null, selectedTaskIds: [], selectedTrackId: null, pinnedTaskId: null, pinnedTrackId: null });

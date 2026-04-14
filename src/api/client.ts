@@ -164,6 +164,7 @@ export interface ServerState {
   validationErrors: ValidationError[];
   dag: { nodes: Record<string, any>; edges: DagEdge[] };
   yamlPath: string | null;
+  yamlMtimeMs?: number | null;
   workDir: string;
   layout: EditorLayout;
   /**
@@ -559,6 +560,13 @@ export type ApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'aborted';
 
 export type RunEvent =
   | { type: 'run_start'; runId: string; tasks: RunTaskState[]; seq?: number }
+  | {
+      type: 'run_snapshot';
+      runId: string;
+      tasks: RunTaskState[];
+      pendingApprovals: ApprovalRequestInfo[];
+      seq?: number;
+    }
   | {
       type: 'task_update';
       runId?: string;

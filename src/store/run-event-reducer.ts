@@ -41,6 +41,19 @@ export function initialRunFoldState(): RunFoldState {
     lastEventSeq: 0,
   };
 }
+function mapRunTasks(tasksInput: RunTaskState[]): Map<string, RunTaskState> {
+  const tasks = new Map<string, RunTaskState>();
+  for (const t of tasksInput) {
+    // Normalize: older server versions may omit `logs` / `totalLogCount`.
+    const logs = Array.isArray(t.logs) ? t.logs : [];
+    tasks.set(t.taskId, {
+      ...t,
+      logs,
+      totalLogCount: typeof t.totalLogCount === 'number' ? t.totalLogCount : logs.length,
+    });
+  }
+  return tasks;
+}
 
 /**
  * Fold a single RunEvent into a RunFoldState. Pure — never mutates
@@ -57,24 +70,23 @@ export function initialRunFoldState(): RunFoldState {
  *     banner so the user knows an approval silently expired
  */
 export function foldRunEvent(state: RunFoldState, event: RunEvent): RunFoldState {
-  // run_start always creates/resets the active run context.
-  if (event.type === 'run_start') {
-    const tasks = new Map<string, RunTaskState>();
-    for (const t of event.tasks) {
-      // Normalize: older server versions may omit `logs`. Guarantee an
-      // empty array so the reducer never has to null-check on append.
-      const logs = Array.isArray(t.logs) ? t.logs : [];
-      tasks.set(t.taskId, { ...t, logs, totalLogCount: logs.length });
-    }
+  // run_start always creates/resets the active run context. run_snapshot is a
+  // seq-less recovery event emitted on SSE (re)connect so clients can rebuild
+  // the current task map + pending approvals even after the bounded replay
+  // buffer has dropped older approval_request / task_update events.
+  if (event.type === 'run_start' || event.type === 'run_snapshot') {
+    const tasks = mapRunTasks(event.tasks);
     return {
       ...state,
       runId: event.runId,
       status: 'running',
       tasks,
-      pipelineLogs: [],
+      pipelineLogs: event.type === 'run_start' || state.runId !== event.runId ? [] : state.pipelineLogs,
       error: null,
-      pendingApprovals: new Map(),
-      lastEventSeq: typeof event.seq === 'number' ? event.seq : 0,
+      pendingApprovals: event.type === 'run_snapshot'
+        ? new Map(event.pendingApprovals.map((req) => [req.id, req]))
+        : new Map(),
+      lastEventSeq: typeof event.seq === 'number' ? event.seq : state.lastEventSeq,
     };
   }
 

@@ -38,14 +38,14 @@ type ConfirmInfo = {
 export function App() {
   const {
     config, positions, selectedTaskId, selectedTaskIds, selectedTrackId, pinnedTaskId, pinnedTrackId, validationErrors, dagEdges,
-    yamlPath, workDir, isDirty, layoutDirty, loading, registry,
+    yamlPath, yamlMtimeMs, workDir, isDirty, layoutDirty, loading, registry,
     pluginsActive, showPluginsPage, hidePluginsPage,
     setPipelineName, updatePipelineFields, addTrack, renameTrack, updateTrackFields, deleteTrack, moveTrackTo,
     addTask, updateTask, deleteTask, transferTaskToTrack,
     addDependency, removeDependency,
     selectTask, toggleTaskSelection, selectTrack, pinTask, unpinTask, pinTrack, unpinTrack, setTaskPosition, setRegistry,
     setWorkDir, saveFile, saveFileAs, newPipeline, importFile, exportFile, openFile,
-    exportYaml, importYaml, init,
+    exportYaml, importYaml, init, restoreDraft,
   } = usePipelineStore();
 
   const {
@@ -80,23 +80,24 @@ export function App() {
 
   useEffect(() => { init(); }, []);
 
-  // M4: After the initial state load completes, check whether the user has a
-  // newer autosave draft for the same yamlPath. The draft only exists when a
-  // previous session crashed / closed before saving, so this dialog is rare —
-  // but without it the draft was being written by useAutosave() and never read
-  // by anyone, making the entire crash-recovery feature dead code.
-  const draftCheckRef = useRef<boolean>(false);
+  // M4: After the initial state load completes, check for a newer autosave
+  // draft for the CURRENT yamlPath. Re-check on path switches; compare the
+  // draft timestamp against the on-disk YAML mtime so we never offer to
+  // restore an older draft on top of a newer saved file.
+  const draftCheckKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (draftCheckRef.current) return;
     if (loading) return;
-    draftCheckRef.current = true;
+    const draftKey = yamlPath ?? '__unsaved__';
+    if (draftCheckKeyRef.current === draftKey) return;
+    draftCheckKeyRef.current = draftKey;
     const draft = loadDraft(yamlPath);
     if (!draft) return;
-    // Stale guard: drafts older than 7 days probably don't reflect what the
-    // user wants any more. Drop them silently rather than nagging on every
-    // app start.
     if (Date.now() - draft.savedAt > 7 * 24 * 3600_000) {
-      clearDraft(yamlPath);
+      clearDraft(draft.yamlPath);
+      return;
+    }
+    if (typeof yamlMtimeMs === 'number' && draft.savedAt <= yamlMtimeMs) {
+      clearDraft(draft.yamlPath);
       return;
     }
     setConfirmInfo({
@@ -108,18 +109,21 @@ export function App() {
       confirmLabel: 'Restore',
       cancelLabel: 'Discard',
       onConfirm: () => {
-        // Apply the draft via the same path /api/state uses so the editor
-        // round-trips through validation. We update via the store directly
-        // so this stays a client-side operation; the user can then Save to
-        // persist to disk.
-        usePipelineStore.setState((s) => ({ ...s, config: draft.config, isDirty: true }));
-        clearDraft(yamlPath);
+        void restoreDraft(draft.config).then(() => {
+          clearDraft(draft.yamlPath);
+        }).catch((err: unknown) => {
+          setDialog({
+            type: 'error',
+            title: 'Draft Restore Failed',
+            details: [err instanceof Error ? err.message : String(err)],
+          });
+        });
       },
       onCancel: () => {
-        clearDraft(yamlPath);
+        clearDraft(draft.yamlPath);
       },
     });
-  }, [loading, yamlPath]);
+  }, [loading, yamlPath, yamlMtimeMs, restoreDraft]);
 
   // C1: Subscribe to external file change events and show a dialog.
   useEffect(() => {
@@ -680,6 +684,7 @@ export function App() {
           onClick={handleRunStopOrDismiss}
           className="flex items-center justify-center h-[22px] w-[22px] border border-tagma-border/60 text-tagma-muted hover:text-tagma-text hover:border-tagma-muted/80 transition-colors"
           title={runIsLive ? 'Abort run' : 'Dismiss'}
+          aria-label={runIsLive ? 'Abort run' : 'Dismiss run panel'}
         >
           {runIsLive ? <Square size={9} /> : <XIcon size={10} />}
         </button>

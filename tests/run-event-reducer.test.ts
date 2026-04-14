@@ -43,6 +43,7 @@ function makeTask(overrides: Partial<RunTaskState> = {}): RunTaskState {
     resolvedModelTier: null,
     resolvedPermissions: null,
     logs: [],
+    totalLogCount: 0,
     ...overrides,
   };
 }
@@ -188,6 +189,36 @@ test('approval_request adds to pending map', () => {
   expect(state.pendingApprovals.has('req_1')).toBe(true);
 });
 
+
+test('run_snapshot restores the latest task map and pending approvals without rewinding seq', () => {
+  let state = foldRunEvent(initialRunFoldState(), runStart(5));
+  state = foldRunEvent(state, {
+    type: 'task_update',
+    runId: 'run_test',
+    taskId: 'track_a.task_1',
+    status: 'running',
+    stdout: 'partial',
+    seq: 6,
+  });
+  const snapshotReq: ApprovalRequestInfo = {
+    id: 'req_snapshot',
+    taskId: 'track_a.task_1',
+    message: 'Need approval',
+    createdAt: '2026-04-11T10:00:02.000Z',
+    timeoutMs: 30000,
+  };
+  state = foldRunEvent(state, {
+    type: 'run_snapshot',
+    runId: 'run_test',
+    tasks: [makeTask({ status: 'blocked', stdout: 'latest', totalLogCount: 3 })],
+    pendingApprovals: [snapshotReq],
+  });
+  expect(state.lastEventSeq).toBe(6);
+  expect(state.tasks.get('track_a.task_1')?.status).toBe('blocked');
+  expect(state.tasks.get('track_a.task_1')?.stdout).toBe('latest');
+  expect(state.pendingApprovals.has('req_snapshot')).toBe(true);
+});
+
 test('approval_resolved with timeout surfaces an error banner', () => {
   let state = foldRunEvent(initialRunFoldState(), runStart(1));
   const req: ApprovalRequestInfo = {
@@ -236,10 +267,10 @@ test('run_end success flips status to done', () => {
   expect(state.status).toBe('done');
 });
 
-test('run_end failure flips status to aborted', () => {
+test('run_end failure flips status to failed when the client did not explicitly abort', () => {
   let state = foldRunEvent(initialRunFoldState(), runStart(1));
   state = foldRunEvent(state, { type: 'run_end', runId: 'run_test', success: false, seq: 2 });
-  expect(state.status).toBe('aborted');
+  expect(state.status).toBe('failed');
 });
 
 test('run_error sets status=error and surfaces the message', () => {

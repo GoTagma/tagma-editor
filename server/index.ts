@@ -402,6 +402,7 @@ function getState() {
     validationErrors,
     dag: { nodes: dagNodes, edges: dag.edges },
     yamlPath,
+    yamlMtimeMs: yamlPath && existsSync(yamlPath) ? statSync(yamlPath).mtimeMs : null,
     workDir,
     layout,
     revision: stateRevision,
@@ -1371,7 +1372,9 @@ const PLUGIN_CACHE_TTL_MS = 5_000;
 
 function invalidatePluginCache(): void {
   installedPluginsCache = null;
+  installedPluginsCacheTime = 0;
   workspaceDeclaredPluginsCache = null;
+  workspaceDeclaredPluginsCacheTime = 0;
 }
 
 function discoverInstalledPlugins(): string[] {
@@ -1430,10 +1433,14 @@ function discoverInstalledPlugins(): string[] {
  */
 // M6: Cache workspace-declared plugins alongside the installed-plugins cache.
 let workspaceDeclaredPluginsCache: string[] | null = null;
+let workspaceDeclaredPluginsCacheTime = 0;
 
 function discoverWorkspaceDeclaredPlugins(): string[] {
   if (!workDir) return [];
-  if (workspaceDeclaredPluginsCache !== null) return workspaceDeclaredPluginsCache;
+  const now = Date.now();
+  if (workspaceDeclaredPluginsCache !== null && now - workspaceDeclaredPluginsCacheTime < PLUGIN_CACHE_TTL_MS) {
+    return workspaceDeclaredPluginsCache;
+  }
   const tagmaDir = resolve(workDir, '.tagma');
   if (!existsSync(tagmaDir)) return [];
   const seen = new Set<string>();
@@ -1473,6 +1480,7 @@ function discoverWorkspaceDeclaredPlugins(): string[] {
     }
   }
   workspaceDeclaredPluginsCache = [...seen];
+  workspaceDeclaredPluginsCacheTime = now;
   return workspaceDeclaredPluginsCache;
 }
 
@@ -2411,6 +2419,7 @@ app.patch('/api/workspace', async (req, res) => {
   const { workDir: wd } = req.body;
   if (wd !== undefined) {
     workDir = resolve(wd);
+    invalidatePluginCache();
     mkdirSync(join(workDir, '.tagma'), { recursive: true });
     await autoLoadInstalledPlugins();
   }
@@ -2859,29 +2868,37 @@ app.post('/api/demo', (_req, res) => {
 
 // ═══ Pipeline Run ═══
 
-interface RunInitialTask {
+interface RunTaskLogLine {
+  level: 'info' | 'warn' | 'error' | 'debug' | 'section' | 'quiet';
+  timestamp: string;
+  text: string;
+}
+
+interface RunTaskWire {
   taskId: string;
   trackId: string;
   taskName: string;
   status: TaskStatus;
-  startedAt: null;
-  finishedAt: null;
-  durationMs: null;
-  exitCode: null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
   stdout: string;
   stderr: string;
-  outputPath: null;
-  stderrPath: null;
-  sessionId: null;
-  normalizedOutput: null;
-  resolvedDriver: null;
-  resolvedModelTier: null;
-  resolvedPermissions: null;
-  logs: never[];
+  outputPath: string | null;
+  stderrPath: string | null;
+  sessionId: string | null;
+  normalizedOutput: string | null;
+  resolvedDriver: string | null;
+  resolvedModelTier: string | null;
+  resolvedPermissions: Permissions | null;
+  logs: RunTaskLogLine[];
+  totalLogCount: number;
 }
 
 type RunEvent =
-  | { type: 'run_start'; runId: string; tasks: RunInitialTask[] }
+  | { type: 'run_start'; runId: string; tasks: RunTaskWire[] }
+  | { type: 'run_snapshot'; runId: string; tasks: RunTaskWire[]; pendingApprovals: Array<{ id: string; taskId: string; trackId?: string; message: string; createdAt: string; timeoutMs: number; metadata?: Record<string, unknown> }> }
   | {
       type: 'task_update';
       runId: string;
@@ -2923,6 +2940,7 @@ type RunEvent =
 let activeRunAbort: AbortController | null = null;
 let activeRunGateway: InMemoryApprovalGateway | null = null;
 let activeRunId: string | null = null;
+let activeRunTasksSnapshot = new Map<string, RunTaskWire>();
 // B4: Synchronous lock to prevent TOCTOU race between checking activeRunAbort
 // and setting it (loadPipeline + validateConfig are async).
 let runStarting = false;
@@ -2990,16 +3008,19 @@ app.get('/api/run/events', (req, res) => {
       res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
     }
   }
-  // M7: Send a snapshot of any pending approvals on connect so clients that
-  // missed earlier approval_request events (buffer overflow, brief disconnect)
-  // can still render the approval dialog. The reducer ignores duplicates by
-  // requestId, so this is safe even if the client already saw the event.
-  if (runInFlight && activeRunGateway) {
-    const pending = activeRunGateway.pending();
-    if (pending.length > 0) {
-      for (const pr of pending) {
-        res.write(`event: run_event\ndata: ${JSON.stringify({ type: 'approval_request', runId: activeRunId, request: approvalRequestToWire(pr), seq: -1 })}\n\n`);
-      }
+  // M7: Emit a seq-less snapshot after replay so reconnecting clients can
+  // rebuild the current task map + pending approvals even if the bounded
+  // replay buffer has already dropped the original run_start / approval_request
+  // events. We send it AFTER replay so it wins over any older buffered state.
+  if (runInFlight && activeRunId) {
+    const pending = activeRunGateway ? activeRunGateway.pending().map(approvalRequestToWire) : [];
+    if (activeRunTasksSnapshot.size > 0 || pending.length > 0) {
+      res.write(`event: run_event\ndata: ${JSON.stringify({
+        type: 'run_snapshot',
+        runId: activeRunId,
+        tasks: Array.from(activeRunTasksSnapshot.values()),
+        pendingApprovals: pending,
+      })}\n\n`);
     }
   }
   req.on('close', () => sseClients.delete(res));
@@ -3090,7 +3111,7 @@ app.post('/api/run/start', async (_req, res) => {
   // Build initial task list from the raw (editor-side) config. This keeps
   // the qualified taskIds aligned with the pipeline DAG that the SDK
   // produces internally (`{trackId}.{taskId}`).
-  const initialTasks: RunInitialTask[] = config.tracks.flatMap((track) =>
+  const initialTasks: RunTaskWire[] = config.tracks.flatMap((track) =>
     track.tasks.map((task) => ({
       taskId: `${track.id}.${task.id}`,
       trackId: track.id,
@@ -3110,6 +3131,7 @@ app.post('/api/run/start', async (_req, res) => {
       resolvedModelTier: null,
       resolvedPermissions: null,
       logs: [],
+      totalLogCount: 0,
     })),
   );
 
@@ -3154,6 +3176,7 @@ app.post('/api/run/start', async (_req, res) => {
   activeRunAbort = abortController;
   activeRunGateway = gateway;
   activeRunId = runId;
+  activeRunTasksSnapshot = new Map(initialTasks.map((task) => [task.taskId, structuredClone(task)]));
   // Buffer was already reset at the top of this handler so any EventSource
   // connection that arrives during validation never replays stale events
   // from the prior run.
@@ -3218,18 +3241,104 @@ app.post('/api/run/start', async (_req, res) => {
             modelTier: state.config.model_tier ?? existing.modelTier,
           });
         }
-        broadcast(taskStateChangeToWire(runId, event.taskId, event.status, event.state));
+        const wireEvent = taskStateChangeToWire(runId, event.taskId, event.status, event.state);
+        broadcast(wireEvent);
+        const prevTask = activeRunTasksSnapshot.get(event.taskId);
+        const dotIdx = event.taskId.indexOf('.');
+        const fallbackTrackId = dotIdx >= 0 ? event.taskId.slice(0, dotIdx) : '';
+        const baseTask: RunTaskWire = prevTask ?? {
+          taskId: event.taskId,
+          trackId: fallbackTrackId,
+          taskName: event.taskId,
+          status: wireEvent.status,
+          startedAt: null,
+          finishedAt: null,
+          durationMs: null,
+          exitCode: null,
+          stdout: '',
+          stderr: '',
+          outputPath: null,
+          stderrPath: null,
+          sessionId: null,
+          normalizedOutput: null,
+          resolvedDriver: null,
+          resolvedModelTier: null,
+          resolvedPermissions: null,
+          logs: [],
+          totalLogCount: 0,
+        };
+        activeRunTasksSnapshot.set(event.taskId, {
+          ...baseTask,
+          status: wireEvent.status,
+          startedAt: wireEvent.startedAt ?? baseTask.startedAt,
+          finishedAt: wireEvent.finishedAt ?? baseTask.finishedAt,
+          durationMs: wireEvent.durationMs ?? baseTask.durationMs,
+          exitCode: wireEvent.exitCode ?? baseTask.exitCode,
+          stdout: wireEvent.stdout ?? baseTask.stdout,
+          stderr: wireEvent.stderr ?? baseTask.stderr,
+          outputPath: wireEvent.outputPath ?? baseTask.outputPath,
+          stderrPath: wireEvent.stderrPath ?? baseTask.stderrPath,
+          sessionId: wireEvent.sessionId ?? baseTask.sessionId,
+          normalizedOutput: wireEvent.normalizedOutput ?? baseTask.normalizedOutput,
+          resolvedDriver: wireEvent.resolvedDriver ?? baseTask.resolvedDriver,
+          resolvedModelTier: wireEvent.resolvedModelTier ?? baseTask.resolvedModelTier,
+          resolvedPermissions: wireEvent.resolvedPermissions ?? baseTask.resolvedPermissions,
+          logs: baseTask.logs,
+          totalLogCount: baseTask.totalLogCount,
+        });
       } else if (event.type === 'task_log') {
         // Stream every pipeline.log line out to SSE clients so the RunTaskPanel
         // can show the same process detail the log file has.
-        broadcast({
-          type: 'task_log',
+        const wireLog = {
+          type: 'task_log' as const,
           runId,
           taskId: event.taskId,
           level: event.level,
           timestamp: event.timestamp,
           text: event.text,
-        });
+        };
+        broadcast(wireLog);
+        if (event.taskId) {
+          const prevTask = activeRunTasksSnapshot.get(event.taskId);
+          const dotIdx = event.taskId.indexOf('.');
+          const fallbackTrackId = dotIdx >= 0 ? event.taskId.slice(0, dotIdx) : '';
+          const baseTask: RunTaskWire = prevTask ?? {
+            taskId: event.taskId,
+            trackId: fallbackTrackId,
+            taskName: event.taskId,
+            status: 'running',
+            startedAt: null,
+            finishedAt: null,
+            durationMs: null,
+            exitCode: null,
+            stdout: '',
+            stderr: '',
+            outputPath: null,
+            stderrPath: null,
+            sessionId: null,
+            normalizedOutput: null,
+            resolvedDriver: null,
+            resolvedModelTier: null,
+            resolvedPermissions: null,
+            logs: [],
+            totalLogCount: 0,
+          };
+          const nextLine: RunTaskLogLine = {
+            level: event.level,
+            timestamp: event.timestamp,
+            text: event.text,
+          };
+          const baseLogs = baseTask.logs ?? [];
+          const nextTotalLogCount = (baseTask.totalLogCount ?? baseLogs.length) + 1;
+          const nextLogs = baseLogs.length >= 500
+            ? [...baseLogs.slice(baseLogs.length - 499), nextLine]
+            : [...baseLogs, nextLine];
+          activeRunTasksSnapshot.set(event.taskId, {
+            ...baseTask,
+            logs: nextLogs,
+            totalLogCount: nextTotalLogCount,
+          });
+        }
       }
       // pipeline_start and pipeline_end are implicit in run_start / run_end
       // — we already broadcast run_start above, and run_end is emitted in
@@ -3274,6 +3383,7 @@ app.post('/api/run/start', async (_req, res) => {
       activeRunAbort = null;
       activeRunGateway = null;
       activeRunId = null;
+      activeRunTasksSnapshot = new Map();
     }
     runStarting = false; // B4: release lock when run completes
   });
@@ -3547,6 +3657,7 @@ function gracefulShutdown() {
     activeRunAbort = null;
     activeRunGateway = null;
     activeRunId = null;
+    activeRunTasksSnapshot = new Map();
     runStarting = false;
   }
   // Close file watcher
