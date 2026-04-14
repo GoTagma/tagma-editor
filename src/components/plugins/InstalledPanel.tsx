@@ -1,10 +1,15 @@
 import { useMemo, useState } from 'react';
-import {
-  AlertCircle, Check, Download, Loader2, Package, RefreshCw, RotateCcw, Trash2,
-} from 'lucide-react';
+import { AlertCircle, Check, Download, Loader2, Package, RefreshCw, Trash2 } from 'lucide-react';
 import type { PluginCategory, PluginInfo } from '../../api/client';
 import { errorHint } from './plugin-errors';
 import type { PluginActionState } from './PluginsPage';
+import {
+  ActionButton,
+  BusyLabel,
+  Chip,
+  PLUGIN_CARD_GRID_CLASSES,
+  PluginCardShell,
+} from './plugin-card';
 
 interface InstalledPanelProps {
   plugins: readonly PluginInfo[];
@@ -96,9 +101,9 @@ export function InstalledPanel({
             <p className="text-[11px]">Loading plugins…</p>
           </div>
         ) : filtered.length > 0 ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-2">
+          <div className={PLUGIN_CARD_GRID_CLASSES}>
             {filtered.map((p) => (
-              <PluginCard
+              <InstalledCard
                 key={p.name}
                 plugin={p}
                 declared={declaredSet.has(p.name)}
@@ -135,7 +140,7 @@ export function InstalledPanel({
   );
 }
 
-function PluginCard({
+function InstalledCard({
   plugin,
   declared,
   actionState,
@@ -155,88 +160,82 @@ function PluginCard({
   const busyAction = isBusy ? actionState.action : null;
   const disabled = actionState.type === 'loading';
 
-  return (
-    <div className="flex flex-col gap-1.5 p-3 bg-tagma-surface/50 border border-tagma-border hover:border-tagma-accent/40 transition-colors">
-      <div className="flex items-start gap-2">
-        <Package size={14} className="text-tagma-muted shrink-0 mt-0.5" />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[12px] font-mono text-tagma-text truncate">{plugin.name}</span>
-            {plugin.version && (
-              <span className="text-[10px] text-tagma-muted shrink-0">v{plugin.version}</span>
-            )}
-          </div>
-          {plugin.description && (
-            <p className="text-[10px] text-tagma-muted mt-0.5 line-clamp-2">{plugin.description}</p>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-1 flex-wrap min-h-[16px]">
-        {plugin.installed ? (
-          <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">installed</span>
-        ) : (
-          <span className="text-[9px] px-1 py-px bg-tagma-error/10 text-tagma-error/80 border border-tagma-error/20">missing</span>
-        )}
-        {plugin.loaded && (
-          <span className="text-[9px] px-1 py-px bg-blue-500/10 text-blue-400/80 border border-blue-500/20">loaded</span>
-        )}
-        {declared && (
-          <span className="text-[9px] px-1 py-px bg-purple-500/10 text-purple-400/80 border border-purple-500/20">declared</span>
-        )}
-        {plugin.categories.map((cat) => (
-          <span key={cat} className="text-[9px] px-1 py-px bg-tagma-muted/10 text-tagma-muted border border-tagma-muted/20">
-            {cat}
-          </span>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-1 mt-1">
-        {isBusy ? (
-          <span className="flex items-center gap-1 text-[10px] text-tagma-muted">
-            <Loader2 size={11} className="animate-spin" />
-            {busyAction === 'install' ? 'Installing…'
-              : busyAction === 'uninstall' ? 'Uninstalling…'
-              : busyAction === 'load' ? 'Loading…'
-              : 'Working…'}
-          </span>
-        ) : (
-          <>
-            {!plugin.installed && (
-              <button
-                onClick={() => onInstall(plugin.name)}
-                disabled={disabled}
-                className="p-1 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
-                title="Install — downloads from npm and records in manifest"
-              >
-                <Download size={12} />
-              </button>
-            )}
-            {plugin.installed && !plugin.loaded && (
-              <button
-                onClick={() => onLoad(plugin.name)}
-                disabled={disabled}
-                className="p-1 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
-                title="Load into registry — runtime only"
-              >
-                <RefreshCw size={12} />
-              </button>
-            )}
-            {plugin.installed && (
-              <button
-                onClick={() => onUninstall(plugin.name)}
-                disabled={disabled}
-                className="p-1 text-tagma-error hover:text-tagma-error/80 transition-colors disabled:opacity-40"
-                title="Uninstall"
-              >
-                <Trash2 size={12} />
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+  const header = (
+    <>
+      <span className="text-[12px] font-mono text-tagma-text truncate">{plugin.name}</span>
+      {plugin.version && (
+        <span className="text-[10px] text-tagma-muted shrink-0">v{plugin.version}</span>
+      )}
+    </>
   );
+
+  const chips = (
+    <>
+      {plugin.installed
+        ? <Chip variant="success">installed</Chip>
+        : <Chip variant="danger">missing</Chip>}
+      {plugin.loaded && <Chip variant="info">loaded</Chip>}
+      {declared && <Chip variant="accent">declared</Chip>}
+      {plugin.categories.map((cat) => (
+        <Chip key={cat} variant="neutral">{cat}</Chip>
+      ))}
+    </>
+  );
+
+  const actions = isBusy ? (
+    <BusyLabel label={busyActionLabel(busyAction)} />
+  ) : (
+    <>
+      {!plugin.installed && (
+        <ActionButton
+          variant="primary"
+          icon={<Download size={11} />}
+          label="Install"
+          onClick={() => onInstall(plugin.name)}
+          disabled={disabled}
+          title="Install — downloads from npm and records in the workspace manifest"
+        />
+      )}
+      {plugin.installed && !plugin.loaded && (
+        <ActionButton
+          variant="primary"
+          icon={<RefreshCw size={11} />}
+          label="Load"
+          onClick={() => onLoad(plugin.name)}
+          disabled={disabled}
+          title="Load into registry — runtime only"
+        />
+      )}
+      {plugin.installed && (
+        <ActionButton
+          variant="danger"
+          icon={<Trash2 size={11} />}
+          label="Uninstall"
+          onClick={() => onUninstall(plugin.name)}
+          disabled={disabled}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <PluginCardShell
+      header={header}
+      description={plugin.description}
+      chips={chips}
+      actions={actions}
+    />
+  );
+}
+
+function busyActionLabel(action: string | null): string {
+  switch (action) {
+    case 'install': return 'Installing…';
+    case 'uninstall': return 'Uninstalling…';
+    case 'load': return 'Loading…';
+    case 'import': return 'Importing…';
+    default: return 'Working…';
+  }
 }
 
 function ActionBanner({
@@ -277,7 +276,6 @@ function ActionBanner({
           )}
         </div>
         <button onClick={onDismiss} className="text-tagma-muted hover:text-tagma-text shrink-0" title="Dismiss">
-          <RotateCcw size={10} className="opacity-0 pointer-events-none" aria-hidden />
           &times;
         </button>
       </div>

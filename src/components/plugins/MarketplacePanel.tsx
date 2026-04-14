@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react';
 import {
   AlertCircle, AlertTriangle, Calendar, Check, Download, Loader2, Package, Search, Store, Trash2, TrendingUp,
 } from 'lucide-react';
-import type {
-  MarketplaceEntry,
-  PluginCategory,
-} from '../../api/client';
-import {
-  errorHint,
-  formatDownloads,
-} from './plugin-errors';
+import type { MarketplaceEntry, PluginCategory } from '../../api/client';
+import { errorHint, formatDownloads } from './plugin-errors';
 import type { PluginActionState } from './PluginsPage';
+import {
+  ActionButton,
+  BusyLabel,
+  Chip,
+  MetaChip,
+  PLUGIN_CARD_GRID_CLASSES,
+  PluginCardShell,
+} from './plugin-card';
 
 interface MarketplacePanelProps {
   entries: readonly MarketplaceEntry[];
@@ -29,14 +30,14 @@ interface MarketplacePanelProps {
   onRetry: () => void;
 }
 
-const SEARCH_DEBOUNCE_MS = 350;
-
 /**
  * Stateless marketplace browser. Every piece of state — entries, loading,
  * errors, current action — is owned by PluginsPage and flows in as props.
- * This panel only renders, debounces the search box locally (so parent
- * reloads fire on a committed query, not every keystroke), and forwards
- * button clicks up to the parent mutation handlers.
+ *
+ * The search box writes straight into the parent's committed query (no
+ * local debounce) because filtering is now a pure client-side pass over
+ * the cached "All" list — recomputing on every keystroke is free and any
+ * debounce would only add latency for no network-traffic reason.
  *
  * Install and Uninstall fire immediately on click — no confirmation dialog —
  * because the user is already inside the editor's Plugins page and the
@@ -58,19 +59,6 @@ export function MarketplacePanel({
   onDismissAction,
   onRetry,
 }: MarketplacePanelProps) {
-  const [rawQuery, setRawQuery] = useState(query);
-
-  // Debounce the raw input so we don't fire a reload on every keystroke.
-  // The committed query lives in the parent; on each debounce tick we push
-  // the trimmed value up.
-  useEffect(() => {
-    const id = setTimeout(() => {
-      const next = rawQuery.trim();
-      if (next !== query) onQueryChange(next);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [rawQuery, query, onQueryChange]);
-
   const actionBannerVisible =
     actionState.type === 'error' || actionState.type === 'success';
 
@@ -82,8 +70,8 @@ export function MarketplacePanel({
           <input
             type="text"
             className="field-input w-full pl-8 text-[11px]"
-            value={rawQuery}
-            onChange={(e) => setRawQuery(e.target.value)}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
             placeholder="Search the plugin marketplace…"
           />
         </div>
@@ -155,7 +143,7 @@ export function MarketplacePanel({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-2">
+          <div className={PLUGIN_CARD_GRID_CLASSES}>
             {entries.map((entry) => (
               <MarketplaceCard
                 key={entry.name}
@@ -197,81 +185,74 @@ function MarketplaceCard({
   const disabled = actionState.type === 'loading';
   const publishDate = formatPublishDate(entry.date);
 
-  return (
-    <div className="flex items-start gap-2 p-3 bg-tagma-surface/50 border border-tagma-border hover:border-tagma-accent/40 transition-colors">
-      <Package size={14} className="text-tagma-muted shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[12px] font-mono text-tagma-text truncate">{entry.name}</span>
-          <span className="text-[10px] text-tagma-muted shrink-0">v{entry.version}</span>
-          {entry.weeklyDownloads !== null && (
-            <span className="flex items-center gap-0.5 text-[9px] text-tagma-muted shrink-0" title="Weekly downloads">
-              <TrendingUp size={9} />
-              {formatDownloads(entry.weeklyDownloads)}
-            </span>
-          )}
-        </div>
-        {entry.description && (
-          <p className="text-[10px] text-tagma-muted mt-0.5 line-clamp-2">{entry.description}</p>
-        )}
-        <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-          <span className="text-[9px] px-1 py-px bg-purple-500/10 text-purple-400/80 border border-purple-500/20">
-            {entry.category}
-          </span>
-          <span className="text-[9px] px-1 py-px bg-tagma-muted/10 text-tagma-muted border border-tagma-muted/20 font-mono">
-            {entry.type}
-          </span>
-          {installed && (
-            <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">
-              installed
-            </span>
-          )}
-          {publishDate && (
-            <span
-              className="flex items-center gap-0.5 text-[9px] text-tagma-muted"
-              title={entry.date ? `Last publish: ${new Date(entry.date).toLocaleString()}` : undefined}
-            >
-              <Calendar size={9} />
-              {publishDate}
-            </span>
-          )}
-          {entry.author && (
-            <span className="text-[9px] text-tagma-muted truncate">by {entry.author}</span>
-          )}
-        </div>
-      </div>
-      <div className="shrink-0">
-        {isBusy ? (
-          <span className="flex items-center gap-1 text-[10px] text-tagma-muted">
-            <Loader2 size={11} className="animate-spin" />
-            {busyAction === 'install' ? 'Installing…'
-              : busyAction === 'uninstall' ? 'Uninstalling…'
-              : 'Working…'}
-          </span>
-        ) : installed ? (
-          <button
-            type="button"
-            onClick={onUninstall}
-            disabled={disabled}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-tagma-error/15 text-tagma-error border border-tagma-error/30 hover:bg-tagma-error/25 transition-colors disabled:opacity-40"
-          >
-            <Trash2 size={11} />
-            Uninstall
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onInstall}
-            disabled={disabled}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40"
-          >
-            <Download size={11} />
-            Install
-          </button>
-        )}
-      </div>
-    </div>
+  const header = (
+    <>
+      <span className="text-[12px] font-mono text-tagma-text truncate">{entry.name}</span>
+      <span className="text-[10px] text-tagma-muted shrink-0">v{entry.version}</span>
+      {entry.weeklyDownloads !== null && (
+        <MetaChip title="Weekly downloads">
+          <TrendingUp size={9} />
+          {formatDownloads(entry.weeklyDownloads)}
+        </MetaChip>
+      )}
+    </>
   );
+
+  const chips = (
+    <>
+      <Chip variant="accent">{entry.category}</Chip>
+      <Chip variant="neutral" mono>{entry.type}</Chip>
+      {installed && <Chip variant="success">installed</Chip>}
+      {publishDate && (
+        <MetaChip
+          title={entry.date ? `Last publish: ${new Date(entry.date).toLocaleString()}` : undefined}
+        >
+          <Calendar size={9} />
+          {publishDate}
+        </MetaChip>
+      )}
+      {entry.author && (
+        <span className="text-[9px] text-tagma-muted truncate">by {entry.author}</span>
+      )}
+    </>
+  );
+
+  const actions = isBusy ? (
+    <BusyLabel label={busyActionLabel(busyAction)} />
+  ) : installed ? (
+    <ActionButton
+      variant="danger"
+      icon={<Trash2 size={11} />}
+      label="Uninstall"
+      onClick={onUninstall}
+      disabled={disabled}
+    />
+  ) : (
+    <ActionButton
+      variant="primary"
+      icon={<Download size={11} />}
+      label="Install"
+      onClick={onInstall}
+      disabled={disabled}
+    />
+  );
+
+  return (
+    <PluginCardShell
+      header={header}
+      description={entry.description}
+      chips={chips}
+      actions={actions}
+    />
+  );
+}
+
+function busyActionLabel(action: string | null): string {
+  switch (action) {
+    case 'install': return 'Installing…';
+    case 'uninstall': return 'Uninstalling…';
+    default: return 'Working…';
+  }
 }
 
 function ActionBanner({

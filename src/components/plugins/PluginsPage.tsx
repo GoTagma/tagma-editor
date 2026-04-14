@@ -88,7 +88,13 @@ export function PluginsPage({
   const [pluginsLoading, setPluginsLoading] = useState(false);
 
   const [marketplaceQuery, setMarketplaceQuery] = useState('');
-  const [marketplaceEntries, setMarketplaceEntries] = useState<MarketplaceEntry[]>([]);
+  // Cached "All" result from the last upstream fetch. Category and search
+  // filtering run purely client-side against this list — clicking a
+  // sidebar category never re-hits npm, which keeps the UI snappy and
+  // avoids rate-limiting on the public registry. An explicit Refresh
+  // click (or workspace change) is the only way to invalidate the cache.
+  const [allMarketplaceEntries, setAllMarketplaceEntries] = useState<MarketplaceEntry[]>([]);
+  const [marketplaceFetched, setMarketplaceFetched] = useState(false);
   const [marketplaceLoading, setMarketplaceLoading] = useState(false);
   const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
   const [marketplaceWarning, setMarketplaceWarning] = useState<string | null>(null);
@@ -131,43 +137,77 @@ export function PluginsPage({
     refreshInstalled();
   }, [declaredPlugins, refreshInstalled]);
 
-  // ── Marketplace search ──
-  const reloadMarketplace = useCallback(async () => {
+  // ── Marketplace fetch ──
+  //
+  // Always fetches the *full* "All" list (empty query, no category filter).
+  // Category and search filtering happen in `filteredMarketplaceEntries`
+  // below so we don't pay a round-trip to npm every time the user clicks
+  // a sidebar category. The request-id guard keeps a slower previous
+  // fetch from overwriting the result of a newer one.
+  const fetchMarketplace = useCallback(async () => {
     if (!workDir) return;
     const requestId = ++marketplaceReloadIdRef.current;
     setMarketplaceLoading(true);
     setMarketplaceError(null);
     try {
-      const res = await api.searchMarketplace(
-        marketplaceQuery,
-        category === 'all' ? undefined : category,
-      );
+      const res = await api.searchMarketplace('', undefined);
       if (marketplaceReloadIdRef.current !== requestId) return;
-      setMarketplaceEntries(res.entries);
+      setAllMarketplaceEntries(res.entries);
       setMarketplaceWarning(res.upstreamError ?? null);
+      setMarketplaceFetched(true);
     } catch (e: unknown) {
       if (marketplaceReloadIdRef.current !== requestId) return;
       setMarketplaceError(extractErrorMessage(e));
-      setMarketplaceEntries([]);
       setMarketplaceWarning(null);
+      // Intentionally leave marketplaceFetched false so the next tab open
+      // re-triggers the lazy fetch instead of silently showing an empty list.
     } finally {
       if (marketplaceReloadIdRef.current === requestId) setMarketplaceLoading(false);
     }
-  }, [workDir, marketplaceQuery, category]);
+  }, [workDir]);
 
-  // Fetch the marketplace lazily: only when the user actually opens that tab
-  // (or changes search/category while it's open). Avoids hammering npm on
-  // page load for users who only care about the Installed view.
+  // Lazy fetch on first marketplace tab open. Users who only care about
+  // the Installed view never hit npm at all.
   useEffect(() => {
     if (tab !== 'marketplace') return;
-    reloadMarketplace();
-  }, [tab, reloadMarketplace]);
+    if (marketplaceFetched) return;
+    fetchMarketplace();
+  }, [tab, marketplaceFetched, fetchMarketplace]);
+
+  // Invalidate the cache when the workspace changes so we don't keep
+  // showing a previous workspace's "installed" flags layered onto the
+  // marketplace list. The next tab open re-fetches from scratch.
+  useEffect(() => {
+    setAllMarketplaceEntries([]);
+    setMarketplaceFetched(false);
+    setMarketplaceError(null);
+    setMarketplaceWarning(null);
+  }, [workDir]);
 
   const installedNames = useMemo(
     () => new Set(plugins.filter((p) => p.installed).map((p) => p.name)),
     [plugins],
   );
   const declaredSet = useMemo(() => new Set(declaredPlugins), [declaredPlugins]);
+
+  // Client-side filter over the cached "All" list. Runs on every category
+  // or query change; since the list is small and `useMemo` is cheap, this
+  // feels instant even for hundreds of cached entries.
+  const filteredMarketplaceEntries = useMemo(() => {
+    const q = marketplaceQuery.trim().toLowerCase();
+    return allMarketplaceEntries.filter((entry) => {
+      if (category !== 'all' && entry.category !== category) return false;
+      if (!q) return true;
+      const haystack = [
+        entry.name,
+        entry.description ?? '',
+        entry.type,
+        entry.author ?? '',
+        entry.keywords.join(' '),
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [allMarketplaceEntries, category, marketplaceQuery]);
 
   // ── Mutations ──
   //
@@ -261,10 +301,13 @@ export function PluginsPage({
     }
   }, [onRegistryUpdate, refreshInstalled]);
 
+  // Explicit user-triggered refresh is the only way to re-hit npm once
+  // we've cached a result. Clicking it always re-fetches; the flag is
+  // set again by fetchMarketplace itself on success.
   const handleRefresh = useCallback(() => {
     refreshInstalled();
-    if (tab === 'marketplace') reloadMarketplace();
-  }, [refreshInstalled, reloadMarketplace, tab]);
+    if (tab === 'marketplace') fetchMarketplace();
+  }, [refreshInstalled, fetchMarketplace, tab]);
 
   if (!workDir) {
     return (
@@ -349,7 +392,7 @@ export function PluginsPage({
             />
           ) : (
             <MarketplacePanel
-              entries={marketplaceEntries}
+              entries={filteredMarketplaceEntries}
               loading={marketplaceLoading}
               loadError={marketplaceError}
               upstreamWarning={marketplaceWarning}
@@ -362,7 +405,7 @@ export function PluginsPage({
               onInstall={handleInstall}
               onUninstall={handleUninstall}
               onDismissAction={() => setActionState({ type: 'idle' })}
-              onRetry={reloadMarketplace}
+              onRetry={fetchMarketplace}
             />
           )}
         </section>
