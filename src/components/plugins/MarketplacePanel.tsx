@@ -1,156 +1,78 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  AlertCircle, Check, Download, ExternalLink, Loader2, Package, Search, Store, TrendingUp,
+  AlertCircle, AlertTriangle, Calendar, Check, Download, Loader2, Package, Search, Store, Trash2, TrendingUp,
 } from 'lucide-react';
-import { api } from '../../api/client';
 import type {
   MarketplaceEntry,
-  MarketplacePackageDetail,
   PluginCategory,
-  PluginRegistry,
 } from '../../api/client';
 import {
-  classifyError,
   errorHint,
-  extractErrorMessage,
   formatDownloads,
-  type ErrorKind,
 } from './plugin-errors';
+import type { PluginActionState } from './PluginsPage';
 
 interface MarketplacePanelProps {
+  entries: readonly MarketplaceEntry[];
+  loading: boolean;
+  loadError: string | null;
+  upstreamWarning: string | null;
+  query: string;
+  onQueryChange: (query: string) => void;
   category: 'all' | PluginCategory;
-  declaredPlugins: readonly string[];
-  onRegistryUpdate: (registry: PluginRegistry) => void;
-  onPluginsChange: (plugins: string[]) => void;
+  installedNames: ReadonlySet<string>;
+  declaredSet: ReadonlySet<string>;
+  actionState: PluginActionState;
+  onInstall: (name: string) => void;
+  onUninstall: (name: string) => void;
+  onDismissAction: () => void;
+  onRetry: () => void;
 }
-
-type InstallState =
-  | { type: 'idle' }
-  | { type: 'installing'; name: string }
-  | { type: 'installed'; name: string; version: string }
-  | { type: 'error'; name: string; message: string; kind: ErrorKind };
 
 const SEARCH_DEBOUNCE_MS = 350;
-const MARKETPLACE_CONSENT_KEY = 'tagma.marketplace.consentGranted';
-
-function hasConsent(): boolean {
-  try { return window.localStorage.getItem(MARKETPLACE_CONSENT_KEY) === '1'; }
-  catch { return false; }
-}
-
-function grantConsent(): void {
-  try { window.localStorage.setItem(MARKETPLACE_CONSENT_KEY, '1'); }
-  catch { /* ignore */ }
-}
 
 /**
- * Marketplace browser. Queries the server's `/api/marketplace/search` proxy
- * (which in turn hits the npm registry, filters by `keywords:tagma-plugin`,
- * and enriches each result with the SDK-level `tagmaPlugin` manifest + a
- * weekly download count). Install actions flow through the normal
- * `/api/plugins/install` endpoint — the marketplace is purely a discovery
- * surface, not a parallel install path.
+ * Stateless marketplace browser. Every piece of state — entries, loading,
+ * errors, current action — is owned by PluginsPage and flows in as props.
+ * This panel only renders, debounces the search box locally (so parent
+ * reloads fire on a committed query, not every keystroke), and forwards
+ * button clicks up to the parent mutation handlers.
  *
- * First-time marketplace installs from an untrusted source prompt the user
- * with a one-time confirmation so a stray click can't silently pull
- * arbitrary code into the workspace. Subsequent installs are direct.
+ * Install and Uninstall fire immediately on click — no confirmation dialog —
+ * because the user is already inside the editor's Plugins page and the
+ * button label explicitly states the action.
  */
 export function MarketplacePanel({
+  entries,
+  loading,
+  loadError,
+  upstreamWarning,
+  query,
+  onQueryChange,
   category,
-  declaredPlugins,
-  onRegistryUpdate,
-  onPluginsChange,
+  installedNames,
+  declaredSet,
+  actionState,
+  onInstall,
+  onUninstall,
+  onDismissAction,
+  onRetry,
 }: MarketplacePanelProps) {
-  const [rawQuery, setRawQuery] = useState('');
-  const [query, setQuery] = useState('');
-  const [entries, setEntries] = useState<MarketplaceEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [installState, setInstallState] = useState<InstallState>({ type: 'idle' });
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [detail, setDetail] = useState<MarketplacePackageDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [rawQuery, setRawQuery] = useState(query);
 
+  // Debounce the raw input so we don't fire a reload on every keystroke.
+  // The committed query lives in the parent; on each debounce tick we push
+  // the trimmed value up.
   useEffect(() => {
-    const id = setTimeout(() => setQuery(rawQuery.trim()), SEARCH_DEBOUNCE_MS);
+    const id = setTimeout(() => {
+      const next = rawQuery.trim();
+      if (next !== query) onQueryChange(next);
+    }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [rawQuery]);
+  }, [rawQuery, query, onQueryChange]);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const res = await api.searchMarketplace(
-        query,
-        category === 'all' ? undefined : category,
-      );
-      setEntries(res.entries);
-    } catch (e: unknown) {
-      setLoadError(extractErrorMessage(e));
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [query, category]);
-
-  useEffect(() => {
-    reload();
-  }, [reload]);
-
-  const declaredSet = useMemo(() => new Set(declaredPlugins), [declaredPlugins]);
-
-  const handleInstall = useCallback(async (entry: MarketplaceEntry) => {
-    if (!hasConsent()) {
-      const ok = window.confirm(
-        `Install "${entry.name}" from the public npm registry?\n\n` +
-        'This will download the package into your workspace and execute its code ' +
-        'as part of pipeline runs. Only install plugins you trust.\n\n' +
-        'You will not be prompted again for future marketplace installs.'
-      );
-      if (!ok) return;
-      grantConsent();
-    }
-    setInstallState({ type: 'installing', name: entry.name });
-    try {
-      const result = await api.installPlugin(entry.name);
-      onRegistryUpdate(result.registry);
-      if (!declaredPlugins.includes(entry.name)) {
-        onPluginsChange([...declaredPlugins, entry.name]);
-      }
-      setInstallState({
-        type: 'installed',
-        name: entry.name,
-        version: result.plugin.version ?? entry.version,
-      });
-    } catch (e: unknown) {
-      const message = extractErrorMessage(e);
-      setInstallState({
-        type: 'error',
-        name: entry.name,
-        message,
-        kind: classifyError(e, message),
-      });
-    }
-  }, [declaredPlugins, onRegistryUpdate, onPluginsChange]);
-
-  const handleExpand = useCallback(async (name: string) => {
-    if (expanded === name) {
-      setExpanded(null);
-      setDetail(null);
-      return;
-    }
-    setExpanded(name);
-    setDetail(null);
-    setDetailLoading(true);
-    try {
-      const res = await api.getMarketplacePackage(name);
-      setDetail(res);
-    } catch {
-      setDetail(null);
-    } finally {
-      setDetailLoading(false);
-    }
-  }, [expanded]);
+  const actionBannerVisible =
+    actionState.type === 'error' || actionState.type === 'success';
 
   return (
     <div className="h-full flex flex-col min-h-0">
@@ -171,6 +93,30 @@ export function MarketplacePanel({
         </div>
       </div>
 
+      {upstreamWarning && (
+        <div className="shrink-0 mx-4 mt-3 px-3 py-2 bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-300">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-medium">Partial results</div>
+              <div className="text-tagma-muted">
+                The npm registry reported an error — the list below may be incomplete. Try
+                <button
+                  onClick={onRetry}
+                  className="mx-1 underline decoration-dotted underline-offset-2 hover:text-amber-200"
+                >
+                  refreshing
+                </button>
+                in a moment.
+              </div>
+              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-amber-500/20 text-amber-300 text-[9px] font-mono whitespace-pre-wrap break-words max-h-16 overflow-y-auto">
+                {upstreamWarning}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
         {loading ? (
           <div className="h-full flex flex-col items-center justify-center text-tagma-muted gap-2">
@@ -182,7 +128,7 @@ export function MarketplacePanel({
             <AlertCircle size={24} className="opacity-70" />
             <p className="text-[11px]">{loadError}</p>
             <button
-              onClick={reload}
+              onClick={onRetry}
               className="px-2 py-1 text-[10px] bg-tagma-bg border border-tagma-border hover:border-tagma-accent transition-colors"
             >
               Retry
@@ -192,11 +138,21 @@ export function MarketplacePanel({
           <div className="h-full flex flex-col items-center justify-center text-tagma-muted gap-2">
             <Package size={32} className="opacity-30" />
             <p className="text-[11px]">
-              {query ? `No plugins match "${query}"` : 'No plugins found in the marketplace.'}
+              {query
+                ? `No ${category === 'all' ? '' : `${category.replace(/s$/, '')} `}plugins match "${query}"`
+                : category === 'all'
+                  ? 'No plugins found in the marketplace.'
+                  : `No ${category} plugins found in the marketplace.`}
             </p>
             <p className="text-[10px] text-tagma-muted/70">
               Plugin authors tag packages with <code className="font-mono">keywords: ["tagma-plugin"]</code> in <code className="font-mono">package.json</code>.
             </p>
+            <button
+              onClick={onRetry}
+              className="mt-1 px-2 py-1 text-[10px] bg-tagma-bg border border-tagma-border hover:border-tagma-accent transition-colors"
+            >
+              Retry search
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-2">
@@ -204,38 +160,19 @@ export function MarketplacePanel({
               <MarketplaceCard
                 key={entry.name}
                 entry={entry}
-                installed={declaredSet.has(entry.name)}
-                expanded={expanded === entry.name}
-                detail={expanded === entry.name ? detail : null}
-                detailLoading={expanded === entry.name && detailLoading}
-                installState={installState}
-                onExpand={() => handleExpand(entry.name)}
-                onInstall={() => handleInstall(entry)}
+                installed={installedNames.has(entry.name) || declaredSet.has(entry.name)}
+                actionState={actionState}
+                onInstall={() => onInstall(entry.name)}
+                onUninstall={() => onUninstall(entry.name)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {installState.type === 'error' && (
-        <div className="shrink-0 mx-4 mb-3 px-3 py-2 bg-tagma-error/10 border border-tagma-error/30 text-[10px]">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={12} className="text-tagma-error shrink-0 mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <div className="text-tagma-error font-medium">
-                Install failed — <span className="font-mono">{installState.name}</span>
-              </div>
-              <div className="text-tagma-muted">{errorHint(installState.kind)}</div>
-              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-tagma-error/20 text-tagma-error text-[9px] font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
-                {installState.message}
-              </pre>
-            </div>
-            <button
-              onClick={() => setInstallState({ type: 'idle' })}
-              className="text-tagma-muted hover:text-tagma-text"
-              title="Dismiss"
-            >&times;</button>
-          </div>
+      {actionBannerVisible && (
+        <div className="shrink-0 mx-4 mb-3">
+          <ActionBanner state={actionState} onDismiss={onDismissAction} />
         </div>
       )}
     </div>
@@ -245,145 +182,150 @@ export function MarketplacePanel({
 function MarketplaceCard({
   entry,
   installed,
-  expanded,
-  detail,
-  detailLoading,
-  installState,
-  onExpand,
+  actionState,
   onInstall,
+  onUninstall,
 }: {
   entry: MarketplaceEntry;
   installed: boolean;
-  expanded: boolean;
-  detail: MarketplacePackageDetail | null;
-  detailLoading: boolean;
-  installState: InstallState;
-  onExpand: () => void;
+  actionState: PluginActionState;
   onInstall: () => void;
+  onUninstall: () => void;
 }) {
-  const isThisInstalling = installState.type === 'installing' && installState.name === entry.name;
-  const justInstalled = installState.type === 'installed' && installState.name === entry.name;
+  const isBusy = actionState.type === 'loading' && actionState.name === entry.name;
+  const busyAction = isBusy ? actionState.action : null;
+  const disabled = actionState.type === 'loading';
+  const publishDate = formatPublishDate(entry.date);
 
   return (
-    <div className="flex flex-col bg-tagma-surface/50 border border-tagma-border hover:border-tagma-accent/40 transition-colors">
-      <button
-        onClick={onExpand}
-        className="flex items-start gap-2 p-3 text-left w-full"
-      >
-        <Package size={14} className="text-tagma-muted shrink-0 mt-0.5" />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[12px] font-mono text-tagma-text truncate">{entry.name}</span>
-            <span className="text-[10px] text-tagma-muted shrink-0">v{entry.version}</span>
-            {entry.weeklyDownloads !== null && (
-              <span className="flex items-center gap-0.5 text-[9px] text-tagma-muted shrink-0" title="Weekly downloads">
-                <TrendingUp size={9} />
-                {formatDownloads(entry.weeklyDownloads)}
-              </span>
-            )}
-          </div>
-          {entry.description && (
-            <p className="text-[10px] text-tagma-muted mt-0.5 line-clamp-2">{entry.description}</p>
+    <div className="flex items-start gap-2 p-3 bg-tagma-surface/50 border border-tagma-border hover:border-tagma-accent/40 transition-colors">
+      <Package size={14} className="text-tagma-muted shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[12px] font-mono text-tagma-text truncate">{entry.name}</span>
+          <span className="text-[10px] text-tagma-muted shrink-0">v{entry.version}</span>
+          {entry.weeklyDownloads !== null && (
+            <span className="flex items-center gap-0.5 text-[9px] text-tagma-muted shrink-0" title="Weekly downloads">
+              <TrendingUp size={9} />
+              {formatDownloads(entry.weeklyDownloads)}
+            </span>
           )}
-          <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-            <span className="text-[9px] px-1 py-px bg-purple-500/10 text-purple-400/80 border border-purple-500/20">
-              {entry.category}
-            </span>
-            <span className="text-[9px] px-1 py-px bg-tagma-muted/10 text-tagma-muted border border-tagma-muted/20 font-mono">
-              {entry.type}
-            </span>
-            {installed && (
-              <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">
-                declared
-              </span>
-            )}
-            {entry.author && (
-              <span className="text-[9px] text-tagma-muted truncate">by {entry.author}</span>
-            )}
-          </div>
         </div>
-        <div className="shrink-0">
-          {isThisInstalling ? (
-            <span className="flex items-center gap-1 text-[10px] text-tagma-muted">
-              <Loader2 size={11} className="animate-spin" />
-              Installing…
+        {entry.description && (
+          <p className="text-[10px] text-tagma-muted mt-0.5 line-clamp-2">{entry.description}</p>
+        )}
+        <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+          <span className="text-[9px] px-1 py-px bg-purple-500/10 text-purple-400/80 border border-purple-500/20">
+            {entry.category}
+          </span>
+          <span className="text-[9px] px-1 py-px bg-tagma-muted/10 text-tagma-muted border border-tagma-muted/20 font-mono">
+            {entry.type}
+          </span>
+          {installed && (
+            <span className="text-[9px] px-1 py-px bg-green-500/10 text-green-400/80 border border-green-500/20">
+              installed
             </span>
-          ) : justInstalled ? (
-            <span className="flex items-center gap-1 text-[10px] text-green-400">
-              <Check size={11} />
-              Installed
-            </span>
-          ) : (
+          )}
+          {publishDate && (
             <span
-              role="button"
-              onClick={(e) => { e.stopPropagation(); onInstall(); }}
-              className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 transition-colors"
+              className="flex items-center gap-0.5 text-[9px] text-tagma-muted"
+              title={entry.date ? `Last publish: ${new Date(entry.date).toLocaleString()}` : undefined}
             >
-              <Download size={11} />
-              {installed ? 'Reinstall' : 'Install'}
+              <Calendar size={9} />
+              {publishDate}
             </span>
           )}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="px-3 pb-3 pt-0 border-t border-tagma-border/50 bg-tagma-bg/30">
-          {detailLoading ? (
-            <div className="flex items-center gap-1.5 py-3 text-[10px] text-tagma-muted">
-              <Loader2 size={11} className="animate-spin" />
-              Loading details…
-            </div>
-          ) : detail ? (
-            <div className="space-y-2 mt-2">
-              {detail.license && (
-                <div className="text-[10px] text-tagma-muted">
-                  License: <span className="text-tagma-text">{detail.license}</span>
-                </div>
-              )}
-              {detail.date && (
-                <div className="text-[10px] text-tagma-muted">
-                  Last publish: <span className="text-tagma-text">{new Date(detail.date).toLocaleString()}</span>
-                </div>
-              )}
-              {detail.homepage && (
-                <a
-                  href={detail.homepage}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300"
-                >
-                  <ExternalLink size={10} />
-                  Homepage
-                </a>
-              )}
-              {detail.repository && (
-                <a
-                  href={detail.repository.replace(/^git\+/, '').replace(/\.git$/, '')}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300"
-                >
-                  <ExternalLink size={10} />
-                  Repository
-                </a>
-              )}
-              {detail.readme && (
-                <details className="mt-2">
-                  <summary className="text-[10px] text-tagma-muted cursor-pointer hover:text-tagma-text">
-                    README preview
-                  </summary>
-                  <pre className="mt-1 px-2 py-1.5 bg-black/40 border border-tagma-border text-[9px] text-tagma-muted font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
-                    {detail.readme.slice(0, 4000)}
-                    {detail.readme.length > 4000 && '\n\n… (truncated)'}
-                  </pre>
-                </details>
-              )}
-            </div>
-          ) : (
-            <div className="py-2 text-[10px] text-tagma-muted">Details unavailable.</div>
+          {entry.author && (
+            <span className="text-[9px] text-tagma-muted truncate">by {entry.author}</span>
           )}
         </div>
-      )}
+      </div>
+      <div className="shrink-0">
+        {isBusy ? (
+          <span className="flex items-center gap-1 text-[10px] text-tagma-muted">
+            <Loader2 size={11} className="animate-spin" />
+            {busyAction === 'install' ? 'Installing…'
+              : busyAction === 'uninstall' ? 'Uninstalling…'
+              : 'Working…'}
+          </span>
+        ) : installed ? (
+          <button
+            type="button"
+            onClick={onUninstall}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-tagma-error/15 text-tagma-error border border-tagma-error/30 hover:bg-tagma-error/25 transition-colors disabled:opacity-40"
+          >
+            <Trash2 size={11} />
+            Uninstall
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onInstall}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-40"
+          >
+            <Download size={11} />
+            Install
+          </button>
+        )}
+      </div>
     </div>
   );
+}
+
+function ActionBanner({
+  state,
+  onDismiss,
+}: {
+  state: PluginActionState;
+  onDismiss: () => void;
+}) {
+  if (state.type !== 'error' && state.type !== 'success') return null;
+
+  const isError = state.type === 'error';
+  const Icon = isError ? AlertCircle : Check;
+  const colorClass = isError
+    ? 'bg-tagma-error/10 border-tagma-error/30 text-tagma-error'
+    : 'bg-green-500/10 border-green-500/30 text-green-400';
+
+  return (
+    <div className={`px-3 py-2 border text-[10px] ${colorClass}`}>
+      <div className="flex items-start gap-2">
+        <Icon size={12} className="shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1">
+            <span className="font-mono truncate">{state.name}</span>
+            {isError && (
+              <span className="text-tagma-muted">— {capitalize(state.action)} failed</span>
+            )}
+          </div>
+          {isError ? (
+            <>
+              <div className="mt-0.5 text-tagma-muted">{errorHint(state.kind)}</div>
+              <pre className="mt-1 px-1.5 py-1 bg-black/40 border border-tagma-error/20 text-tagma-error text-[9px] font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                {state.message}
+              </pre>
+            </>
+          ) : (
+            <div className="text-tagma-muted mt-0.5">{state.message}</div>
+          )}
+        </div>
+        <button onClick={onDismiss} className="text-tagma-muted hover:text-tagma-text shrink-0" title="Dismiss">
+          &times;
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function formatPublishDate(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }

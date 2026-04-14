@@ -1955,10 +1955,20 @@ app.get('/api/marketplace/search', async (req, res) => {
     return out;
   }
   try {
-    const [keywordHits, scopeHits] = await Promise.all([
-      fetchSearch(keywordText, false).catch(() => []),
-      fetchSearch(scopeText, true).catch(() => []),
-    ]);
+    // Track per-upstream failures explicitly so we can surface the error in
+    // the response and — critically — decline to cache an empty payload when
+    // the upstream fetch actually errored. Caching "" on failure is a trap:
+    // one transient network hiccup locks the user out of the marketplace for
+    // the full TTL even after the registry recovers.
+    let upstreamError: unknown = null;
+    const keywordHits = await fetchSearch(keywordText, false).catch((e) => {
+      upstreamError = e;
+      return [] as string[];
+    });
+    const scopeHits = await fetchSearch(scopeText, true).catch((e) => {
+      if (!upstreamError) upstreamError = e;
+      return [] as string[];
+    });
     const rawNames = Array.from(new Set([...keywordHits, ...scopeHits]));
     const resolved = await resolveMarketplaceEntries(rawNames);
     const filtered = category
@@ -1971,13 +1981,23 @@ app.get('/api/marketplace/search', async (req, res) => {
       if (bd !== ad) return bd - ad;
       return a.name.localeCompare(b.name);
     });
-    cacheSet(marketplaceSearchCache, cacheKey, filtered);
+    // Only cache when we actually got something from the upstream. Empty
+    // results from a successful search (e.g. narrow category with no plugins)
+    // are cheap enough to re-fetch, and skipping the cache means a flaky
+    // upstream call can recover on the next request instead of sticking for
+    // the whole TTL window.
+    if (filtered.length > 0) {
+      cacheSet(marketplaceSearchCache, cacheKey, filtered);
+    }
     res.json({
       query: q,
       category,
       entries: filtered,
       totalRaw: rawNames.length,
       fetchedAt: new Date().toISOString(),
+      upstreamError: upstreamError
+        ? (upstreamError instanceof Error ? upstreamError.message : String(upstreamError))
+        : null,
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);

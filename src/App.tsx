@@ -650,6 +650,7 @@ export function App() {
   const VIEW_TRANSITION = { duration: 0.28, ease: [0.16, 1, 0.3, 1] as const };
 
   return (
+    <>
     <AnimatePresence mode="wait">
     {runActive ? (
       <motion.div
@@ -667,38 +668,6 @@ export function App() {
           onBack={handleRunBack}
         />
         <ErrorToast />
-        {/* Dialog overlay (shared) */}
-        {dialog && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDialog(null)}>
-            <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
-              onClick={(e) => e.stopPropagation()}>
-              <div className="panel-header">
-                <div className="flex items-center gap-2 min-w-0">
-                  {dialog.type === 'error'
-                    ? <AlertCircle size={14} className="text-tagma-error shrink-0" />
-                    : <CheckCircle2 size={14} className="text-tagma-success shrink-0" />}
-                  <h2 className={`panel-title truncate ${dialog.type === 'error' ? 'text-tagma-error' : 'text-tagma-success'}`}>{dialog.title}</h2>
-                </div>
-                <button onClick={() => setDialog(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
-                  <XIcon size={14} />
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {dialog.details.map((detail, i) => (
-                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
-                    {dialog.type === 'error'
-                      ? <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
-                      : <CheckCircle2 size={11} className="text-tagma-success shrink-0 mt-0.5" />}
-                    <div className="text-[11px] text-tagma-text font-mono min-w-0 break-words">{detail}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
-                <button onClick={() => setDialog(null)} className="btn-primary">OK</button>
-              </div>
-            </div>
-          </div>
-        )}
       </motion.div>
     ) : pluginsActive ? (
       <motion.div
@@ -812,66 +781,6 @@ export function App() {
           onRegistryUpdate={setRegistry}
           onClose={() => setShowEditorSettings(false)}
         />
-      )}
-
-      {/* File Explorer modal */}
-      {explorer && (
-        <FileExplorer
-          mode={explorer.mode}
-          title={
-            explorer.purpose === 'import' ? 'Import Pipeline YAML'
-            : explorer.purpose === 'export' ? 'Export Pipeline — Select Destination'
-            : explorer.purpose === 'plugin-import' ? 'Import Local Plugin — Select Directory'
-            : 'Select Workspace Directory'
-          }
-          initialPath={
-            explorer.purpose === 'import' ? undefined
-            : explorer.purpose === 'export' ? workDir
-            : (workDir || undefined)
-          }
-          fileFilter={explorer.purpose === 'import' ? ['.yaml', '.yml'] : undefined}
-          onConfirm={handleExplorerConfirm}
-          onCancel={() => {
-            const wasPluginImport = explorer?.purpose === 'plugin-import';
-            setExplorer(null);
-            setPendingRun(false);
-            afterWorkspaceRef.current = null;
-            if (wasPluginImport) showPluginsPage();
-          }}
-        />
-      )}
-
-      {/* Dialog */}
-      {dialog && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDialog(null)}>
-          <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="panel-header">
-              <div className="flex items-center gap-2 min-w-0">
-                {dialog.type === 'error'
-                  ? <AlertCircle size={14} className="text-tagma-error shrink-0" />
-                  : <CheckCircle2 size={14} className="text-tagma-success shrink-0" />}
-                <h2 className={`panel-title truncate ${dialog.type === 'error' ? 'text-tagma-error' : 'text-tagma-success'}`}>{dialog.title}</h2>
-              </div>
-              <button onClick={() => setDialog(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
-                <XIcon size={14} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {dialog.details.map((detail, i) => (
-                <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
-                  {dialog.type === 'error'
-                    ? <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
-                    : <CheckCircle2 size={11} className="text-tagma-success shrink-0 mt-0.5" />}
-                  <div className="text-[11px] text-tagma-text font-mono min-w-0 break-words">{detail}</div>
-                </div>
-              ))}
-            </div>
-            <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
-              <button onClick={() => setDialog(null)} className="btn-primary">OK</button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Save As prompt (U10) */}
@@ -990,55 +899,118 @@ export function App() {
       )}
 
       <ErrorToast />
-
-      {/* Confirm dialog */}
-      {confirmInfo && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60" onClick={() => setConfirmInfo(null)}>
-          <div
-            className="bg-tagma-surface border border-tagma-border shadow-panel w-[440px] max-h-[60vh] flex flex-col animate-fade-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="panel-header">
-              <div className="flex items-center gap-2 min-w-0">
-                <AlertCircle size={14} className={`shrink-0 ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-accent'}`} />
-                <h2 className={`panel-title truncate ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-text'}`}>
-                  {confirmInfo.title}
-                </h2>
-              </div>
-              <button onClick={() => setConfirmInfo(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
-                <XIcon size={14} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {confirmInfo.details.map((detail, i) => (
-                <div key={i} className="px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0 text-[11px] text-tagma-text font-mono break-words">
-                  {detail}
-                </div>
-              ))}
-            </div>
-            <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmInfo(null)}
-                className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  const info = confirmInfo;
-                  setConfirmInfo(null);
-                  info.onConfirm();
-                }}
-                className={confirmInfo.danger ? 'btn-danger' : 'btn-primary'}
-              >
-                {confirmInfo.confirmLabel}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </motion.div>
     )}
     </AnimatePresence>
+
+    {/* ─── Global modals — rendered at top level so they work from any view ─── */}
+
+    {/* File Explorer modal */}
+    {explorer && (
+      <FileExplorer
+        mode={explorer.mode}
+        title={
+          explorer.purpose === 'import' ? 'Import Pipeline YAML'
+          : explorer.purpose === 'export' ? 'Export Pipeline — Select Destination'
+          : explorer.purpose === 'plugin-import' ? 'Import Local Plugin — Select Directory'
+          : 'Select Workspace Directory'
+        }
+        initialPath={
+          explorer.purpose === 'import' ? undefined
+          : explorer.purpose === 'export' ? workDir
+          : (workDir || undefined)
+        }
+        fileFilter={explorer.purpose === 'import' ? ['.yaml', '.yml'] : undefined}
+        onConfirm={handleExplorerConfirm}
+        onCancel={() => {
+          const wasPluginImport = explorer?.purpose === 'plugin-import';
+          setExplorer(null);
+          setPendingRun(false);
+          afterWorkspaceRef.current = null;
+          if (wasPluginImport) showPluginsPage();
+        }}
+      />
+    )}
+
+    {/* Info / error dialog */}
+    {dialog && (
+      <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60" onClick={() => setDialog(null)}>
+        <div className="bg-tagma-surface border border-tagma-border shadow-panel w-[480px] max-h-[60vh] flex flex-col animate-fade-in"
+          onClick={(e) => e.stopPropagation()}>
+          <div className="panel-header">
+            <div className="flex items-center gap-2 min-w-0">
+              {dialog.type === 'error'
+                ? <AlertCircle size={14} className="text-tagma-error shrink-0" />
+                : <CheckCircle2 size={14} className="text-tagma-success shrink-0" />}
+              <h2 className={`panel-title truncate ${dialog.type === 'error' ? 'text-tagma-error' : 'text-tagma-success'}`}>{dialog.title}</h2>
+            </div>
+            <button onClick={() => setDialog(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+              <XIcon size={14} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {dialog.details.map((detail, i) => (
+              <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0">
+                {dialog.type === 'error'
+                  ? <AlertCircle size={11} className="text-tagma-error shrink-0 mt-0.5" />
+                  : <CheckCircle2 size={11} className="text-tagma-success shrink-0 mt-0.5" />}
+                <div className="text-[11px] text-tagma-text font-mono min-w-0 break-words">{detail}</div>
+              </div>
+            ))}
+          </div>
+          <div className="px-4 py-3 border-t border-tagma-border flex justify-end">
+            <button onClick={() => setDialog(null)} className="btn-primary">OK</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Confirm dialog */}
+    {confirmInfo && (
+      <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60" onClick={() => setConfirmInfo(null)}>
+        <div
+          className="bg-tagma-surface border border-tagma-border shadow-panel w-[440px] max-h-[60vh] flex flex-col animate-fade-in"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="panel-header">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle size={14} className={`shrink-0 ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-accent'}`} />
+              <h2 className={`panel-title truncate ${confirmInfo.danger ? 'text-tagma-error' : 'text-tagma-text'}`}>
+                {confirmInfo.title}
+              </h2>
+            </div>
+            <button onClick={() => setConfirmInfo(null)} className="p-1 text-tagma-muted hover:text-tagma-text">
+              <XIcon size={14} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {confirmInfo.details.map((detail, i) => (
+              <div key={i} className="px-4 py-2.5 border-b border-tagma-border/30 last:border-b-0 text-[11px] text-tagma-text font-mono break-words">
+                {detail}
+              </div>
+            ))}
+          </div>
+          <div className="px-4 py-3 border-t border-tagma-border flex justify-end gap-2">
+            <button
+              onClick={() => setConfirmInfo(null)}
+              className="px-3 py-1 text-[11px] text-tagma-muted hover:text-tagma-text border border-tagma-border hover:border-tagma-muted/60 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                const info = confirmInfo;
+                setConfirmInfo(null);
+                info.onConfirm();
+              }}
+              className={confirmInfo.danger ? 'btn-danger' : 'btn-primary'}
+            >
+              {confirmInfo.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

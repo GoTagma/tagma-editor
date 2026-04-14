@@ -460,6 +460,13 @@ export interface MarketplaceSearchResult {
   totalRaw: number;
   /** Timestamp when the cached payload was produced. */
   fetchedAt: string;
+  /**
+   * If set, the upstream npm registry call failed (or partially failed) while
+   * producing this response. `entries` may still be non-empty if one of the
+   * two upstream queries succeeded — the client should still render them but
+   * can surface the message so the user knows the list may be incomplete.
+   */
+  upstreamError?: string | null;
 }
 
 export interface MarketplacePackageDetail extends MarketplaceEntry {
