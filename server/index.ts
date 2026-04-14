@@ -1612,6 +1612,77 @@ app.post('/api/import', (req, res) => {
   }
 });
 
+/**
+ * Replace the in-memory pipeline config wholesale with a client-supplied one,
+ * and (optionally) the editor layout in the same atomic call. Used by
+ * undo/redo so the local history restore is mirrored to the server — without
+ * this, `saveFile` would persist the post-edit config (server's still on it)
+ * and silently wipe the undo. Accepts JSON to avoid a YAML round-trip.
+ *
+ * Server-side hardening (P0):
+ *   1. Deep structural check — every track needs id+tasks; every task needs id.
+ *   2. Run `ensureDriverPlugins` + `reconcileContinueFrom` so the restored
+ *      state passes the same normalizations every other write path runs.
+ *   3. Validate via `validateRaw` and SURFACE errors in the response (matches
+ *      other write paths — non-fatal warnings, not rejections).
+ *   4. Filter incoming layout positions against the new config so we never
+ *      end up with orphan positions whose qid no longer exists.
+ *   5. Revision check runs through the standard mutation middleware.
+ */
+app.post('/api/config/replace', (req, res) => {
+  try {
+    const incoming = req.body?.config as RawPipelineConfig | undefined;
+    const incomingLayout = req.body?.layout as { positions?: Record<string, { x: number }> } | undefined;
+
+    // 1. Top-level shape
+    if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.tracks)) {
+      return res.status(400).json({ error: 'Invalid config: expected { config: { tracks: [] } }' });
+    }
+    if (typeof incoming.name !== 'string') {
+      return res.status(400).json({ error: 'Invalid config: pipeline name must be a string' });
+    }
+
+    // 2. Deep structural check — fail closed on missing identifiers so a
+    //    corrupt undo payload can never reach serializePipeline.
+    for (const track of incoming.tracks) {
+      if (!track || typeof track !== 'object' || typeof track.id !== 'string' || !Array.isArray(track.tasks)) {
+        return res.status(400).json({ error: 'Invalid config: each track must have id (string) and tasks (array)' });
+      }
+      for (const task of track.tasks) {
+        if (!task || typeof task !== 'object' || typeof task.id !== 'string') {
+          return res.status(400).json({ error: 'Invalid config: each task must have id (string)' });
+        }
+      }
+    }
+
+    // 3. Apply same normalizations every other write path runs.
+    let normalized = ensureDriverPlugins(incoming);
+    normalized = reconcileContinueFrom(normalized);
+
+    config = normalized;
+
+    // 4. Atomically sync layout. Filter out orphan positions so the server's
+    //    layout never references a qid that doesn't exist in the config.
+    if (incomingLayout && typeof incomingLayout === 'object' && incomingLayout.positions && typeof incomingLayout.positions === 'object') {
+      const validQids = new Set<string>();
+      for (const t of normalized.tracks) {
+        for (const k of t.tasks) validQids.add(`${t.id}.${k.id}`);
+      }
+      const sanitized: Record<string, { x: number }> = {};
+      for (const [qid, pos] of Object.entries(incomingLayout.positions)) {
+        if (validQids.has(qid) && pos && typeof pos.x === 'number' && Number.isFinite(pos.x)) {
+          sanitized[qid] = { x: pos.x };
+        }
+      }
+      layout.positions = sanitized;
+    }
+
+    res.json(getState());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message ?? 'Failed to replace config' });
+  }
+});
+
 // ── Workspace ──
 // NOTE: GET /api/workspace removed — same data is included in GET /api/state.
 

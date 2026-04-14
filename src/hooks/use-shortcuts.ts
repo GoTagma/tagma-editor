@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { usePipelineStore } from '../store/pipeline-store';
+import { flushAllLocalFields } from './use-local-field';
 
 /**
  * Returns true when the event originates from a text-editing surface
@@ -45,13 +46,39 @@ export interface ShortcutHandlers {
 export function useShortcuts(handlers: ShortcutHandlers): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Never steal keystrokes from text-editing surfaces, but Escape is
-      // allowed through so inputs can blur without affecting selection.
       const editable = isEditableTarget(e);
-      if (editable && e.key !== 'Escape') return;
-
       const mod = e.ctrlKey || e.metaKey;
       const store = usePipelineStore.getState();
+
+      // Undo/redo is global — works even when focus is inside a text input.
+      // Flush pending debounced field commits first so the user's latest
+      // keystrokes land in history as a single entry, then blur the active
+      // input so the restored store state propagates back into useLocalField
+      // without tripping its serverChanged conflict guard.
+      if (mod && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        flushAllLocalFields();
+        if (editable && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        if (e.shiftKey) store.redo();
+        else store.undo();
+        return;
+      }
+      if (mod && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        flushAllLocalFields();
+        if (editable && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        store.redo();
+        return;
+      }
+
+      // Everything below: never steal keystrokes from text-editing surfaces,
+      // but Escape is allowed through so inputs can blur without affecting
+      // selection.
+      if (editable && e.key !== 'Escape') return;
 
       if (e.key === 'Escape') {
         // Clear selection; don't preventDefault so inputs can still blur.
@@ -61,19 +88,6 @@ export function useShortcuts(handlers: ShortcutHandlers): void {
       }
 
       if (!mod) return;
-
-      // Undo/redo
-      if (e.key === 'z' || e.key === 'Z') {
-        e.preventDefault();
-        if (e.shiftKey) store.redo();
-        else store.undo();
-        return;
-      }
-      if (e.key === 'y' || e.key === 'Y') {
-        e.preventDefault();
-        store.redo();
-        return;
-      }
 
       // Clipboard
       if (e.key === 'c' || e.key === 'C') {

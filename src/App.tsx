@@ -96,9 +96,23 @@ export function App() {
           ],
         });
       } else if (event.type === 'state_sync') {
-        // B5: Server sends full state on SSE (re)connect. Silently sync
-        // without dialog — this is a reconnection catch-up, not a user action.
-        init();
+        // B5: Server sends full state on SSE (re)connect. This is a
+        // reconnection catch-up, not a user-initiated reload, so it must
+        // never clobber unsaved work.
+        //
+        // P1-H1: only re-init when local state is CLEAN. If the user has
+        // unsaved edits (isDirty / layoutDirty) or non-empty undo history,
+        // calling init() would silently:
+        //   - drop their in-progress edits
+        //   - wipe past/future stacks (init does past:[], future:[])
+        //   - overwrite local positions via applyStateWithLayout
+        // Skipping init in those cases is safe because mutations carry
+        // their own If-Match revision check — any drift will be caught at
+        // the next mutation and reconciled with a proper conflict toast.
+        const s = usePipelineStore.getState();
+        if (!s.isDirty && !s.layoutDirty && s.past.length === 0 && s.future.length === 0) {
+          init();
+        }
       }
     });
     return unsubscribe;

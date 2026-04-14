@@ -20,16 +20,73 @@ export interface TaskPosition { x: number; }
  * Undo/redo history entry. Captures only config-level state — selection,
  * transient UI and layoutDirty are intentionally excluded because they
  * should not be part of the undo stack (see Group 6 docs).
+ *
+ * P1-C1: `scope` indicates which slices of state this entry "owns" so that
+ * undoing a position-only drag does NOT revert an unrelated config edit, and
+ * vice-versa. Without scoping, every entry restores the WHOLE state at the
+ * time of capture, which means a sync setTaskPosition push interleaved with
+ * an in-flight updateTask leads to "undo undoes too much".
+ *
+ *   scope='config'    → restore config + dagEdges + validationErrors only
+ *   scope='positions' → restore positions only
+ *   scope='both'      → restore everything (used by mutations that touch
+ *                       both config and positions atomically, e.g.
+ *                       deleteTask, deleteTrack, transferTaskToTrack)
+ *
+ * `coalesceKey` + `pushedAt` enable streak-merging so that a burst of
+ * same-field edits (e.g. typing into a task name) collapses into a single
+ * undoable entry. See `pushHistory`.
+ *
+ * `pushId` is assigned by pushHistory and used by fire() to remove the
+ * entry on API failure (the optimistic sync push must be rolled back).
  */
+export type HistoryScope = 'config' | 'positions' | 'both';
+
 export interface HistoryEntry {
+  scope: HistoryScope;
   config: RawPipelineConfig;
   positions: Map<string, TaskPosition>;
   dagEdges: DagEdge[];
   validationErrors: ValidationError[];
+  coalesceKey?: string;
+  /** When this entry was first pushed (immutable, for total-cap check). */
+  coalesceStartedAt?: number;
+  /** When this entry was last refreshed by a coalesced push (rolling). */
+  pushedAt?: number;
+  pushId?: number;
 }
 
 /** Maximum entries kept in each history stack before oldest is dropped. */
 const HISTORY_LIMIT = 50;
+
+/**
+ * Idle window in which a same-key follow-up push still merges into the
+ * earlier streak. Long enough to cover natural typing pauses, short enough
+ * that "I stopped, thought, then typed again" feels like two undos.
+ */
+const COALESCE_IDLE_MS = 1500;
+
+/**
+ * Hard cap on how long a single coalesce streak may last. Without this,
+ * a continuous stream of keystrokes would refresh the timestamp forever and
+ * one undo could rewind several minutes of typing. P1-H2: cap each streak
+ * to ~3 seconds total, regardless of how fast the user types.
+ */
+const COALESCE_TOTAL_MS = 3000;
+
+/**
+ * Drag/layout bursts (grabbed task + companions) fire microseconds apart on
+ * pointerup, so a tight idle window is enough to merge them while
+ * guaranteeing two SEPARATE drags always get two undo entries.
+ */
+const LAYOUT_COALESCE_IDLE_MS = 200;
+const LAYOUT_COALESCE_TOTAL_MS = 500;
+
+function coalesceWindowsFor(key: string | undefined): { idle: number; total: number } {
+  if (!key) return { idle: COALESCE_IDLE_MS, total: COALESCE_TOTAL_MS };
+  if (key.startsWith('layout:')) return { idle: LAYOUT_COALESCE_IDLE_MS, total: LAYOUT_COALESCE_TOTAL_MS };
+  return { idle: COALESCE_IDLE_MS, total: COALESCE_TOTAL_MS };
+}
 
 /**
  * Clipboard slot for copy/paste of a task or an entire track.
@@ -94,9 +151,11 @@ interface PipelineState {
   importYaml: (yaml: string) => Promise<void>;
   loadDemo: () => Promise<void>;
 
-  // Undo/redo (config-level history only).
-  undo: () => void;
-  redo: () => void;
+  // Undo/redo (config-level history only). Async because each call mirrors
+  // the local restore to the server via api.replaceConfig and waits for any
+  // in-flight mutations to settle so the past stack is stable.
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
   canUndo: () => boolean;
   canRedo: () => boolean;
 
@@ -260,53 +319,209 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
   // no newer request was dispatched in the meantime.
   let fireEpoch = 0;
 
-  /** Snapshot → HistoryEntry projection (config-level fields only). */
-  const snapshotToHistory = (snap: Snapshot): HistoryEntry => ({
-    config: snap.config,
-    positions: new Map(snap.positions),
-    dagEdges: snap.dagEdges,
-    validationErrors: snap.validationErrors,
-  });
-
-  /**
-   * Push a pre-mutation snapshot onto the undo stack and clear redo.
-   * Called only when a mutation CONFIRMS success, so failed/rolled-back
-   * operations never leak into history.
-   */
-  const pushHistory = (entry: HistoryEntry) => {
-    set((s) => {
-      const past = [...s.past, entry];
-      if (past.length > HISTORY_LIMIT) past.shift();
-      return { past, future: [] };
+  // P0-C3: In-flight mutation tracking. `fire()` registers each request here
+  // so `saveFile()` and `undo()`/`redo()` can drain pending writes before
+  // dispatching their own. Without this, `saveFile` could race ahead of an
+  // unresolved `replaceConfig` and the server might persist the *pre-undo*
+  // config to disk while the in-memory state diverges.
+  const inFlight = new Set<Promise<void>>();
+  const trackInFlight = (p: Promise<unknown>): void => {
+    const tracker: Promise<void> = p.then(
+      () => {},
+      () => {},
+    );
+    inFlight.add(tracker);
+    void tracker.finally(() => {
+      inFlight.delete(tracker);
     });
+  };
+  /**
+   * Wait for all currently in-flight mutations to settle. Loops because
+   * `flushAllLocalFields()` may queue NEW mutations during the drain — we
+   * must catch those too so `saveFile` never proceeds with stale state.
+   */
+  const drainInFlight = async (): Promise<void> => {
+    while (inFlight.size > 0) {
+      await Promise.allSettled(Array.from(inFlight));
+    }
+  };
+
+  /** Convert the live positions Map to the wire shape replaceConfig expects. */
+  const positionsToObj = (positions: Map<string, TaskPosition>): Record<string, { x: number }> => {
+    const obj: Record<string, { x: number }> = {};
+    for (const [k, v] of positions) obj[k] = v;
+    return obj;
   };
 
   /**
-   * Fire a mutation request. On success applies the authoritative ServerState
-   * AND pushes the pre-mutation snapshot onto the undo history. On failure
-   * surfaces the error into `errorMessage` and optionally restores an
-   * optimistic snapshot so local state does not diverge from the server.
+   * After an undo/redo restores an older config, any selected task or track
+   * that no longer exists in that config must be dropped — otherwise panels
+   * read `undefined` and crash, and pinned entities would refuse to clear.
+   * Returns a partial state patch; caller spreads it into `set()`.
+   *
+   * P3-L2: takes only the selection-related fields it actually uses, not
+   * the whole PipelineState, so the dependency surface is explicit.
+   */
+  interface SelectionFields {
+    selectedTaskId: string | null;
+    selectedTaskIds: string[];
+    selectedTrackId: string | null;
+    pinnedTaskId: string | null;
+    pinnedTrackId: string | null;
+  }
+  const pruneStaleSelection = (nextConfig: RawPipelineConfig, current: SelectionFields) => {
+    const trackIds = new Set(nextConfig.tracks.map((t) => t.id));
+    const taskQids = new Set<string>();
+    for (const t of nextConfig.tracks) {
+      for (const k of t.tasks) taskQids.add(`${t.id}.${k.id}`);
+    }
+    const isTaskAlive = (qid: string | null) => qid !== null && taskQids.has(qid);
+    const isTrackAlive = (tid: string | null) => tid !== null && trackIds.has(tid);
+    return {
+      selectedTaskId: isTaskAlive(current.selectedTaskId) ? current.selectedTaskId : null,
+      selectedTaskIds: current.selectedTaskIds.filter((id) => taskQids.has(id)),
+      selectedTrackId: isTrackAlive(current.selectedTrackId) ? current.selectedTrackId : null,
+      pinnedTaskId: isTaskAlive(current.pinnedTaskId) ? current.pinnedTaskId : null,
+      pinnedTrackId: isTrackAlive(current.pinnedTrackId) ? current.pinnedTrackId : null,
+    };
+  };
+
+  /**
+   * Snapshot → HistoryEntry projection. `scope` controls which slices of
+   * state this entry restores when popped (see HistoryEntry doc).
+   *
+   * P2-H3/M1: deep-clone `config`, `dagEdges`, `validationErrors` via
+   * structuredClone so any future in-place mutation upstream cannot
+   * retroactively poison stored history entries. Without this, the entire
+   * undo stack relies on every code path doing immutable updates — which
+   * is currently true but fragile. Cost is negligible (config is KB-sized)
+   * and runs only at push time, not on every state read.
+   */
+  const snapshotToHistory = (
+    snap: Snapshot,
+    coalesceKey?: string,
+    scope: HistoryScope = 'config',
+  ): HistoryEntry => {
+    const now = Date.now();
+    return {
+      scope,
+      config: structuredClone(snap.config),
+      positions: new Map(snap.positions),
+      dagEdges: structuredClone(snap.dagEdges),
+      validationErrors: structuredClone(snap.validationErrors),
+      coalesceKey,
+      coalesceStartedAt: now,
+      pushedAt: now,
+    };
+  };
+
+  /**
+   * Monotonic id stamped on every newly-added history entry. fire() uses it
+   * to remove the just-pushed entry on API failure even if other sync pushes
+   * (e.g. setTaskPosition) landed on top in the meantime.
+   */
+  let pushIdCounter = 0;
+
+  /**
+   * Push a pre-mutation snapshot onto the undo stack and clear redo. With
+   * the P1-C1 refactor, fire() now pushes SYNCHRONOUSLY (before its API
+   * call dispatches), which means the past stack reflects the user's
+   * actual chronological order. Failed mutations are rolled back via
+   * `removeHistoryByPushId`.
+   *
+   * Coalescing: if `entry.coalesceKey` matches the top of the stack AND the
+   * previous push happened within COALESCE_WINDOW_MS, we KEEP the older
+   * entry (which represents the state before the streak began) and drop
+   * the new one. Any mutation without a coalesceKey always starts a fresh
+   * entry. Coalesced pushes return `coalesced: true` so fire()'s rollback
+   * path knows there is no new entry to remove on failure.
+   */
+  const pushHistory = (entry: HistoryEntry): { pushId: number; coalesced: boolean } => {
+    const pushId = ++pushIdCounter;
+    let coalesced = false;
+    set((s) => {
+      const top = s.past[s.past.length - 1];
+      const now = entry.pushedAt ?? Date.now();
+      if (entry.coalesceKey && top && top.coalesceKey === entry.coalesceKey) {
+        const { idle, total } = coalesceWindowsFor(entry.coalesceKey);
+        const idleOk = top.pushedAt !== undefined && now - top.pushedAt < idle;
+        // P1-H2: total cap — no streak may stretch past `total` ms regardless
+        // of how short the inter-keystroke pauses are. Without this, a fast
+        // typist could collapse minutes of typing into a single undo entry.
+        const totalOk = top.coalesceStartedAt === undefined || now - top.coalesceStartedAt < total;
+        if (idleOk && totalOk) {
+          // Refresh `pushedAt` only — do NOT touch `coalesceStartedAt` so
+          // the total cap remains anchored to the streak's first push.
+          coalesced = true;
+          const refreshed = [...s.past];
+          refreshed[refreshed.length - 1] = { ...top, pushedAt: now };
+          return { past: refreshed, future: [] };
+        }
+      }
+      const past = [...s.past, { ...entry, pushId }];
+      if (past.length > HISTORY_LIMIT) past.shift();
+      return { past, future: [] };
+    });
+    return { pushId, coalesced };
+  };
+
+  /**
+   * Remove a previously-pushed history entry by its pushId. Used by fire()
+   * to roll back the optimistic history push when the underlying API call
+   * fails. Filtering by pushId (instead of popping the top) is necessary
+   * because other sync pushes may have landed on top after ours.
+   */
+  const removeHistoryByPushId = (pushId: number): void => {
+    set((s) => ({ past: s.past.filter((e) => e.pushId !== pushId) }));
+  };
+
+  /**
+   * Fire a mutation request. P1-C1 changes:
+   *   1. History is pushed SYNCHRONOUSLY at the start of fire() (before the
+   *      API call dispatches), so the past stack reflects the user's actual
+   *      action order. The previous design pushed on success, which let
+   *      later sync pushes (setTaskPosition) jump ahead and reorder past.
+   *   2. On API failure, the just-pushed entry is removed via its pushId
+   *      (unless it was coalesced into an existing entry, in which case
+   *      there's no new entry to remove).
+   *   3. `scope` describes which slices of state this mutation owns. fires
+   *      with optimistic position mutations (deleteTask, deleteTrack,
+   *      transferTaskToTrack, addTask-with-position) pass `scope='both'`.
+   *      Plain config mutations default to 'config'.
    *
    * History invariant: the snapshot pushed onto `past` is the state BEFORE
-   * the mutation. Only pushed on success — so rolled-back failures never
-   * enter the undo stack.
+   * the mutation. Restored on undo according to scope.
    */
   const fire = (
     fn: () => Promise<ServerState>,
-    opts?: { snapshot?: Snapshot; errorPrefix?: string; skipHistory?: boolean },
+    opts?: {
+      snapshot?: Snapshot;
+      errorPrefix?: string;
+      skipHistory?: boolean;
+      coalesceKey?: string;
+      scope?: HistoryScope;
+    },
   ) => {
     const myEpoch = ++fireEpoch;
     // Capture pre-mutation snapshot for history. Reuse `opts.snapshot` when
     // provided (it's already a pre-mutation snapshot captured by the caller
     // BEFORE any optimistic local edits). Otherwise take one now.
     const preSnapshot: Snapshot = opts?.snapshot ?? takeSnapshot();
+    const scope: HistoryScope = opts?.scope ?? 'config';
     // Every mutation implies a dirty document.
     set({ isDirty: true });
-    fn().then(
+
+    // P1-C1: sync push BEFORE dispatching the API call so chronological
+    // order is preserved. Track the push handle for failure rollback.
+    let pushHandle: { pushId: number; coalesced: boolean } | null = null;
+    if (!opts?.skipHistory) {
+      pushHandle = pushHistory(snapshotToHistory(preSnapshot, opts?.coalesceKey, scope));
+    }
+
+    const promise = fn().then(
       (state) => {
         if (myEpoch !== fireEpoch) return; // a newer request superseded us
         applyState(state);
-        if (!opts?.skipHistory) pushHistory(snapshotToHistory(preSnapshot));
       },
       (e) => {
         // Still honor epoch ordering for error reporting — if a later request
@@ -315,6 +530,13 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         // applies to revision-conflict reconciliation below: a newer in-flight
         // request's response (success or conflict) should win over ours.
         if (myEpoch !== fireEpoch) return;
+
+        // P1-C1: roll back the optimistic history push. Coalesced pushes
+        // didn't add a new entry — the existing entry remains valid as
+        // a snapshot for the previous successful mutation in the streak.
+        if (pushHandle && !pushHandle.coalesced) {
+          removeHistoryByPushId(pushHandle.pushId);
+        }
 
         if (e instanceof RevisionConflictError) {
           // C6: server rejected our mutation because our cached revision was
@@ -346,6 +568,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         set({ errorMessage: `${prefix}: ${errorToMessage(e)}` });
       },
     );
+    trackInFlight(promise);
   };
 
   return {
@@ -385,15 +608,27 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       }
     },
 
-    setPipelineName: (name) => fire(() => api.updatePipeline({ name }), { errorPrefix: 'Failed to rename pipeline' }),
-    updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields), { errorPrefix: 'Failed to update pipeline' }),
+    setPipelineName: (name) => fire(() => api.updatePipeline({ name }), {
+      errorPrefix: 'Failed to rename pipeline',
+      coalesceKey: 'pipeline:name',
+    }),
+    updatePipelineFields: (fields) => fire(() => api.updatePipeline(fields), {
+      errorPrefix: 'Failed to update pipeline',
+      coalesceKey: `pipeline:${Object.keys(fields).sort().join(',')}`,
+    }),
     addTrack: (name) => {
       const trackCount = _get().config.tracks.length;
       const color = TRACK_COLORS[trackCount % TRACK_COLORS.length];
       fire(() => api.addTrack(generateId(), name, color), { errorPrefix: 'Failed to add track' });
     },
-    renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name }), { errorPrefix: 'Failed to rename track' }),
-    updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields), { errorPrefix: 'Failed to update track' }),
+    renameTrack: (trackId, name) => fire(() => api.updateTrack(trackId, { name }), {
+      errorPrefix: 'Failed to rename track',
+      coalesceKey: `track:${trackId}:name`,
+    }),
+    updateTrackFields: (trackId, fields) => fire(() => api.updateTrack(trackId, fields), {
+      errorPrefix: 'Failed to update track',
+      coalesceKey: `track:${trackId}:${Object.keys(fields).sort().join(',')}`,
+    }),
 
     deleteTrack: (trackId) => {
       const snapshot = takeSnapshot();
@@ -411,7 +646,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         };
       });
 
-      fire(() => api.deleteTrack(trackId), { snapshot, errorPrefix: 'Failed to delete track' });
+      // scope='both' because we deleted positions for every task in the track
+      // alongside the config mutation.
+      fire(() => api.deleteTrack(trackId), { snapshot, errorPrefix: 'Failed to delete track', scope: 'both' });
     },
 
     moveTrackTo: (trackId, toIndex) => {
@@ -438,18 +675,29 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       const id = generateId();
       const task: RawTaskConfig = { id, name, prompt: '' };
       const snapshot = takeSnapshot();
-      if (positionX !== undefined) {
+      const touchedPositions = positionX !== undefined;
+      if (touchedPositions) {
         set((s) => {
           const positions = new Map(s.positions);
           positions.set(`${trackId}.${id}`, { x: positionX });
           return { positions, layoutDirty: true };
         });
       }
-      fire(() => api.addTask(trackId, task), { snapshot, errorPrefix: 'Failed to add task' });
+      // scope='both' only when we wrote a position for the new task; plain
+      // task adds at the default location stay 'config' so undoing one
+      // doesn't accidentally rewind unrelated drag positions.
+      fire(() => api.addTask(trackId, task), {
+        snapshot,
+        errorPrefix: 'Failed to add task',
+        scope: touchedPositions ? 'both' : 'config',
+      });
     },
 
     updateTask: (trackId, taskId, patch) =>
-      fire(() => api.updateTask(trackId, taskId, patch), { errorPrefix: 'Failed to update task' }),
+      fire(() => api.updateTask(trackId, taskId, patch), {
+        errorPrefix: 'Failed to update task',
+        coalesceKey: `task:${trackId}.${taskId}:${Object.keys(patch).sort().join(',')}`,
+      }),
 
     deleteTask: (trackId, taskId) => {
       const qid = `${trackId}.${taskId}`;
@@ -461,7 +709,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         positions: (() => { const p = new Map(s.positions); p.delete(qid); return p; })(),
       }));
 
-      fire(() => api.deleteTask(trackId, taskId), { snapshot, errorPrefix: 'Failed to delete task' });
+      // scope='both' because we deleted the qid's position alongside the
+      // config mutation — undo must restore both.
+      fire(() => api.deleteTask(trackId, taskId), { snapshot, errorPrefix: 'Failed to delete task', scope: 'both' });
     },
 
     transferTaskToTrack: (fromTrackId, taskId, toTrackId) => {
@@ -506,9 +756,11 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         };
       });
 
+      // scope='both' because we renamed a position key (qidOld→qidNew)
+      // alongside the config mutation.
       fire(
         () => api.transferTask(fromTrackId, taskId, toTrackId),
-        { snapshot, errorPrefix: 'Failed to move task' },
+        { snapshot, errorPrefix: 'Failed to move task', scope: 'both' },
       );
     },
 
@@ -548,11 +800,22 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     unpinTrack: () => set({ pinnedTrackId: null }),
 
     setTaskPosition: (qualifiedId, x) => {
+      const s = _get();
+      // Skip no-op writes so dead-clicks don't bloat history.
+      if (s.positions.get(qualifiedId)?.x === x) return;
+      // Capture pre-mutation snapshot BEFORE the set() so the history entry
+      // represents the state before this (and any coalesced) drag began.
+      const snap = takeSnapshot();
       set((s) => {
         const positions = new Map(s.positions);
         positions.set(qualifiedId, { x });
         return { positions, isDirty: true, layoutDirty: true };
       });
+      // P1-C1: scope='positions' so undoing this entry only reverts the
+      // positions slice — any concurrent config edit is preserved.
+      // Coalesce all position writes within the same drag burst (grabbed +
+      // companions fire in the same tick on pointerup) into a single entry.
+      pushHistory(snapshotToHistory(snap, 'layout:position', 'positions'));
     },
 
     setWorkDir: async (wd) => {
@@ -598,9 +861,17 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     saveFile: async () => {
       try {
         // C3: Flush all pending debounced field commits so the server's
-        // in-memory config includes the user's latest keystrokes.
+        // in-memory config includes the user's latest keystrokes. This
+        // synchronously dispatches updateTask/etc. through fire(), which
+        // registers their promises in `inFlight`.
         flushAllLocalFields();
-        // Flush layout first so the layout file lands on disk alongside the
+        // P0-C3: Drain any in-flight mutations (the just-flushed commits
+        // above, plus any earlier undo/redo replaceConfig still on the wire)
+        // BEFORE we send /api/save. Otherwise saveFile can race ahead of an
+        // unresolved mutation and either persist a stale config to disk or
+        // fail with a 409 because lastRevision hasn't caught up.
+        await drainInFlight();
+        // Flush layout last so the layout file lands on disk alongside the
         // YAML. Awaiting surfaces any layout error before we commit the save.
         await flushLayout();
         const state = await api.saveFile();
@@ -678,60 +949,203 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     },
 
     // ---- Undo / Redo ----------------------------------------------------
-    // Semantics: local-only restore. We pop the previous snapshot into
-    // local state (config, positions, dagEdges, validationErrors) and mark
-    // the document dirty so the user can Ctrl+S to persist. We do NOT
-    // auto-push to the server because:
-    //   (1) the client has no generic "set full config" API — existing
-    //       mutation endpoints are per-field/per-entity;
-    //   (2) keeping undo local avoids races with in-flight fire() calls.
-    // Selection and transient UI state are intentionally untouched.
+    // Semantics (after P0+P1 fixes): scoped restore + atomic server mirror.
+    //
+    // Each history entry carries a `scope` ('config' | 'positions' | 'both')
+    // indicating which slices of state it owns. undo() restores ONLY those
+    // slices, leaving unrelated slices at their current values. This is what
+    // makes "undo my last drag" preserve a concurrent typing edit and vice
+    // versa — full-snapshot restores produced "undo undoes too much" bugs.
+    //
+    // Atomic server mirror via `api.replaceConfig({config, positions})`:
+    // without sending layout alongside config, the server's layout.positions
+    // would still hold the post-edit state and any external observer would
+    // see a config/layout mismatch.
+    //
+    // Flow:
+    //   1. drainInFlight() — wait for any pending fire() to settle so we
+    //      undo from a STABLE history stack, not one that's about to grow.
+    //   2. Apply the scoped restore to local state.
+    //   3. Fire api.replaceConfig with the post-restore local state.
+    //   4. On success, re-apply the authoritative ServerState (which carries
+    //      fresh validationErrors/dagEdges).
+    //   5. On failure, restore the scoped slices back to their pre-undo
+    //      values via `current` — `preUndoPast`/`preUndoFuture` recover the
+    //      stack, the scoped block recovers config/positions.
+    //
+    // Returns a promise so callers (e.g. saveFile) can await completion. The
+    // promise also lands in `inFlight` so saveFile drains it implicitly.
 
     canUndo: () => _get().past.length > 0,
     canRedo: () => _get().future.length > 0,
 
-    undo: () => {
+    undo: async () => {
+      // P0-C3: wait for any fire() in flight to settle so the past stack
+      // reflects every committed mutation before we pop from it.
+      await drainInFlight();
+
       const s = _get();
       if (s.past.length === 0) return;
-      const current: HistoryEntry = {
-        config: s.config,
-        positions: new Map(s.positions),
-        dagEdges: s.dagEdges,
-        validationErrors: s.validationErrors,
-      };
       const prev = s.past[s.past.length - 1];
-      set({
-        config: prev.config,
-        positions: new Map(prev.positions),
-        dagEdges: prev.dagEdges,
-        validationErrors: prev.validationErrors,
-        past: s.past.slice(0, -1),
-        future: [...s.future, current],
-        isDirty: true,
-        layoutDirty: true,
+      // P1-C1: build the "current" entry to push to future. It mirrors
+      // prev.scope so redo restores the exact same slice we're undoing.
+      // P2-H3: deep-clone config-shaped fields for the same poisoning
+      // protection snapshotToHistory provides.
+      const current: HistoryEntry = {
+        scope: prev.scope,
+        config: structuredClone(s.config),
+        positions: new Map(s.positions),
+        dagEdges: structuredClone(s.dagEdges),
+        validationErrors: structuredClone(s.validationErrors),
+      };
+      const preUndoPast = s.past;
+      const preUndoFuture = s.future;
+      // P1-C1: scoped restore. Only revert the slices owned by `prev.scope`.
+      const restoreConfig = prev.scope === 'config' || prev.scope === 'both';
+      const restorePositions = prev.scope === 'positions' || prev.scope === 'both';
+      set((cur) => {
+        const next: Partial<PipelineState> = {
+          past: cur.past.slice(0, -1),
+          future: [...cur.future, current],
+          isDirty: true,
+          layoutDirty: true,
+        };
+        if (restoreConfig) {
+          next.config = prev.config;
+          next.dagEdges = prev.dagEdges;
+          next.validationErrors = prev.validationErrors;
+          Object.assign(next, pruneStaleSelection(prev.config, cur));
+        }
+        if (restorePositions) {
+          next.positions = new Map(prev.positions);
+        }
+        return next;
       });
+      // Mirror restored state to server. We always send the post-set local
+      // state so the wire format is uniform regardless of scope — server
+      // gets a consistent snapshot of {config, positions} every time.
+      const restored = _get();
+      const myEpoch = ++fireEpoch;
+      const promise = api.replaceConfig(restored.config, positionsToObj(restored.positions)).then(
+        (state) => {
+          if (myEpoch !== fireEpoch) return;
+          applyState(state);
+        },
+        (e) => {
+          if (myEpoch !== fireEpoch) return;
+          if (e instanceof RevisionConflictError) {
+            applyState(e.currentState);
+            set({
+              isDirty: false,
+              layoutDirty: false,
+              past: [],
+              future: [],
+              errorMessage: REVISION_CONFLICT_MESSAGE,
+            });
+            return;
+          }
+          // Scoped rollback — restore only the slices we actually changed.
+          set(() => {
+            const rb: Partial<PipelineState> = {
+              past: preUndoPast,
+              future: preUndoFuture,
+              errorMessage: 'Failed to undo: ' + errorToMessage(e),
+            };
+            if (restoreConfig) {
+              rb.config = current.config;
+              rb.dagEdges = current.dagEdges;
+              rb.validationErrors = current.validationErrors;
+            }
+            if (restorePositions) {
+              rb.positions = new Map(current.positions);
+            }
+            return rb;
+          });
+        },
+      );
+      trackInFlight(promise);
+      await promise;
     },
 
-    redo: () => {
+    redo: async () => {
+      // P0-C3: same drain-then-apply discipline as undo().
+      await drainInFlight();
+
       const s = _get();
       if (s.future.length === 0) return;
-      const current: HistoryEntry = {
-        config: s.config,
-        positions: new Map(s.positions),
-        dagEdges: s.dagEdges,
-        validationErrors: s.validationErrors,
-      };
       const next = s.future[s.future.length - 1];
-      set({
-        config: next.config,
-        positions: new Map(next.positions),
-        dagEdges: next.dagEdges,
-        validationErrors: next.validationErrors,
-        past: [...s.past, current],
-        future: s.future.slice(0, -1),
-        isDirty: true,
-        layoutDirty: true,
+      // P1-C1: same scoped-restore semantics as undo, in the opposite
+      // direction. The future entry mirrors the scope of the original
+      // mutation it tracks. P2-H3: deep-clone for poisoning protection.
+      const current: HistoryEntry = {
+        scope: next.scope,
+        config: structuredClone(s.config),
+        positions: new Map(s.positions),
+        dagEdges: structuredClone(s.dagEdges),
+        validationErrors: structuredClone(s.validationErrors),
+      };
+      const preRedoPast = s.past;
+      const preRedoFuture = s.future;
+      const restoreConfig = next.scope === 'config' || next.scope === 'both';
+      const restorePositions = next.scope === 'positions' || next.scope === 'both';
+      set((cur) => {
+        const patch: Partial<PipelineState> = {
+          past: [...cur.past, current],
+          future: cur.future.slice(0, -1),
+          isDirty: true,
+          layoutDirty: true,
+        };
+        if (restoreConfig) {
+          patch.config = next.config;
+          patch.dagEdges = next.dagEdges;
+          patch.validationErrors = next.validationErrors;
+          Object.assign(patch, pruneStaleSelection(next.config, cur));
+        }
+        if (restorePositions) {
+          patch.positions = new Map(next.positions);
+        }
+        return patch;
       });
+      const restored = _get();
+      const myEpoch = ++fireEpoch;
+      const promise = api.replaceConfig(restored.config, positionsToObj(restored.positions)).then(
+        (state) => {
+          if (myEpoch !== fireEpoch) return;
+          applyState(state);
+        },
+        (e) => {
+          if (myEpoch !== fireEpoch) return;
+          if (e instanceof RevisionConflictError) {
+            applyState(e.currentState);
+            set({
+              isDirty: false,
+              layoutDirty: false,
+              past: [],
+              future: [],
+              errorMessage: REVISION_CONFLICT_MESSAGE,
+            });
+            return;
+          }
+          set(() => {
+            const rb: Partial<PipelineState> = {
+              past: preRedoPast,
+              future: preRedoFuture,
+              errorMessage: 'Failed to redo: ' + errorToMessage(e),
+            };
+            if (restoreConfig) {
+              rb.config = current.config;
+              rb.dagEdges = current.dagEdges;
+              rb.validationErrors = current.validationErrors;
+            }
+            if (restorePositions) {
+              rb.positions = new Map(current.positions);
+            }
+            return rb;
+          });
+        },
+      );
+      trackInFlight(promise);
+      await promise;
     },
 
     // ---- Clipboard ------------------------------------------------------
@@ -798,7 +1212,12 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
         const myEpoch = ++fireEpoch;
         const preSnapshot = takeSnapshot();
         set({ isDirty: true });
-        api.addTrack(newTrackId, newName, clip.track.color)
+        // P1-C1: push the history entry SYNCHRONOUSLY (matching fire()'s
+        // contract) so a paste appears in the undo stack at the moment the
+        // user triggered it, not after the loop of addTask calls finishes.
+        // Track the push handle so we can roll back if the paste fails.
+        const pushHandle = pushHistory(snapshotToHistory(preSnapshot, undefined, 'config'));
+        const pasteTrackPromise = api.addTrack(newTrackId, newName, clip.track.color)
           .then(async (state) => {
             if (myEpoch !== fireEpoch) return;
             applyState(state);
@@ -809,14 +1228,15 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
                 applyState(next);
               } catch (e) {
                 if (myEpoch !== fireEpoch) return;
+                if (!pushHandle.coalesced) removeHistoryByPushId(pushHandle.pushId);
                 set({ errorMessage: 'Failed to paste task in cloned track: ' + errorToMessage(e) });
                 return;
               }
             }
-            pushHistory(snapshotToHistory(preSnapshot));
           })
           .catch((e) => {
             if (myEpoch !== fireEpoch) return;
+            if (!pushHandle.coalesced) removeHistoryByPushId(pushHandle.pushId);
             if (e instanceof RevisionConflictError) {
               applyState(e.currentState);
               set({ isDirty: false, layoutDirty: false, past: [], future: [], errorMessage: REVISION_CONFLICT_MESSAGE });
@@ -825,6 +1245,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
             restoreSnapshot(preSnapshot);
             set({ errorMessage: 'Failed to paste track: ' + errorToMessage(e) });
           });
+        trackInFlight(pasteTrackPromise);
         return true;
       }
       return false;
