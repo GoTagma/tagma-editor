@@ -52,6 +52,7 @@ export function App() {
     reset: resetRun,
     minimizeView: minimizeRun,
     showView: showRun,
+    showHistoryView: showRunHistory,
   } = useRunStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
@@ -682,7 +683,7 @@ export function App() {
           menus={menus} workspaceItems={workspaceItems}
           onUpdateName={setPipelineName} onRun={handleRun}
           yamlPreviewOpen={showYamlPreview} onToggleYamlPreview={() => setShowYamlPreview((v) => !v)}
-          onShowHistory={showRun}
+          onShowHistory={showRunHistory}
           runStatusSlot={runStatusSlot}
         />
 
@@ -931,8 +932,16 @@ export function App() {
                   key={`${m.trackId}.${m.taskId}`}
                   className="w-full text-left px-3 py-2 border-b border-tagma-border/30 last:border-b-0 hover:bg-tagma-bg/60"
                   onClick={() => {
-                    selectTask(`${m.trackId}.${m.taskId}`);
+                    const qid = `${m.trackId}.${m.taskId}`;
+                    selectTask(qid);
                     setSearchVisible(false);
+                    setSearchQuery('');
+                    // Defer one frame so any layout shift from opening the
+                    // task panel settles before BoardCanvas reads the scroll
+                    // container's clientWidth/clientHeight.
+                    requestAnimationFrame(() => {
+                      window.dispatchEvent(new CustomEvent('tagma:focus-task', { detail: qid }));
+                    });
                   }}
                 >
                   <div className="text-[11px] font-mono text-tagma-text truncate">{m.label}</div>

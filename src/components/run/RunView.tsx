@@ -73,6 +73,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
     pendingApprovals,
     resolveApproval,
     snapshot,
+    viewMode,
   } = useRunStore();
 
   // Prefer the snapshot captured at startRun time — that is the config the
@@ -263,11 +264,16 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   }, [selectedTaskId, tasks, config]);
 
   const counts = countByStatus(tasks);
-  const showHistory = !isActive;
+  // History browser is shown when the user explicitly opened it via the
+  // History button, OR as a fallback when the engine is idle.
+  const showHistory = viewMode === 'history' || !isActive;
 
   // Keyboard: Ctrl+F opens search, Escape clears selection or closes search.
+  // In history mode the search target (the run canvas) isn't rendered, so
+  // the shortcut is a no-op there.
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      if (showHistory) return;
       e.preventDefault();
       setSearchVisible(true);
       return;
@@ -282,12 +288,44 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         selectTrack(null);
       }
     }
-  }, [searchVisible, selectedTaskId, selectedTrackId, selectTask, selectTrack]);
+  }, [searchVisible, selectedTaskId, selectedTrackId, selectTask, selectTrack, showHistory]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
+
+  // Focus a task by qualified id — scrolls the run canvas so the card lands
+  // in the viewport center, then briefly pulses it. Driven by the search
+  // overlay (and shared with the editor's tagma:focus-task channel).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<string>;
+      const qid = ce.detail;
+      const el = contentRef.current;
+      if (!qid || !el) return;
+      const pos = taskPositions.get(qid);
+      if (!pos) return;
+      const z = getZoom();
+      const visW = el.clientWidth;
+      const visH = el.clientHeight;
+      el.scrollTo({
+        left: Math.max(0, pos.x + TASK_W / 2 - visW / (2 * z)),
+        top: Math.max(0, pos.y + TASK_H / 2 - visH / (2 * z)),
+        behavior: 'smooth',
+      });
+      window.setTimeout(() => {
+        const card = document.querySelector(`[data-task-id="${qid}"]`) as HTMLElement | null;
+        if (!card) return;
+        card.classList.remove('focus-pulse');
+        void card.offsetWidth;
+        card.classList.add('focus-pulse');
+        window.setTimeout(() => card.classList.remove('focus-pulse'), 1400);
+      }, 60);
+    };
+    window.addEventListener('tagma:focus-task', handler);
+    return () => window.removeEventListener('tagma:focus-task', handler);
+  }, [taskPositions]);
 
   const searchMatches = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -326,6 +364,11 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           <span className="text-xs font-medium text-tagma-text truncate max-w-[160px]">{config.name}</span>
         </div>
 
+        {/* In history mode the header collapses to Back + pipeline name —
+            none of the live-run controls (status, counts, approvals, plugins,
+            settings, search, abort) make sense when browsing past runs. */}
+        {!showHistory && (
+        <>
         <div className="w-px h-5 bg-tagma-border" />
 
         {/* Run status */}
@@ -440,7 +483,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
         </button>
 
         {/* Abort with confirmation (C7) */}
-        {!isTerminal && status !== 'idle' && !showAbortConfirm && (
+        {!isTerminal && !showAbortConfirm && (
           <button onClick={handleAbortClick} className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-tagma-error border border-tagma-error/20 hover:bg-tagma-error/10 transition-colors mr-1">
             <Square size={10} />
             <span>Abort</span>
@@ -457,9 +500,11 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
             </button>
           </div>
         )}
+        </>
+        )}
       </header>
 
-      {error && (
+      {!showHistory && error && (
         <div className="flex items-center gap-2 bg-tagma-error/5 border-b border-tagma-error/20">
           <div className="w-[3px] self-stretch shrink-0 bg-tagma-error" />
           <span className="text-[11px] text-tagma-error font-mono py-2">{error}</span>
@@ -467,7 +512,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
       )}
 
       {/* Pipeline log (hook execution, lifecycle events) */}
-      {pipelineLogs.length > 0 && (
+      {!showHistory && pipelineLogs.length > 0 && (
         <div className="border-b border-tagma-border">
           <button
             onClick={() => setPipelineLogExpanded(!pipelineLogExpanded)}
@@ -689,8 +734,13 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
                 key={`${m.trackId}.${m.taskId}`}
                 className="w-full text-left px-3 py-2 border-b border-tagma-border/30 last:border-b-0 hover:bg-tagma-bg/60"
                 onClick={() => {
-                  selectTask(`${m.trackId}.${m.taskId}`);
+                  const qid = `${m.trackId}.${m.taskId}`;
+                  selectTask(qid);
                   setSearchVisible(false);
+                  setSearchQuery('');
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('tagma:focus-task', { detail: qid }));
+                  });
                 }}
               >
                 <div className="text-[11px] font-mono text-tagma-text truncate">{m.label}</div>

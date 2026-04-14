@@ -14,6 +14,9 @@ interface RunStoreState extends RunFoldState {
   // user is back in the editor (minimized). Only `reset()` tears the
   // whole thing down and unsubscribes the SSE channel.
   active: boolean;
+  // 'live'    -> show the running pipeline canvas (or, if idle, the history browser as a fallback)
+  // 'history' -> always show the history browser, even if a run is in progress
+  viewMode: 'live' | 'history';
   selectedTaskId: string | null;
   selectedTrackId: string | null;
   snapshot: RawPipelineConfig | null;
@@ -33,6 +36,8 @@ interface RunStoreState extends RunFoldState {
   minimizeView: () => void;
   /** Re-open the RunView after a prior `minimizeView()`. */
   showView: () => void;
+  /** Open the RunView pinned to the history browser, regardless of run status. */
+  showHistoryView: () => void;
   reset: () => void;
 }
 
@@ -94,6 +99,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
 
   return {
     active: false,
+    viewMode: 'live',
     runId: null,
     status: 'idle',
     tasks: new Map<string, RunTaskState>(),
@@ -115,6 +121,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       set({
         active: true,
+        viewMode: 'live',
         status: 'starting',
         tasks: new Map(),
         logs: [],
@@ -136,9 +143,11 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       }
     },
 
-    minimizeView: () => set({ active: false }),
+    minimizeView: () => set({ active: false, viewMode: 'live' }),
 
-    showView: () => set({ active: true }),
+    showView: () => set({ active: true, viewMode: 'live' }),
+
+    showHistoryView: () => set({ active: true, viewMode: 'history' }),
 
     abortRun: async () => {
       try {
@@ -181,6 +190,7 @@ export const useRunStore = create<RunStoreState>((set, get) => {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       set({
         active: false,
+        viewMode: 'live',
         runId: null,
         status: 'idle',
         tasks: new Map(),

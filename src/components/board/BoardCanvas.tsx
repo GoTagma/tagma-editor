@@ -780,6 +780,15 @@ export function BoardCanvas({
         top: Math.max(0, pos.y + TASK_H / 2 - visH / (2 * z)),
         behavior: 'smooth',
       });
+      // Brief glow so the user can spot the result after the scroll lands.
+      window.setTimeout(() => {
+        const card = document.querySelector(`[data-task-id="${qid}"]`) as HTMLElement | null;
+        if (!card) return;
+        card.classList.remove('focus-pulse');
+        void card.offsetWidth;
+        card.classList.add('focus-pulse');
+        window.setTimeout(() => card.classList.remove('focus-pulse'), 1400);
+      }, 60);
     };
     window.addEventListener('tagma:focus-task', handler);
     return () => window.removeEventListener('tagma:focus-task', handler);

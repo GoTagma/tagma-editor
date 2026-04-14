@@ -287,6 +287,7 @@ export const TaskCard = memo(function TaskCard({
     <div
       ref={cardRef}
       data-task-card="true"
+      data-task-id={`${trackId}.${task.id}`}
       className={`
         absolute border select-none flex flex-col justify-center px-2.5
         ${borderColor} ${bgColor}
