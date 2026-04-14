@@ -75,15 +75,18 @@ export function useShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      // Everything below: never steal keystrokes from text-editing surfaces,
-      // but Escape is allowed through so inputs can blur without affecting
-      // selection.
-      if (editable && e.key !== 'Escape') return;
-
-      if (e.key === 'Escape') {
-        // Clear selection; don't preventDefault so inputs can still blur.
-        store.selectTask(null);
-        store.selectTrack(null);
+      // Everything below: never steal keystrokes from text-editing surfaces.
+      // L4: When Escape originates from an editable element, only blur the
+      // input — don't clear the selection. This prevents losing the current
+      // task/track selection when the user presses Esc to dismiss an inline
+      // rename or text edit.
+      if (editable) {
+        if (e.key === 'Escape') {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+          return;
+        }
         return;
       }
 

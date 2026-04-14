@@ -114,6 +114,7 @@ export function Toolbar({
                 onClick={() => api.reveal(yamlPath!).catch(() => {})}
                 className="text-tagma-muted/40 hover:text-tagma-accent opacity-0 group-hover/file:opacity-100 transition-opacity shrink-0"
                 title="Reveal in File Explorer"
+                aria-label="Reveal file in File Explorer"
               >
                 <ExternalLink size={9} />
               </button>
@@ -159,6 +160,7 @@ export function Toolbar({
               onClick={() => api.reveal(workDir).catch(() => {})}
               className="text-tagma-muted/40 hover:text-tagma-accent opacity-0 group-hover/wd:opacity-100 transition-opacity shrink-0"
               title="Reveal in File Explorer"
+              aria-label="Reveal workspace in File Explorer"
             >
               <ExternalLink size={9} />
             </button>

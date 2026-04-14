@@ -669,6 +669,9 @@ function lenientParseYaml(content: string, fallbackName: string): RawPipelineCon
 // an external change with clean in-memory state, auto-reload the YAML and
 // push the new state to subscribers.
 onFileWatcherEvent((event: ExternalChangeEvent) => {
+  // M6: Invalidate plugin caches on any external YAML change so discovery
+  // re-scans on the next request.
+  invalidatePluginCache();
   if (event.type === 'external-change') {
     try {
       config = parseYaml(event.content);
@@ -1360,8 +1363,23 @@ function writeEditorSettings(patch: Partial<EditorSettings>): EditorSettings {
  * anyone who can edit package.json could plant a path-traversal name, so
  * we drop anything that wouldn't survive the SDK's own loadPlugins guard.
  */
+// M6: Cache plugin discovery results. The cache is invalidated by the file
+// watcher whenever node_modules or .tagma/ changes, plus a TTL safety net.
+let installedPluginsCache: string[] | null = null;
+let installedPluginsCacheTime = 0;
+const PLUGIN_CACHE_TTL_MS = 5_000;
+
+function invalidatePluginCache(): void {
+  installedPluginsCache = null;
+  workspaceDeclaredPluginsCache = null;
+}
+
 function discoverInstalledPlugins(): string[] {
   if (!workDir) return [];
+  const now = Date.now();
+  if (installedPluginsCache !== null && now - installedPluginsCacheTime < PLUGIN_CACHE_TTL_MS) {
+    return installedPluginsCache;
+  }
   const pkgPath = resolve(workDir, 'package.json');
   if (!existsSync(pkgPath)) return [];
   try {
@@ -1390,6 +1408,8 @@ function discoverInstalledPlugins(): string[] {
         if (manifest) plugins.push(name);
       } catch { /* skip unreadable packages */ }
     }
+    installedPluginsCache = plugins;
+    installedPluginsCacheTime = now;
     return plugins;
   } catch {
     return [];
@@ -1408,8 +1428,12 @@ function discoverInstalledPlugins(): string[] {
  * Malformed YAMLs are silently skipped; we don't want one broken file to
  * block the install sweep for the rest of the workspace.
  */
+// M6: Cache workspace-declared plugins alongside the installed-plugins cache.
+let workspaceDeclaredPluginsCache: string[] | null = null;
+
 function discoverWorkspaceDeclaredPlugins(): string[] {
   if (!workDir) return [];
+  if (workspaceDeclaredPluginsCache !== null) return workspaceDeclaredPluginsCache;
   const tagmaDir = resolve(workDir, '.tagma');
   if (!existsSync(tagmaDir)) return [];
   const seen = new Set<string>();
@@ -1448,7 +1472,8 @@ function discoverWorkspaceDeclaredPlugins(): string[] {
       );
     }
   }
-  return [...seen];
+  workspaceDeclaredPluginsCache = [...seen];
+  return workspaceDeclaredPluginsCache;
 }
 
 /**
@@ -1590,6 +1615,7 @@ app.post('/api/plugins/install', async (req, res) => {
   try {
     await installPackage(name);
     addToPluginManifest(name);
+    invalidatePluginCache();
 
     // Load into SDK registry
     try {
@@ -1628,6 +1654,7 @@ app.post('/api/plugins/uninstall', (_req, res) => {
   try {
     uninstallPackage(name);
     removeFromPluginManifest(name);
+    invalidatePluginCache();
     // C4: actually remove the handler from the SDK registry so subsequent
     // task references fail fast instead of silently using stale code.
     const meta = loadedPluginMeta.get(name);
@@ -2961,6 +2988,18 @@ app.get('/api/run/events', (req, res) => {
     const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
     for (const e of missed) {
       res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
+    }
+  }
+  // M7: Send a snapshot of any pending approvals on connect so clients that
+  // missed earlier approval_request events (buffer overflow, brief disconnect)
+  // can still render the approval dialog. The reducer ignores duplicates by
+  // requestId, so this is safe even if the client already saw the event.
+  if (runInFlight && activeRunGateway) {
+    const pending = activeRunGateway.pending();
+    if (pending.length > 0) {
+      for (const pr of pending) {
+        res.write(`event: run_event\ndata: ${JSON.stringify({ type: 'approval_request', runId: activeRunId, request: approvalRequestToWire(pr), seq: -1 })}\n\n`);
+      }
     }
   }
   req.on('close', () => sseClients.delete(res));

@@ -204,6 +204,16 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
   // from dagEdges; we do the same so the Run view's TrackLane shows the
   // same warning icon the editor shows for tracks whose sibling tasks
   // aren't chained by explicit depends_on (meaning they run in parallel).
+  //
+  // L7: This heuristic (`depCount < taskCount - 1`) is a conservative
+  // approximation — it flags any track where the number of intra-track
+  // dependency edges is fewer than the minimum needed for a linear chain.
+  // This means a diamond-shaped DAG (A→B, A→C, B→D, C→D) with 4 tasks
+  // and 4 edges would show no warning, while a 3-task track with 1 edge
+  // (A→B only, C unconstrained) would correctly show one. The heuristic
+  // does not distinguish "truly parallel" from "loosely chained" — that
+  // would require computing the maximum antichain size, which is overkill
+  // for a visual hint.
   const parallelWarnings = useMemo(() => {
     const out = new Map<string, boolean>();
     for (const track of config.tracks) {
@@ -460,6 +470,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           onClick={() => setShowPlugins(true)}
           className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
           title="View loaded plugins (read-only)"
+          aria-label="View loaded plugins"
         >
           <Package size={12} />
         </button>
@@ -469,6 +480,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           onClick={() => setShowPipelineSettings(true)}
           className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
           title="View pipeline settings (read-only)"
+          aria-label="View pipeline settings"
         >
           <Settings size={12} />
         </button>
@@ -478,6 +490,7 @@ export function RunView({ config: liveConfig, dagEdges, positions, onBack }: Run
           onClick={() => setSearchVisible(true)}
           className="flex items-center gap-1.5 px-2 py-1 text-xs text-tagma-muted hover:text-tagma-text transition-colors"
           title="Search tasks (Ctrl+F)"
+          aria-label="Search tasks"
         >
           <Search size={12} />
         </button>

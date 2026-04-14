@@ -688,9 +688,11 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       const id = generateId();
       const kind = options?.kind ?? 'prompt';
       const positionX = options?.positionX;
+      // L2: Use empty string instead of 'TODO' so validation surfaces a
+      // meaningful warning instead of silently accepting a placeholder value.
       const task: RawTaskConfig = kind === 'command'
-        ? { id, name, command: 'TODO' }
-        : { id, name, prompt: 'TODO' };
+        ? { id, name, command: '' }
+        : { id, name, prompt: '' };
       const snapshot = takeSnapshot();
       const touchedPositions = positionX !== undefined;
       if (touchedPositions) {
@@ -781,11 +783,38 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       );
     },
 
-    addDependency: (fromTrackId, fromTaskId, toTrackId, toTaskId) =>
-      fire(
-        () => api.addDependency(fromTrackId, fromTaskId, toTrackId, toTaskId),
-        { errorPrefix: 'Failed to add dependency' },
-      ),
+    addDependency: (fromTrackId, fromTaskId, toTrackId, toTaskId) => {
+        // L8: Client-side cycle detection — reject edges that would create a
+        // cycle before hitting the server. Use BFS from the target back through
+        // existing edges; if the source is reachable, the edge would form a cycle.
+        const src = `${fromTrackId}.${fromTaskId}`;
+        const dst = `${toTrackId}.${toTaskId}`;
+        const edges = usePipelineStore.getState().dagEdges;
+        const visited = new Set<string>();
+        const queue = [dst];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (current === src) {
+            set({ errorMessage: 'Cannot add dependency: would create a cycle' });
+            setTimeout(() => {
+              const s = usePipelineStore.getState();
+              if (s.errorMessage === 'Cannot add dependency: would create a cycle') {
+                set({ errorMessage: null });
+              }
+            }, 3000);
+            return;
+          }
+          if (visited.has(current)) continue;
+          visited.add(current);
+          for (const e of edges) {
+            if (e.from === current) queue.push(e.to);
+          }
+        }
+        fire(
+          () => api.addDependency(fromTrackId, fromTaskId, toTrackId, toTaskId),
+          { errorPrefix: 'Failed to add dependency' },
+        );
+      },
 
     removeDependency: (trackId, taskId, depRef) =>
       fire(

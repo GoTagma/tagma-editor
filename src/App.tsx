@@ -502,6 +502,10 @@ export function App() {
       {
         label: 'File',
         items: [
+          // L6: Open Workspace at top with separator — it switches the entire
+          // working directory, unlike the save/import actions below.
+          { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
+          { separator: true as const },
           { label: 'New YAML', onAction: handleNewPipeline },
           { separator: true as const },
           { label: 'Import YAML...', shortcut: 'Ctrl+O', onAction: handleImport },
@@ -509,8 +513,6 @@ export function App() {
           { separator: true as const },
           { label: 'Save', shortcut: 'Ctrl+S', onAction: handleSave },
           { label: 'Save As...', onAction: handleSaveAs },
-          { separator: true as const },
-          { label: 'Open Workspace...', onAction: () => setExplorer({ mode: 'directory', purpose: 'workdir' }) },
         ],
       },
       {
@@ -660,6 +662,7 @@ export function App() {
           onClick={showRun}
           className={`flex items-center gap-1.5 px-2.5 h-[22px] border text-[10px] font-mono transition-colors ${borderClass}`}
           title="Return to Run view"
+          aria-label="Return to Run view"
         >
           {runIsLive && <Loader2 size={10} className="animate-spin" />}
           {runStatus === 'done' && <Check size={10} />}
