@@ -174,14 +174,16 @@ export function Toolbar({
 
         {workDir && <div className="w-px h-4 bg-tagma-border/60 shrink-0" />}
 
-        <button
-          onClick={onShowHistory}
-          className="flex items-center gap-1 px-2 py-1 text-[10px] border border-tagma-border text-tagma-muted hover:text-tagma-text hover:border-tagma-accent/30 transition-colors shrink-0"
-          title="View run history"
-        >
-          <History size={11} />
-          <span>History</span>
-        </button>
+        {workDir && (
+          <button
+            onClick={onShowHistory}
+            className="flex items-center gap-1 px-2 py-1 text-[10px] border border-tagma-border text-tagma-muted hover:text-tagma-text hover:border-tagma-accent/30 transition-colors shrink-0"
+            title="View run history"
+          >
+            <History size={11} />
+            <span>History</span>
+          </button>
+        )}
 
         <button
           onClick={onToggleYamlPreview}
