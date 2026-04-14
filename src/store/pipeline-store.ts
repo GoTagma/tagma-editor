@@ -118,6 +118,14 @@ interface PipelineState {
   clipboard: ClipboardSlot;
   pinnedTaskId: string | null;
   pinnedTrackId: string | null;
+  /**
+   * Top-level view flag for the Plugins page. Mirrors `useRunStore().active`
+   * in shape and intent: App.tsx renders the Plugins page when this is true
+   * and the run view is not active. Kept here (rather than a dedicated
+   * plugins store) because plugins are declared in `pipeline.plugins[]` so
+   * the store already owns the adjacent data.
+   */
+  pluginsActive: boolean;
 
   applyState: (state: ServerState) => void;
   clearError: () => void;
@@ -129,7 +137,7 @@ interface PipelineState {
   updateTrackFields: (trackId: string, fields: Record<string, unknown>) => void;
   deleteTrack: (trackId: string) => void;
   moveTrackTo: (trackId: string, toIndex: number) => void;
-  addTask: (trackId: string, name: string, positionX?: number) => void;
+  addTask: (trackId: string, name: string, options?: { kind?: 'prompt' | 'command'; positionX?: number }) => void;
   updateTask: (trackId: string, taskId: string, patch: Partial<RawTaskConfig>) => void;
   deleteTask: (trackId: string, taskId: string) => void;
   transferTaskToTrack: (fromTrackId: string, taskId: string, toTrackId: string) => void;
@@ -167,6 +175,10 @@ interface PipelineState {
   unpinTask: () => void;
   pinTrack: (trackId: string) => void;
   unpinTrack: () => void;
+
+  // Plugins page top-level view toggle — parallel to runStore.active.
+  showPluginsPage: () => void;
+  hidePluginsPage: () => void;
 }
 
 function generateId(): string {
@@ -591,6 +603,7 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     clipboard: null,
     pinnedTaskId: null,
     pinnedTrackId: null,
+    pluginsActive: false,
 
     applyState,
     clearError: () => set({ errorMessage: null }),
@@ -671,9 +684,13 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
       fire(() => api.reorderTrack(trackId, toIndex), { snapshot, errorPrefix: 'Failed to reorder track' });
     },
 
-    addTask: (trackId, name, positionX) => {
+    addTask: (trackId, name, options) => {
       const id = generateId();
-      const task: RawTaskConfig = { id, name, prompt: '' };
+      const kind = options?.kind ?? 'prompt';
+      const positionX = options?.positionX;
+      const task: RawTaskConfig = kind === 'command'
+        ? { id, name, command: 'TODO' }
+        : { id, name, prompt: 'TODO' };
       const snapshot = takeSnapshot();
       const touchedPositions = positionX !== undefined;
       if (touchedPositions) {
@@ -798,6 +815,9 @@ export const usePipelineStore = create<PipelineState>((set, _get) => {
     unpinTask: () => set({ pinnedTaskId: null }),
     pinTrack: (trackId) => set({ pinnedTrackId: trackId, pinnedTaskId: null }),
     unpinTrack: () => set({ pinnedTrackId: null }),
+
+    showPluginsPage: () => set({ pluginsActive: true }),
+    hidePluginsPage: () => set({ pluginsActive: false }),
 
     setTaskPosition: (qualifiedId, x) => {
       const s = _get();

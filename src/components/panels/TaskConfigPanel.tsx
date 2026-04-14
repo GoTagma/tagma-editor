@@ -45,7 +45,7 @@ export function TaskConfigPanel({
   task, trackId, qualifiedId, pipelineConfig, dependencies, drivers, errors,
   onUpdateTask, onDeleteTask, onRemoveDependency, isPinned, onTogglePin,
 }: TaskConfigPanelProps) {
-  const [mode, setMode] = useState<'prompt' | 'command'>(task.command ? 'command' : 'prompt');
+  const mode: 'prompt' | 'command' = task.command !== undefined ? 'command' : 'prompt';
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showTrackProfile, setShowTrackProfile] = useState(false);
@@ -108,8 +108,8 @@ export function TaskConfigPanel({
   }, []);
 
   const [name, setName, blurName] = useLocalField(task.name ?? '', (v) => commitField({ name: v }));
-  const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v, command: undefined }));
-  const [command, setCommand, blurCommand] = useLocalField(task.command ?? '', (v) => commitField({ command: v, prompt: undefined }));
+  const [prompt, setPrompt, blurPrompt] = useLocalField(task.prompt ?? '', (v) => commitField({ prompt: v }));
+  const [command, setCommand, blurCommand] = useLocalField(task.command ?? '', (v) => commitField({ command: v }));
   const handleDriverChange = useCallback((value: string) => {
     onUpdateTask(trackId, task.id, { driver: value || undefined });
   }, [trackId, task.id, onUpdateTask]);
@@ -122,15 +122,6 @@ export function TaskConfigPanel({
   const handleModelTierChange = useCallback((model_tier: string) => {
     onUpdateTask(trackId, task.id, { model_tier: model_tier || undefined });
   }, [trackId, task.id, onUpdateTask]);
-
-  const switchMode = useCallback((newMode: 'prompt' | 'command') => {
-    setMode(newMode);
-    if (newMode === 'command') {
-      onUpdateTask(trackId, task.id, { command: task.command ?? '', prompt: undefined });
-    } else {
-      onUpdateTask(trackId, task.id, { prompt: task.prompt ?? '', command: undefined });
-    }
-  }, [trackId, task, onUpdateTask]);
 
   const handlePermToggle = useCallback((key: 'read' | 'write' | 'execute') => {
     const current = task.permissions ?? { read: false, write: false, execute: false };
@@ -237,18 +228,12 @@ export function TaskConfigPanel({
           <input type="text" className="field-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={blurName} placeholder="Task name..." />
         </div>
 
-        {/* Mode toggle */}
+        {/* Type (fixed at creation, not switchable) */}
         <div>
-          <label className="field-label">Type <span className="text-[10px] text-tagma-muted font-normal">(prompt/command mutually exclusive)</span></label>
-          <div className="flex gap-1">
-            <button onClick={() => switchMode('prompt')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[11px] border transition-colors ${mode === 'prompt' ? 'border-tagma-accent bg-tagma-accent/10 text-tagma-accent' : 'border-tagma-border text-tagma-muted hover:text-tagma-text'}`}>
-              <MessageSquare size={11} /> Prompt
-            </button>
-            <button onClick={() => switchMode('command')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[11px] border transition-colors ${mode === 'command' ? 'border-tagma-accent bg-tagma-accent/10 text-tagma-accent' : 'border-tagma-border text-tagma-muted hover:text-tagma-text'}`}>
-              <Terminal size={11} /> Command
-            </button>
+          <label className="field-label">Type</label>
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] border border-tagma-border bg-tagma-bg text-tagma-muted">
+            {mode === 'prompt' ? <MessageSquare size={11} /> : <Terminal size={11} />}
+            <span>{mode === 'prompt' ? 'Prompt Task' : 'Command Task'}</span>
           </div>
         </div>
 

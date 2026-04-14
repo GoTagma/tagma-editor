@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useCallback, useEffect, memo } from 'react';
-import { Plus, Trash2, Pencil, ListPlus } from 'lucide-react';
+import { Trash2, Pencil, ListPlus, Terminal, MessageSquare } from 'lucide-react';
 import { TrackLane } from './TrackLane';
 import { TaskCard } from './TaskCard';
 import { ContextMenu, type MenuEntry } from './ContextMenu';
@@ -37,7 +37,7 @@ interface BoardCanvasProps {
   onSelectTask: (qualifiedId: string | null) => void;
   onToggleTaskSelection: (qualifiedId: string) => void;
   onSelectTrack: (trackId: string | null) => void;
-  onAddTask: (trackId: string, name: string, positionX?: number) => void;
+  onAddTask: (trackId: string, name: string, options?: { kind?: 'prompt' | 'command'; positionX?: number }) => void;
   onAddTrack: (name: string) => void;
   onDeleteTask: (trackId: string, taskId: string) => void;
   onDeleteTrack: (trackId: string) => void;
@@ -297,7 +297,7 @@ export function BoardCanvas({
   const dropRef = useRef<{ trackId: string; positionX: number } | null>(null);
   const nearRef = useRef<string | null>(null);
 
-  const [inlineAdd, setInlineAdd] = useState<{ type: 'task'; trackId: string; positionX?: number } | { type: 'track' } | { type: 'rename'; trackId: string } | null>(null);
+  const [inlineAdd, setInlineAdd] = useState<{ type: 'task'; trackId: string; kind: 'prompt' | 'command'; positionX?: number } | { type: 'track' } | { type: 'rename'; trackId: string } | null>(null);
   const [inlineValue, setInlineValue] = useState('');
   const inlineRef = useRef<HTMLInputElement>(null);
 
@@ -582,7 +582,8 @@ export function BoardCanvas({
     setCtx({
       x: e.clientX, y: e.clientY,
       items: [
-        { label: 'Add Task', icon: <Plus size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId }); setInlineValue(''); } },
+        { label: 'Add Prompt Task', icon: <MessageSquare size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId, kind: 'prompt' }); setInlineValue(''); } },
+        { label: 'Add Command Task', icon: <Terminal size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId, kind: 'command' }); setInlineValue(''); } },
         { label: 'Rename Track', icon: <Pencil size={12} />, onAction: () => { setInlineAdd({ type: 'rename', trackId }); setInlineValue(track?.name ?? ''); } },
         { separator: true },
         { label: 'Add Track', icon: <ListPlus size={12} />, onAction: () => { setInlineAdd({ type: 'track' }); setInlineValue(''); } },
@@ -614,7 +615,10 @@ export function BoardCanvas({
     const clickX = Math.max(PAD_LEFT, cp.x);
     setCtx({
       x: e.clientX, y: e.clientY,
-      items: [{ label: 'Add Task Here', icon: <Plus size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId, positionX: clickX }); setInlineValue(''); } }],
+      items: [
+        { label: 'Add Prompt Task Here', icon: <MessageSquare size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId, kind: 'prompt', positionX: clickX }); setInlineValue(''); } },
+        { label: 'Add Command Task Here', icon: <Terminal size={12} />, onAction: () => { setInlineAdd({ type: 'task', trackId, kind: 'command', positionX: clickX }); setInlineValue(''); } },
+      ],
     });
   }, [visualTracks]);
 
@@ -623,7 +627,7 @@ export function BoardCanvas({
   const commitInlineAdd = useCallback(() => {
     const name = inlineValue.trim();
     if (!name || !inlineAdd) { setInlineAdd(null); return; }
-    if (inlineAdd.type === 'task') onAddTask(inlineAdd.trackId, name, inlineAdd.positionX);
+    if (inlineAdd.type === 'task') onAddTask(inlineAdd.trackId, name, { kind: inlineAdd.kind, positionX: inlineAdd.positionX });
     else if (inlineAdd.type === 'track') onAddTrack(name);
     else if (inlineAdd.type === 'rename') onRenameTrack(inlineAdd.trackId, name);
     setInlineAdd(null);
@@ -1027,7 +1031,9 @@ export function BoardCanvas({
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setInlineAdd(null)}>
           <div className="bg-tagma-surface border border-tagma-border shadow-panel p-3 animate-fade-in w-64" onClick={(e) => e.stopPropagation()}>
             <label className="text-[10px] font-mono text-tagma-muted uppercase tracking-wider mb-1.5 block">
-              {inlineAdd.type === 'task' ? 'New Task Name' : inlineAdd.type === 'rename' ? 'Rename Track' : 'New Track Name'}
+              {inlineAdd.type === 'task'
+                ? (inlineAdd.kind === 'command' ? 'New Command Task' : 'New Prompt Task')
+                : inlineAdd.type === 'rename' ? 'Rename Track' : 'New Track Name'}
             </label>
             <input ref={inlineRef} type="text" value={inlineValue}
               onChange={(e) => setInlineValue(e.target.value)}

@@ -153,7 +153,7 @@ function TaskTooltip({ task, trackId, config, anchorRect }: {
   const track = config.tracks.find((t) => t.id === trackId);
   const perms = task.permissions ?? track?.permissions;
 
-  const isCmd = !!task.command;
+  const isCmd = task.command !== undefined;
   const rows: [string, string][] = [];
   // AI-specific fields only for prompt/template tasks
   if (!isCmd && driver) rows.push(['Driver', driver]);
@@ -233,7 +233,7 @@ export const TaskCard = memo(function TaskCard({
 }: TaskCardProps) {
   const [hovered, setHovered] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
-  const isCommand = !!task.command;
+  const isCommand = task.command !== undefined;
   const isTemplate = !!task.use;
 
   const driver = resolveField(task, trackId, pipelineConfig, 'driver');
