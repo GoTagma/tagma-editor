@@ -105,6 +105,60 @@ export interface EditorLayout {
   positions: Record<string, { x: number }>;
 }
 
+/**
+ * Per-workspace editor preferences persisted in `.tagma/editor-settings.json`.
+ * These are user-level toggles that don't belong in the pipeline YAML
+ * (which is meant to be portable). Mirrors the server-side EditorSettings shape.
+ */
+export interface EditorSettings {
+  /**
+   * When true, opening a workspace will auto-install plugins declared in
+   * the YAML's `plugins` array but missing from `node_modules`. Default off
+   * because pulling arbitrary npm packages on YAML open is a security smell —
+   * the user must opt in per workspace.
+   */
+  autoInstallDeclaredPlugins: boolean;
+}
+
+/**
+ * Read-only snapshot of plugins declared anywhere in the current workspace
+ * (every YAML in `.tagma/`) plus their install/load status. Used by the
+ * Editor Settings panel to preview what Apply will do without triggering
+ * any installs.
+ */
+export interface PluginDeclaredResult {
+  /** Union of pipeline.plugins[] across every YAML in the workspace. */
+  declared: string[];
+  /** Subset of `declared` that is already in node_modules. */
+  installed: string[];
+  /** Subset of `declared` that is NOT yet in node_modules. */
+  missing: string[];
+  /** Subset of `declared` that has been imported into the SDK registry. */
+  loaded: string[];
+  settings: EditorSettings;
+}
+
+/**
+ * Result shape of `POST /api/plugins/refresh` — re-runs the auto-load +
+ * (when enabled) auto-install sweep against the workspace's declared plugins
+ * and returns a structured before/after report so the UI can tell the user
+ * exactly what happened.
+ */
+export interface PluginRefreshResult {
+  settings: EditorSettings;
+  /** Workspace-wide declared plugins (union across every YAML in `.tagma/`). */
+  declared: string[];
+  /** Declared plugins that are still missing from node_modules after this call. */
+  missing: string[];
+  /** Plugins this call freshly installed (i.e. became installed during the sweep). */
+  installed: string[];
+  /** Plugins this call freshly loaded into the SDK registry. */
+  loaded: string[];
+  /** Per-plugin failures from the most recent sweep, mirroring /api/plugins. */
+  errors: Array<{ name: string; message: string }>;
+  registry: PluginRegistry;
+}
+
 export interface ServerState {
   config: RawPipelineConfig;
   validationErrors: ValidationError[];
@@ -619,6 +673,18 @@ export const api = {
 
   setWorkDir: (workDir: string) =>
     request<ServerState>('/workspace', { method: 'PATCH', body: jsonBody({ workDir }) }),
+
+  getEditorSettings: () =>
+    request<EditorSettings>('/editor-settings'),
+
+  updateEditorSettings: (patch: Partial<EditorSettings>) =>
+    request<EditorSettings>('/editor-settings', { method: 'PATCH', body: jsonBody(patch) }),
+
+  getDeclaredPlugins: () =>
+    request<PluginDeclaredResult>('/plugins/declared'),
+
+  refreshPlugins: () =>
+    request<PluginRefreshResult>('/plugins/refresh', { method: 'POST' }),
 
   openFile: (path: string) =>
     request<ServerState>('/open', { method: 'POST', body: jsonBody({ path }) }),

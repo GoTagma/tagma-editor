@@ -382,6 +382,7 @@ app.use((req, res, next) => {
     '/api/fs/',
     '/api/state/events',
     '/api/layout',
+    '/api/editor-settings',
   ];
   if (skipRoutes.some((p) => req.path.startsWith(p))) return next();
 
@@ -1164,6 +1165,81 @@ function removeFromPluginManifest(name: string): void {
 }
 
 /**
+ * Editor settings: per-workspace user preferences that don't belong in the
+ * pipeline YAML (which is meant to be portable / committable). Stored in
+ * `.tagma/editor-settings.json` next to plugins.json. Unknown keys are
+ * preserved on write so a newer editor can roundtrip an older client's file.
+ */
+export interface EditorSettings {
+  /**
+   * When true, opening a workspace will auto-install plugins that are
+   * declared in the pipeline YAML's `plugins` array but not yet present in
+   * `node_modules`. When false (default), declared-but-missing plugins are
+   * skipped and the user must install them manually via the Plugins panel.
+   *
+   * Trade-off: convenient for trusted personal workspaces, but auto-pulling
+   * arbitrary npm packages on YAML open is a security smell — that's why
+   * the default is off.
+   */
+  autoInstallDeclaredPlugins: boolean;
+}
+
+const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
+  autoInstallDeclaredPlugins: false,
+};
+
+function editorSettingsPath(): string {
+  return resolve(workDir, '.tagma', 'editor-settings.json');
+}
+
+function readEditorSettings(): EditorSettings {
+  if (!workDir) return { ...DEFAULT_EDITOR_SETTINGS };
+  try {
+    const p = editorSettingsPath();
+    if (!existsSync(p)) return { ...DEFAULT_EDITOR_SETTINGS };
+    const parsed = JSON.parse(readFileSync(p, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.error(`[editor-settings] ${p} is not an object; using defaults`);
+      return { ...DEFAULT_EDITOR_SETTINGS };
+    }
+    const raw = parsed as Record<string, unknown>;
+    return {
+      autoInstallDeclaredPlugins:
+        typeof raw.autoInstallDeclaredPlugins === 'boolean'
+          ? raw.autoInstallDeclaredPlugins
+          : DEFAULT_EDITOR_SETTINGS.autoInstallDeclaredPlugins,
+    };
+  } catch (err) {
+    console.error('[editor-settings] failed to read .tagma/editor-settings.json:', err);
+    return { ...DEFAULT_EDITOR_SETTINGS };
+  }
+}
+
+function writeEditorSettings(patch: Partial<EditorSettings>): EditorSettings {
+  if (!workDir) throw new Error('Set a working directory first');
+  const dir = resolve(workDir, '.tagma');
+  mkdirSync(dir, { recursive: true });
+  const p = editorSettingsPath();
+  // Preserve unknown keys so a newer editor's settings survive a round-trip
+  // through an older client.
+  let existing: Record<string, unknown> = {};
+  if (existsSync(p)) {
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch { /* ignore — overwrite a corrupt file */ }
+  }
+  const next: Record<string, unknown> = { ...existing };
+  if (patch.autoInstallDeclaredPlugins !== undefined) {
+    next.autoInstallDeclaredPlugins = patch.autoInstallDeclaredPlugins;
+  }
+  writeFileSync(p, JSON.stringify(next, null, 2), 'utf-8');
+  return readEditorSettings();
+}
+
+/**
  * Discover installed tagma plugin packages under workDir/node_modules.
  *
  * A package is a plugin iff its `package.json` declares the `tagmaPlugin`
@@ -1216,16 +1292,82 @@ function discoverInstalledPlugins(): string[] {
 }
 
 /**
+ * Workspace-wide declared-plugin scanner: walks every YAML in `.tagma/`,
+ * leniently parses each, and unions their `pipeline.plugins[]` arrays.
+ *
+ * This is the source of truth for "what plugins does this workspace need" —
+ * intentionally NOT tied to the in-memory `config`, so opening the workspace
+ * (or clicking Apply) installs plugins for every pipeline in the workspace,
+ * not just the one the user happens to be looking at.
+ *
+ * Malformed YAMLs are silently skipped; we don't want one broken file to
+ * block the install sweep for the rest of the workspace.
+ */
+function discoverWorkspaceDeclaredPlugins(): string[] {
+  if (!workDir) return [];
+  const tagmaDir = resolve(workDir, '.tagma');
+  if (!existsSync(tagmaDir)) return [];
+  const seen = new Set<string>();
+  let entries;
+  try {
+    entries = readdirSync(tagmaDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/\.ya?ml$/i.test(entry.name)) continue;
+    const absPath = resolve(tagmaDir, entry.name);
+    try {
+      const doc = yaml.load(readFileSync(absPath, 'utf-8')) as
+        | { pipeline?: { plugins?: unknown }; plugins?: unknown }
+        | null
+        | undefined;
+      // Accept both `pipeline.plugins` (canonical) and a top-level `plugins`
+      // (some hand-written YAMLs use the flat shape).
+      const list =
+        (doc && typeof doc === 'object' && doc.pipeline && typeof doc.pipeline === 'object'
+          ? (doc.pipeline as { plugins?: unknown }).plugins
+          : undefined) ??
+        (doc && typeof doc === 'object' ? (doc as { plugins?: unknown }).plugins : undefined);
+      if (Array.isArray(list)) {
+        for (const name of list) {
+          if (typeof name === 'string' && isValidPluginName(name)) {
+            seen.add(name);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[plugins] skipping malformed YAML "${entry.name}" while scanning declared plugins:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return [...seen];
+}
+
+/**
  * Auto-load all installed plugins into the registry.
- * Sources: node_modules scan + manifest + config.plugins.
+ * Sources: node_modules scan + manifest + workspace YAML scan + in-memory config.plugins.
  * Skips already-loaded plugins. Errors are recorded in `lastAutoLoadErrors`
  * so the UI can surface them via /api/plugins instead of dropping silently.
+ *
+ * When the workspace's editor settings opt into `autoInstallDeclaredPlugins`,
+ * any plugin that is declared anywhere in the workspace's YAMLs but missing
+ * from node_modules is fetched from the npm registry first, then loaded.
+ * Plugins that aren't declared (only present in the manifest or discovered on
+ * disk) are never installed — this keeps the auto-install scope tied to the
+ * workspace's YAMLs, not arbitrary on-disk packages.
  */
 async function autoLoadInstalledPlugins(): Promise<string[]> {
   const manifest = readPluginManifest();
-  const declared = (config.plugins ?? []).filter(isValidPluginName);
+  const declaredFromConfig = (config.plugins ?? []).filter(isValidPluginName);
+  const declaredFromWorkspace = discoverWorkspaceDeclaredPlugins();
+  const declared = [...new Set([...declaredFromConfig, ...declaredFromWorkspace])];
+  const declaredSet = new Set(declared);
   const discovered = discoverInstalledPlugins();
   const candidates = [...new Set([...discovered, ...manifest, ...declared])];
+  const settings = readEditorSettings();
   const loaded: string[] = [];
   const errors: Array<{ name: string; message: string }> = [];
   for (const name of candidates) {
@@ -1234,8 +1376,27 @@ async function autoLoadInstalledPlugins(): Promise<string[]> {
       errors.push({ name, message: 'invalid plugin name' });
       continue;
     }
-    const info = getPluginInfo(name);
-    if (!info.installed) continue;
+    let info = getPluginInfo(name);
+    if (!info.installed) {
+      // Only auto-install plugins that are explicitly declared in the YAML —
+      // the manifest/discovered sources can carry stale entries from a
+      // previous workspace state, and we don't want to silently re-pull them.
+      if (!settings.autoInstallDeclaredPlugins || !declaredSet.has(name)) continue;
+      try {
+        await installPackage(name);
+        addToPluginManifest(name);
+        info = getPluginInfo(name);
+        if (!info.installed) {
+          errors.push({ name, message: 'install completed but plugin still not on disk' });
+          continue;
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`Failed to auto-install plugin "${name}":`, msg);
+        errors.push({ name, message: `auto-install failed: ${msg}` });
+        continue;
+      }
+    }
     try {
       await loadPluginFromWorkDir(name);
       loaded.push(name);
@@ -1421,6 +1582,88 @@ app.post('/api/plugins/import-local', async (req, res) => {
 });
 
 /** Load an already-installed plugin from workDir into the registry */
+/**
+ * Read-only preview of the workspace's declared plugins. Used by the Editor
+ * Settings panel on open to show "what would Apply install?" without
+ * actually installing anything.
+ *
+ * `declared` is the union of every YAML in `.tagma/` (via
+ * discoverWorkspaceDeclaredPlugins) and any plugins declared by the
+ * currently-loaded in-memory pipeline — same source that
+ * `autoLoadInstalledPlugins()` uses, so the preview matches reality.
+ */
+app.get('/api/plugins/declared', (_req, res) => {
+  if (!workDir) {
+    return res.json({
+      declared: [],
+      installed: [],
+      missing: [],
+      loaded: [],
+      settings: { ...DEFAULT_EDITOR_SETTINGS },
+    });
+  }
+  const declaredFromConfig = (config.plugins ?? []).filter(isValidPluginName);
+  const declaredFromWorkspace = discoverWorkspaceDeclaredPlugins();
+  const declared = [...new Set([...declaredFromConfig, ...declaredFromWorkspace])];
+  const installed = declared.filter((n) => getPluginInfo(n).installed);
+  const missing = declared.filter((n) => !getPluginInfo(n).installed);
+  const loaded = declared.filter((n) => loadedPlugins.has(n));
+  res.json({
+    declared,
+    installed,
+    missing,
+    loaded,
+    settings: readEditorSettings(),
+  });
+});
+
+/**
+ * Re-run the auto-load + auto-install sweep on demand. The Editor Settings
+ * panel's "Apply Now" button uses this so the user can re-run the install
+ * without having to close+reopen the workspace.
+ *
+ * Pulls declared plugins from BOTH the workspace's `.tagma/*.yaml` files
+ * (so it covers every pipeline in the workspace, not just the one the user
+ * happens to be editing) AND the in-memory pipeline. Same source that
+ * `autoLoadInstalledPlugins()` uses on workspace open, so the on-demand and
+ * on-open paths stay in lockstep.
+ */
+app.post('/api/plugins/refresh', async (_req, res) => {
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
+  }
+  try {
+    const settings = readEditorSettings();
+    const declaredFromConfig = (config.plugins ?? []).filter(isValidPluginName);
+    const declaredFromWorkspace = discoverWorkspaceDeclaredPlugins();
+    const declared = [...new Set([...declaredFromConfig, ...declaredFromWorkspace])];
+
+    // Snapshot pre-state so we can report what was already there vs. what
+    // this call actually changed. `loadedPlugins` is a non-iterable shim;
+    // the underlying iterable storage is `loadedPluginMeta` (a Map).
+    const wasInstalled = new Set(declared.filter((n) => getPluginInfo(n).installed));
+    const wasLoaded = new Set(loadedPluginMeta.keys());
+
+    const loaded = await autoLoadInstalledPlugins();
+
+    const installed = declared.filter((n) => getPluginInfo(n).installed && !wasInstalled.has(n));
+    const newlyLoaded = loaded.filter((n) => !wasLoaded.has(n));
+    const missing = declared.filter((n) => !getPluginInfo(n).installed);
+
+    res.json({
+      settings,
+      declared,
+      missing,
+      installed,
+      loaded: newlyLoaded,
+      errors: lastAutoLoadErrors,
+      registry: getRegistrySnapshot(),
+    });
+  } catch (e: unknown) {
+    res.status(500).json(pluginErrorResponse(e, 'Refresh'));
+  }
+});
+
 app.post('/api/plugins/load', async (req, res) => {
   const { name } = req.body;
   try {
@@ -1694,6 +1937,32 @@ app.patch('/api/workspace', async (req, res) => {
     await autoLoadInstalledPlugins();
   }
   res.json(getState());
+});
+
+// ── Editor settings (per-workspace user preferences) ──
+app.get('/api/editor-settings', (_req, res) => {
+  if (!workDir) {
+    return res.json({ ...DEFAULT_EDITOR_SETTINGS });
+  }
+  res.json(readEditorSettings());
+});
+
+app.patch('/api/editor-settings', (req, res) => {
+  if (!workDir) {
+    return res.status(400).json({ error: 'Set a working directory first' });
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const patch: Partial<EditorSettings> = {};
+  if (typeof body.autoInstallDeclaredPlugins === 'boolean') {
+    patch.autoInstallDeclaredPlugins = body.autoInstallDeclaredPlugins;
+  }
+  try {
+    const next = writeEditorSettings(patch);
+    res.json(next);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: `Failed to save editor settings: ${msg}` });
+  }
 });
 
 // ── Filesystem browsing ──
@@ -2152,20 +2421,29 @@ app.get('/api/run/events', (req, res) => {
   // value so the client's task map can be brought back up to date
   // without refetching anything.
   //
-  // First-connect race fix: even when no Last-Event-ID is present, replay
+  // First-connect race fix: when a run is actively starting/running, replay
   // the entire current-run buffer. The browser's `runStore.startRun`
   // creates the EventSource and immediately POSTs `/api/run/start`, so
   // the server may emit `run_start` + `approval_request` before this
   // GET handler has added `res` to `sseClients`. Replaying lastSeen=0
   // closes the gap; the reducer's `seq <= lastEventSeq` dedupe makes
   // duplicates harmless.
+  //
+  // What we DO NOT want is a fresh client connection (no Last-Event-ID,
+  // no run in flight) to replay events left over from a previously
+  // completed run — that makes switching pipelines look like the new
+  // run instantly succeeded with the old run's task states.
   const lastSeenRaw = parseInt(String(req.header('Last-Event-ID') ?? ''), 10);
   const lastSeen = Number.isFinite(lastSeenRaw) && lastSeenRaw > 0 ? lastSeenRaw : 0;
   res.write('\n');
   sseClients.add(res);
-  const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
-  for (const e of missed) {
-    res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
+  const isResuming = lastSeen > 0;
+  const runInFlight = activeRunAbort !== null || runStarting;
+  if (isResuming || runInFlight) {
+    const missed = runEventBuffer.filter((e) => e.seq > lastSeen);
+    for (const e of missed) {
+      res.write(`id: ${e.seq}\nevent: run_event\ndata: ${JSON.stringify(e)}\n\n`);
+    }
   }
   req.on('close', () => sseClients.delete(res));
 });
@@ -2177,6 +2455,11 @@ app.post('/api/run/start', async (_req, res) => {
     return res.status(409).json({ error: 'A run is already in progress' });
   }
   runStarting = true;
+  // Clear any leftover events from the previous run the moment a new run
+  // is initiated. Deferring this until after validation leaves a window
+  // where a fresh EventSource connection replays stale events from the
+  // completed run and makes the UI think the new run already succeeded.
+  resetRunEventBuffer();
 
   // Serialize the in-memory editor config to YAML and hand it to the SDK.
   // The round-trip is intentional: it exercises the same load path the CLI
@@ -2279,10 +2562,9 @@ app.post('/api/run/start', async (_req, res) => {
   activeRunAbort = abortController;
   activeRunGateway = gateway;
   activeRunId = runId;
-  // Start this run's event sequence fresh — clients treat `seq` as
-  // monotonic per run, so the Last-Event-ID they cached from a previous
-  // run must not be used against this one.
-  resetRunEventBuffer();
+  // Buffer was already reset at the top of this handler so any EventSource
+  // connection that arrives during validation never replays stale events
+  // from the prior run.
 
   // Subscribe to approval gateway events and forward them to the SSE
   // clients. This replaces the old WebSocket-bridge-to-CLI path — the

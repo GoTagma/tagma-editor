@@ -6,6 +6,7 @@ import { Toolbar } from './components/board/Toolbar';
 import { TaskConfigPanel } from './components/panels/TaskConfigPanel';
 import { TrackConfigPanel } from './components/panels/TrackConfigPanel';
 import { PipelineConfigPanel } from './components/panels/PipelineConfigPanel';
+import { EditorSettingsPanel } from './components/panels/EditorSettingsPanel';
 import { PluginManager } from './components/panels/PluginManager';
 import { FileExplorer, type FileExplorerMode } from './components/FileExplorer';
 import { api, type ServerStateEvent } from './api/client';
@@ -56,6 +57,7 @@ export function App() {
   } = useRunStore();
 
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showEditorSettings, setShowEditorSettings] = useState(false);
   const [showPlugins, setShowPlugins] = useState(false);
   const [explorer, setExplorer] = useState<ExplorerIntent | null>(null);
   const [dialog, setDialog] = useState<DialogInfo | null>(null);
@@ -454,6 +456,7 @@ export function App() {
         label: 'Settings',
         items: [
           { label: 'Pipeline Settings', onAction: () => setShowPipelineSettings(true) },
+          { label: 'Editor Settings', onAction: () => setShowEditorSettings(true) },
         ],
       },
     ];
@@ -763,6 +766,15 @@ export function App() {
           errors={pipelineLevelErrors}
           onUpdate={updatePipelineFields}
           onClose={() => setShowPipelineSettings(false)}
+        />
+      )}
+
+      {/* Editor Settings modal */}
+      {showEditorSettings && (
+        <EditorSettingsPanel
+          workDir={workDir}
+          onRegistryUpdate={setRegistry}
+          onClose={() => setShowEditorSettings(false)}
         />
       )}
 
