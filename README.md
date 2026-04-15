@@ -1,5 +1,13 @@
 # tagma-editor
 
+
+# Deprecated
+
+This repository is deprecated and no longer maintained.
+
+Please use: [tagma-mono](https://github.com/GoTagma/tagma-mono)
+
+
 A visual editor for Tagma, built with React + Vite + Express, running on **Bun**.
 
 ## Requirements
